@@ -1,0 +1,4074 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <!-- cache-sync: 2026-07-07T16:05:00-04:00 updateBookmarkHint-global-scope-fix -->
+  <title>Solana Mover Trading Bot</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#14f195">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Solana Bot">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.svg">
+  <link rel="icon" id="favicon" href="/favicon.ico" type="image/png">
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --surface: #121820;
+      --surface2: #1a2230;
+      --border: #2a3548;
+      --text: #e6edf3;
+      --muted: #8b9cb3;
+      --accent: #14f195;
+      --accent-dim: #0a9e63;
+      --danger: #ff6b6b;
+      --warning: #ffc857;
+      --info: #58a6ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+      position: relative;
+    }
+    .brand-backdrop {
+      position: fixed;
+      inset: 0;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: min(70vw, 640px);
+      opacity: 0.12;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .risk-warning-banner {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      width: 100%;
+      text-align: center;
+      padding: 0.55rem 0.75rem;
+      font-weight: 700;
+      font-size: 0.875rem;
+      letter-spacing: 0.02em;
+      color: var(--warning);
+      background: rgba(255, 200, 87, 0.14);
+      border-bottom: 2px solid var(--warning);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    }
+    .risk-warning-banner strong {
+      font-weight: 700;
+      color: #ffd666;
+    }
+    header, .container {
+      position: relative;
+      z-index: 1;
+    }
+    .brand-logo {
+      height: 36px;
+      width: auto;
+      max-width: 120px;
+      object-fit: contain;
+      border-radius: 4px;
+      opacity: 0.9;
+    }
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    header {
+      background: linear-gradient(135deg, #121820 0%, #0d1520 100%);
+      border-bottom: 1px solid var(--border);
+      width: 100%;
+    }
+    .header-inner {
+      max-width: min(1760px, 96vw);
+      margin: 0 auto;
+      padding: 0.75rem 0.75rem;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    .header-main {
+      flex: 1 1 280px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1rem;
+      min-width: 0;
+    }
+    @media (max-width: 900px) {
+      .header-main {
+        flex: 1 1 100%;
+      }
+    }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    header h1 span { color: var(--accent); }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-running { background: rgba(20, 241, 149, 0.15); color: var(--accent); }
+    .badge-stopped { background: rgba(139, 156, 179, 0.15); color: var(--muted); }
+    .badge-dry { background: rgba(88, 166, 255, 0.15); color: var(--info); }
+    .badge-live { background: rgba(255, 107, 107, 0.15); color: var(--danger); }
+    .badge-pumpfun { background: rgba(153, 69, 255, 0.15); color: #b87fff; }
+    .badge-birdeye { background: rgba(255, 165, 0, 0.15); color: #ffb347; }
+    .badge-gmgn { background: rgba(0, 200, 150, 0.15); color: #5ee6b8; }
+    .badge-dex { background: rgba(139, 156, 179, 0.15); color: var(--muted); }
+    .badge-max-potential { background: rgba(20, 241, 149, 0.12); color: var(--accent); }
+    .badge-api-ok { background: rgba(20, 241, 149, 0.12); color: var(--accent); }
+    .badge-api-missing { background: rgba(255, 200, 87, 0.12); color: var(--warning); }
+    .scanner-sources { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.35rem; }
+    .scanner-source-row { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; }
+    .badge-configured { background: rgba(20, 241, 149, 0.15); color: var(--accent); }
+    .badge-public { background: rgba(139, 156, 179, 0.15); color: var(--muted); }
+    .badge-recommended { background: rgba(255, 200, 87, 0.15); color: var(--warning); }
+    .browser-compat-footer {
+      position: relative;
+      z-index: 1;
+      max-width: min(1760px, 96vw);
+      margin: 0 auto;
+      padding: 0.75rem 0.75rem 1.25rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+      line-height: 1.45;
+    }
+    .browser-compat-footer strong { color: var(--text); font-weight: 600; }
+    .browser-compat-footer a { color: var(--info); }
+    #browserCompatNote {
+      display: none;
+      margin-top: 0.35rem;
+      padding: 0.45rem 0.6rem;
+      border-radius: 6px;
+      background: rgba(255, 200, 87, 0.1);
+      border: 1px solid rgba(255, 200, 87, 0.25);
+      color: var(--warning);
+    }
+    .container { max-width: min(1760px, 96vw); min-width: min(1760px, 96vw); margin: 0 auto; padding: 0.75rem 0.75rem; }
+    .alert {
+      background: rgba(255, 200, 87, 0.1);
+      border: 1px solid rgba(255, 200, 87, 0.3);
+      color: var(--warning);
+      padding: 0.65rem 0.85rem;
+      border-radius: 8px;
+      margin-bottom: 0.85rem;
+      font-size: 0.875rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 0.85rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+    }
+    .card h2 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .col-3 { grid-column: span 3; }
+    .col-4 { grid-column: span 4; }
+    .col-5 { grid-column: span 5; }
+    .col-6 { grid-column: span 6; }
+    .col-8 { grid-column: span 8; }
+    .col-12 { grid-column: span 12; }
+    @media (min-width: 1280px) {
+      .card { padding: 0.9rem 1.1rem; }
+      .grid { gap: 0.9rem; }
+    }
+    @media (max-width: 1279px) and (min-width: 901px) {
+      .col-3, .col-4, .col-5 { grid-column: span 6; }
+      .col-8 { grid-column: span 12; }
+    }
+    @media (max-width: 900px) {
+      .col-3, .col-4, .col-5, .col-6, .col-8 { grid-column: span 12; }
+    }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+    input, select, textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      margin-bottom: 0.75rem;
+    }
+    input:focus, textarea:focus { outline: none; border-color: var(--accent-dim); }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    button {
+      border: none;
+      border-radius: 6px;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-warning { background: var(--warning); color: #000; }
+    .stat { font-size: 1.5rem; font-weight: 700; }
+    .stat-label { font-size: 0.75rem; color: var(--muted); }
+    .mono { font-family: "Cascadia Code", "Consolas", monospace; font-size: 0.8rem; word-break: break-all; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; }
+    .positive { color: var(--accent); }
+    .negative { color: var(--danger); }
+    .pnl-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+    .pnl-header h2 { margin: 0; }
+    .paper-session-panel.dimmed { opacity: 0.55; }
+    .paper-session-panel.dimmed .stat { color: var(--muted); }
+    .log-box {
+      background: #080b10;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      height: 280px;
+      overflow-y: auto;
+      font-family: "Cascadia Code", "Consolas", monospace;
+      font-size: 0.72rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .empty { color: var(--muted); font-style: italic; font-size: 0.875rem; }
+    .toggle-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .toggle-row input[type="checkbox"] { width: auto; margin: 0; }
+    .key-row { position: relative; }
+    .key-row button.toggle-vis {
+      position: absolute;
+      right: 8px;
+      top: 28px;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.7rem;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .hint { color: var(--muted); font-weight: 400; font-size: 0.75rem; }
+    .pnl-recent {
+      list-style: none;
+      margin-top: 0.5rem;
+      font-size: 0.8rem;
+      font-family: "Cascadia Code", "Consolas", monospace;
+    }
+    .pnl-recent li {
+      padding: 0.2rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .pnl-recent li:last-child { border-bottom: none; }
+    .pnl-card-divider {
+      margin: 0.75rem 0 0;
+      border-top: 1px solid var(--border);
+    }
+    .pnl-card-bottom {
+      padding-top: 0.75rem;
+    }
+    .bot-controls-split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 0.85rem;
+      align-items: start;
+    }
+    .bot-controls-left { min-width: 0; }
+    .bot-controls-right {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .bot-controls-right .stat-label { margin-bottom: 0.35rem; }
+    .bot-controls-split .log-box {
+      flex: 1 1 auto;
+      margin-top: 0;
+      height: auto;
+      min-height: 220px;
+      max-height: 280px;
+    }
+    @media (max-width: 900px) {
+      .bot-controls-split { grid-template-columns: 1fr; }
+      .bot-controls-split .log-box { min-height: 200px; max-height: 240px; }
+    }
+    .trade-cli-feed {
+      margin-top: 0.5rem;
+      max-height: 11rem;
+      overflow-y: auto;
+      font-size: 0.72rem;
+      font-family: "Cascadia Code", "Consolas", monospace;
+      background: #080b10;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem 0.6rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .trade-cli-feed .empty { color: var(--muted); font-style: italic; }
+    .trade-cli-feed .entry { padding: 0.15rem 0; border-bottom: 1px solid var(--border); }
+    .trade-cli-feed .entry:last-child { border-bottom: none; }
+    .trade-cli-feed .entry.buy { color: var(--info); }
+    .trade-cli-feed .entry.sell { color: var(--accent); }
+    .trade-cli-feed .entry.loss { color: var(--danger); }
+    .alert-firewall {
+      background: rgba(20, 241, 149, 0.08);
+      border: 1px solid rgba(20, 241, 149, 0.35);
+      color: var(--accent);
+    }
+    .badge-firewall { background: rgba(20, 241, 149, 0.15); color: var(--accent); }
+    .steps-panel {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+      margin-bottom: 0.85rem;
+      font-size: 0.875rem;
+    }
+    .steps-panel ol { margin: 0.5rem 0 0 1.25rem; }
+    .steps-panel li { margin: 0.25rem 0; }
+    .steps-panel li.done,
+    .steps-panel span.done { color: var(--accent); }
+    .live-checklist {
+      font-size: 0.8rem;
+      line-height: 1.6;
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    .check-ok { color: var(--accent); }
+    .check-missing { color: var(--danger); }
+    .activity-feed {
+      max-height: 5.5rem;
+      overflow-y: auto;
+      font-size: 0.75rem;
+      font-family: "Cascadia Code", "Consolas", monospace;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.5rem;
+      line-height: 1.45;
+    }
+    .activity-feed .empty { color: var(--muted); font-style: italic; }
+    .activity-feed .entry { padding: 0.1rem 0; border-bottom: 1px solid var(--border); }
+    .activity-feed .entry:last-child { border-bottom: none; }
+    .top-candidates-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 0.45rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .top-candidates-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .top-candidates-table th {
+      text-align: left;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      padding: 0.25rem 0.35rem 0.35rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-candidates-table td {
+      padding: 0.35rem 0.35rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .top-candidates-table tr:last-child td { border-bottom: none; }
+    .top-candidates-table .rank {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      width: 2rem;
+    }
+    .top-candidates-table .sym { font-weight: 600; }
+    .top-candidates-table .mom {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    .setup-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .setup-table th {
+      width: 6.5rem;
+      text-align: left;
+      vertical-align: top;
+      padding: 0.4rem 0.5rem 0.4rem 0;
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      border-bottom: 1px solid var(--border);
+    }
+    .setup-table td {
+      padding: 0.4rem 0;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .setup-table tr:last-child th,
+    .setup-table tr:last-child td { border-bottom: none; }
+    .setup-table input,
+    .setup-table select { margin-bottom: 0.35rem; }
+    .setup-table .toggle-row { margin-bottom: 0; }
+    .setup-summary {
+      font-size: 0.78rem;
+      line-height: 1.55;
+      color: var(--muted);
+      margin: 0;
+    }
+    .setup-inline {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.75rem;
+      align-items: center;
+      font-size: 0.82rem;
+    }
+    .setup-balance-display {
+      font-weight: 600;
+      font-size: 0.95rem;
+      margin-bottom: 0.35rem;
+    }
+    .setup-actions { margin-top: 0.65rem; }
+    .setup-advanced {
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+    }
+    .setup-advanced label { margin-bottom: 0.2rem; }
+    .setup-advanced input[type="text"] { margin-bottom: 0.5rem; }
+    .setup-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      font-size: 0.78rem;
+      margin: 0.35rem 0 0.25rem;
+      color: var(--muted);
+    }
+    .setup-meta strong { color: var(--text); }
+    .bot-controls-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.25rem 0.65rem;
+      font-size: 0.78rem;
+    }
+    @media (max-width: 1100px) { .bot-controls-grid { grid-template-columns: 1fr; } }
+    .compact-hint { font-size: 0.72rem; color: var(--muted); margin: 0.2rem 0 0; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+    .bot-action-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+      padding: 0.65rem 1rem;
+      margin-bottom: 0.85rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    .bot-action-bar .action-group { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    .bot-action-bar .action-meta { margin-left: auto; display: flex; flex-wrap: wrap; gap: 0.65rem 1rem; font-size: 0.78rem; color: var(--muted); align-items: center; }
+    .bot-action-bar .action-meta strong { color: var(--text); font-weight: 600; }
+    .unified-trades-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+      table-layout: fixed;
+    }
+    .unified-trades-table thead th {
+      background: var(--surface2);
+      padding: 0.55rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      font-weight: 600;
+      vertical-align: middle;
+    }
+    .unified-trades-table tbody td {
+      vertical-align: top;
+      padding: 0.65rem 0.75rem;
+      border-top: 1px solid var(--border);
+    }
+    .unified-col-left { width: 50%; border-right: 1px solid var(--border); }
+    .unified-col-right { width: 50%; }
+    .unified-pnl-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
+    .unified-positions { display: flex; flex-direction: column; gap: 0; min-height: 5rem; }
+    .unified-positions.empty { color: var(--muted); font-style: italic; font-size: 0.875rem; padding: 0.25rem 0; }
+    .unified-position-row {
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+      line-height: 1.45;
+    }
+    .unified-position-row:last-child { border-bottom: none; }
+    .unified-position-main { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.15rem; }
+    .unified-position-main .sym { font-weight: 700; font-size: 0.9rem; }
+    .unified-position-detail { color: var(--muted); font-size: 0.75rem; }
+    .unified-position-detail strong { color: var(--text); font-weight: 500; }
+    .position-card-pnl { font-weight: 700; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+    .unified-pnl-cell .pnl-stat-grid { margin-top: 0; }
+    .unified-recent-label { margin-top: 0.65rem; margin-bottom: 0.25rem; }
+    @media (max-width: 900px) {
+      .unified-trades-table thead { display: none; }
+      .unified-trades-table tbody tr { display: flex; flex-direction: column; }
+      .unified-trades-table tbody td { display: block; width: 100%; border-right: none; }
+      .unified-col-right { border-top: 1px solid var(--border); }
+    }
+    .pnl-stat-grid { display: grid; gap: 0.65rem; margin-top: 0.5rem; }
+    .pnl-stat { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; font-size: 0.9rem; }
+    .pnl-stat .stat-label { margin: 0; font-size: 0.75rem; }
+    .pnl-stat .stat-value { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .pnl-recent-scroll { max-height: 9rem; overflow-y: auto; margin-top: 0.35rem; }
+    .ladder-mark {
+      color: var(--accent);
+      font-weight: 600;
+      font-size: 0.72rem;
+      margin-left: 0.25rem;
+      white-space: nowrap;
+    }
+    .top-gainers-list {
+      list-style: none;
+      margin-top: 0.35rem;
+      font-size: 0.8rem;
+      font-family: "Cascadia Code", "Consolas", monospace;
+    }
+    .top-gainers-list li {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.5rem;
+      padding: 0.2rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-gainers-list li:last-child { border-bottom: none; }
+    .top-gainers-list .gainer-rank { color: var(--muted); min-width: 1.1rem; }
+    .top-gainers-list .gainer-sym { font-weight: 700; min-width: 3rem; }
+    .top-gainers-list .gainer-pct { color: var(--accent); font-weight: 600; min-width: 4.5rem; text-align: right; }
+    .top-gainers-list .gainer-sol { min-width: 5.5rem; text-align: right; }
+    .top-gainers-list .gainer-usd { min-width: 4rem; text-align: right; color: var(--muted); }
+    .accordion { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0; overflow: hidden; }
+    .accordion > summary {
+      cursor: pointer;
+      padding: 0.65rem 1rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      list-style: none;
+      user-select: none;
+    }
+    .accordion > summary::-webkit-details-marker { display: none; }
+    .accordion > summary::before { content: "▸ "; display: inline-block; transition: transform 0.15s; }
+    .accordion[open] > summary::before { transform: rotate(90deg); }
+    .accordion-body { padding: 0 1rem 1rem; border-top: 1px solid var(--border); }
+    .accordion-body .card { margin-top: 0.75rem; border-radius: 8px; }
+    .accordion-body > .card:first-child { margin-top: 0.75rem; }
+    .scanner-slim { display: flex; flex-wrap: wrap; gap: 0.35rem 0.6rem; font-size: 0.72rem; align-items: center; margin-top: 0.35rem; }
+    .top-candidates-slim .top-candidates-table { font-size: 0.78rem; }
+    .top-candidates-slim .top-candidates-table th,
+    .top-candidates-slim .top-candidates-table td { padding: 0.25rem 0.3rem; }
+    .setup-table .setup-rules { font-size: 0.75rem; line-height: 1.5; color: var(--muted); }
+    .setup-table .setup-rules strong { color: var(--text); font-weight: 500; }
+    #quickStartPanel { display: none; }
+  </style>
+</head>
+<body>
+  <div class="risk-warning-banner" role="alert" aria-live="polite">
+    <strong>Momentum Trading Crypto is risky, trade at your own risk, be responsible for your own trades</strong>
+  </div>
+  <div id="brandBackdrop" class="brand-backdrop" aria-hidden="true"></div>
+  <header>
+    <div class="header-inner">
+    <div class="header-main">
+      <div class="header-title">
+        <img id="brandLogo" class="brand-logo" alt="" width="36" height="36" hidden>
+        <h1>Solana <span>Mover</span> Trading Bot</h1>
+      </div>
+      <div class="row">
+        <span id="statusBadge" class="badge badge-stopped">Idle</span>
+        <span id="modeBadge" class="badge badge-dry">Paper Trade</span>
+        <span id="maxPotentialBadge" class="badge badge-max-potential" style="display:none">Max Potential</span>
+        <span id="lastSynced" class="hint" title="Server time from last status poll">Last synced: —</span>
+      </div>
+    </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="alert alert-firewall" id="firewallBanner" style="margin-bottom:0.5rem;padding:0.5rem 0.75rem">
+      <strong>Localhost only</strong> — do not expose this port. Keys stay in server memory, never logged.
+      <span id="firewallDetail" class="hint"></span>
+    </div>
+
+    <div class="steps-panel" id="quickStartPanel" style="margin-bottom:0.65rem;padding:0.5rem 0.75rem;font-size:0.8rem">
+      <strong>Quick start:</strong>
+      <span id="stepWallet" class="hint">wallet (live)</span> →
+      <span id="stepPaper" class="hint">paper on</span> →
+      <span id="stepStart" class="hint">start bot</span>
+    </div>
+
+    <div class="bot-action-bar">
+      <div class="action-group">
+        <button type="button" class="btn-primary" id="btnStart">Start Bot</button>
+        <button type="button" class="btn-danger" id="btnStop" disabled>Stop</button>
+        <button type="button" class="btn-warning" id="btnForceReset" title="Clear stale running state">Reset</button>
+      </div>
+      <div class="action-meta">
+        <span><span class="stat-label">Activity</span> <strong id="activityStatus">Idle</strong></span>
+        <span><span class="stat-label">Last scan</span> <strong id="lastScan">—</strong></span>
+        <span><span class="stat-label">Action</span> <strong id="lastAction" style="font-size:0.8rem">—</strong></span>
+      </div>
+    </div>
+    <div id="lastActionTime" class="compact-hint" style="margin:-0.5rem 0 0.65rem 0.25rem">—</div>
+
+    <div class="grid">
+      <!-- Wallet & Strategy -->
+      <div class="card col-8" id="tradingSetupCard">
+        <h2>Wallet &amp; Strategy</h2>
+        <table class="setup-table">
+          <tbody>
+            <tr>
+              <th>Mode</th>
+              <td colspan="2">
+                <div class="toggle-row">
+                  <input type="checkbox" id="paperTradeToggle" checked>
+                  <label for="paperTradeToggle" style="margin:0">Paper Trade</label>
+                  <span class="compact-hint">real prices, no swaps</span>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <th>Wallet Key</th>
+              <td colspan="2">
+                <div class="key-row">
+                  <label for="privateKey" class="visually-hidden">Private Key</label>
+                  <input type="password" id="privateKey" placeholder="Private key (base58 or JSON) — live only" autocomplete="off">
+                  <button type="button" class="toggle-vis" id="toggleKeyVis">Show</button>
+                </div>
+                <div class="row" style="margin-top:0.35rem">
+                  <button type="button" class="btn-primary" id="btnSetWallet">Set Wallet</button>
+                  <button type="button" class="btn-warning" id="btnSaveEnv">Save to .env</button>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <th>Address</th>
+              <td colspan="2"><span class="mono" id="walletAddress">—</span></td>
+            </tr>
+            <tr>
+              <th id="walletBalanceLabel">Paper Balance</th>
+              <td>
+                <div class="setup-balance-display" id="walletBalance">—</div>
+                <div class="compact-hint" id="paperStartingBalanceLabel">Configured: <span id="paperStartingBalance">—</span></div>
+              </td>
+              <td>
+                <div id="paperBalancePanel">
+                  <div class="setup-inline" style="margin-top:0.25rem">
+                    <input type="number" id="paperBalanceInput" min="0.1" max="5" step="0.01" value="0.75" aria-label="Paper balance SOL" style="width:5.5rem">
+                    <button class="btn-secondary" type="button" id="btnSetPaperBalance">Set</button>
+                    <button class="btn-secondary" type="button" id="btnResetPaperBalance">Reset</button>
+                  </div>
+                  <p class="compact-hint">0.1–5 SOL · resets when you Stop Bot</p>
+                </div>
+                <div id="liveTradeablePanel" style="display:none">
+                  <div class="setup-inline" style="margin-top:0.25rem">
+                    <input type="number" id="liveTradeableInput" min="0.75" max="10" step="0.01" value="0.75" aria-label="Tradeable cap SOL" style="width:5.5rem">
+                    <button class="btn-secondary" type="button" id="btnSetLiveTradeable">Set Cap</button>
+                    <button class="btn-secondary" type="button" id="btnResetLiveTradeable">Reset</button>
+                  </div>
+                  <p class="compact-hint">Cap 0.75–10 SOL</p>
+                </div>
+              </td>
+            </tr>
+            <tr style="display:none" id="tradeableBalanceRow">
+              <th>Tradeable</th>
+              <td colspan="2"><span id="tradeableBalance">—</span></td>
+            </tr>
+            <tr>
+              <th>Est. Fees</th>
+              <td colspan="2">
+                <span id="roundTripFeesDisplay">—</span>
+                <span class="compact-hint" id="feeSourceHint">chain + DEX round-trip</span>
+              </td>
+            </tr>
+            <tr>
+              <th>Est. Ladder Net</th>
+              <td colspan="2">
+                <strong id="roundTripNetDisplay">—</strong>
+                <span class="compact-hint">after chain + DEX fees</span>
+              </td>
+            </tr>
+            <tr>
+              <th>Trade Size</th>
+              <td>
+                <select id="tradeSize" aria-label="Trade size SOL" style="max-width:10rem">
+                  <option value="0.05">0.05 SOL</option>
+                  <option value="0.07">0.07 SOL</option>
+                  <option value="0.10" selected>0.10 SOL</option>
+                  <option value="0.20">0.20 SOL</option>
+                  <option value="0.30">0.30 SOL</option>
+                  <option value="0.50">0.50 SOL</option>
+                  <option value="1.0">1.00 SOL</option>
+                </select>
+                <p class="compact-hint" id="tradeSizeCapHint" style="display:none" aria-hidden="true">Sized to balance cap and position limits.</p>
+              </td>
+              <td class="compact-hint" id="tradeSizeComputedHint"><span id="tradeSizeWalletLabel">paper wallet</span> · Computed <strong id="computedTradeSize">—</strong></td>
+            </tr>
+            <tr>
+              <th>Entry</th>
+              <td colspan="2">
+                <select id="entryPct" aria-label="Entry momentum" style="max-width:10rem">
+                  <option value="0.0025">0.25%</option>
+                  <option value="0.005">0.50%</option>
+                  <option value="0.0075" selected>0.75%</option>
+                </select>
+                <span class="compact-hint" id="entryDefaultHint"></span>
+              </td>
+            </tr>
+            <tr>
+              <th>Stop</th>
+              <td colspan="2">
+                <select id="slPct" aria-label="Stop loss" style="max-width:10rem">
+                  <option value="0.015" selected>1.5%</option>
+                  <option value="0.02">2.0%</option>
+                  <option value="0.03">3.0%</option>
+                  <option value="0.05">5.0%</option>
+                </select>
+                <span class="compact-hint" id="slDefaultHint"></span>
+              </td>
+            </tr>
+            <tr>
+              <th>Rules</th>
+              <td colspan="2" class="setup-rules" id="setupSummaryLine">Loading…</td>
+            </tr>
+            <tr id="setupNotesRow">
+              <th>Notes</th>
+              <td colspan="2" class="setup-rules compact-hint">
+                <span id="winPresetHint">Best Win = strict · Steady Trade = recommended · Balanced Win = more trades</span>
+                · <span id="bookmarkHint">—</span>
+              </td>
+            </tr>
+            <tr>
+              <th>RPC</th>
+              <td colspan="2">
+                <input type="text" id="rpcUrl" placeholder="https://..." style="margin-bottom:0">
+              </td>
+            </tr>
+            <tr>
+              <th>Actions</th>
+              <td colspan="2">
+                <div class="row" style="margin:0">
+                  <button class="btn-secondary" type="button" id="btnBestWin" title="Best Win: strict filters — fewer trades, higher quality (0.75% entry, 2% scanner, $75k volume)">Best Win</button>
+                  <button class="btn-secondary" type="button" id="btnSteadyTrade" title="Steady Trade: ~3–6 trades/hr — balanced entry with loss protections (0.50% entry, 1.5% scanner, $50k volume, 120m cooldown)">Steady Trade</button>
+                  <button class="btn-secondary" type="button" id="btnBalancedWin" title="Balanced Win: more trades, still fee-aware (0.50% entry, 1.5% scanner, $50k volume)">Balanced Win</button>
+                  <button class="btn-secondary" type="button" id="btnWinPreset" title="Alias for Best Win" style="display:none" aria-hidden="true">Apply win preset</button>
+                  <button class="btn-secondary" type="button" id="btnTightLosses" title="Stricter min net win and 60m loss cooldown" style="display:none" aria-hidden="true">Tight losses</button>
+                  <button class="btn-secondary" type="button" id="btnRevertBookmark" title="Restore saved pre-Best-Win bookmark">Revert to bookmark</button>
+                  <button class="btn-secondary" type="button" id="btnResetSpreads">Reset Defaults</button>
+                  <button class="btn-secondary" id="btnApplyConfig">Apply Config</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div id="fundingWarning" class="negative compact-hint" style="display:none"></div>
+        <div id="liveModeWarning" class="negative compact-hint" style="display:none"></div>
+        <div id="liveChecklist" style="display:none" aria-hidden="true">
+          <div id="liveCheckWallet"></div>
+          <div id="liveCheckFunding"></div>
+          <div id="liveCheckPaper"></div>
+        </div>
+        <div class="setup-meta" style="display:none" aria-hidden="true">
+          <span id="minFunding">—</span>
+          <strong id="maxOpenPositions">1</strong>
+          <strong id="reentryDipPct">10%</strong>
+          <strong id="poolLiquidityMin">$15k</strong>
+        </div>
+        <div id="strategyProfitPanel" style="display:none" aria-hidden="true">
+          <span id="profitFirstNote"></span>
+          <span id="earlyExitNote"></span>
+          <span id="instantExitNote"></span>
+          <span id="weakenExitNote"></span>
+          <strong id="expectedLadderNet"></strong>
+          <strong id="estimatedFees"></strong>
+          <strong id="expectedLadderGross"></strong>
+        </div>
+        <span id="tpDefaultHint" style="display:none"></span>
+        <span id="tpLadderDisplay" style="display:none"></span>
+        <span id="maxPerTrade" style="display:none" aria-hidden="true">—</span>
+      </div>
+
+      <!-- Bot Controls + Log Stream -->
+      <div class="card col-4" id="botControlsCard">
+        <h2>Bot Controls</h2>
+        <div class="bot-controls-split">
+          <div class="bot-controls-left">
+            <div class="toggle-row" style="margin-bottom:0.35rem">
+              <input type="checkbox" id="includePumpfunToggle" checked>
+              <label for="includePumpfunToggle" style="margin:0">Pump.fun</label>
+            </div>
+            <div class="toggle-row" style="margin-bottom:0.35rem">
+              <input type="checkbox" id="includeBirdeyeToggle" checked>
+              <label for="includeBirdeyeToggle" style="margin:0">Birdeye</label>
+            </div>
+            <div class="toggle-row" style="margin-bottom:0.35rem">
+              <input type="checkbox" id="includeGmgnToggle" checked>
+              <label for="includeGmgnToggle" style="margin:0">GMGN.ai</label>
+            </div>
+            <div class="scanner-slim">
+              <span>Dex <span id="apiKeyDex" class="badge badge-public">—</span></span>
+              <span>Pump <span id="apiKeyPump" class="badge badge-public">—</span></span>
+              <span>Bird <span id="apiKeyBird" class="badge badge-recommended">—</span></span>
+              <span>GMGN <span id="apiKeyGmgn" class="badge badge-public">—</span></span>
+            </div>
+            <div class="scanner-slim" style="margin-top:0.25rem">
+              <span class="badge badge-dex">Dex</span> <span id="dexCount">—</span> <span id="dexHealth" class="badge badge-public" style="font-size:0.65rem">—</span>
+              <span class="badge badge-dex">Jup</span> <span id="jupHealth" class="badge badge-public" style="font-size:0.65rem">—</span>
+              <span class="badge badge-dex" title="SOL macro trend gate for memecoin entries">SOL</span>
+              <span id="solTrendBadge" class="badge badge-public" style="font-size:0.65rem">—</span>
+              <span class="badge badge-dex" title="Adaptive hot/neutral/cold entry gates">Regime</span>
+              <span id="marketRegimeBadge" class="badge badge-public" style="font-size:0.65rem">—</span>
+              <span class="badge badge-pumpfun">Pump</span> <span id="pumpfunCount">—</span> <span id="pumpfunHealth" class="badge badge-public" style="font-size:0.65rem">—</span>
+              <span class="badge badge-birdeye">Bird</span> <span id="birdeyeCount">—</span>
+              <span class="badge badge-gmgn">GMGN</span> <span id="gmgnCount">—</span> <span id="gmgnHealth" class="badge badge-public" style="font-size:0.65rem">—</span>
+              <span id="watchlistMintsContainer"></span>
+            </div>
+            <div id="scannerZeroWarning" class="alert" style="display:none;margin-top:0.35rem;padding:0.4rem 0.6rem;font-size:0.75rem"></div>
+            <div class="setup-inline" style="margin-top:0.35rem;font-size:0.72rem">
+              <span id="transferGuardStatus"><span class="badge badge-firewall">Guard</span></span>
+              <span id="firewallStatus"><span class="badge badge-firewall">FW</span></span>
+              <span id="botError" class="negative">—</span>
+            </div>
+            <details class="accordion" style="margin-top:0.5rem;border:none;background:transparent">
+              <summary style="padding:0.35rem 0;font-size:0.72rem">More controls</summary>
+              <div style="padding-top:0.35rem">
+                <div class="bot-controls-grid">
+                  <div><span class="stat-label">Server</span> <span id="serverUrl" class="mono" style="font-size:0.75rem">—</span></div>
+                </div>
+                <div class="stat-label" style="margin-top:0.35rem">Task log</div>
+                <div class="activity-feed" id="activityFeed" style="max-height:4rem"><div class="empty">No tasks yet</div></div>
+              </div>
+            </details>
+          </div>
+          <div class="bot-controls-right">
+            <div class="stat-label">Log Stream</div>
+            <div class="log-box" id="logBox" role="log" aria-live="polite" aria-relevant="additions">Waiting for logs...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Unified: Open Trades + Net Profit (single table) -->
+      <div class="card col-12" id="unifiedTradesCard">
+        <table class="unified-trades-table">
+          <thead>
+            <tr>
+              <th class="unified-col-left">Open Trades (<span id="openTradesCount">0</span><span id="positionsCount" class="hint" hidden aria-hidden="true">0/1</span>)</th>
+              <th class="unified-col-right">
+                <div class="unified-pnl-head">
+                  <span>Net Profit (after fees)</span>
+                  <span id="runningPnlModeBadge" class="badge badge-dry">PAPER</span>
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="unified-col-left">
+                <div id="positionPanel" class="unified-positions empty">No open positions</div>
+              </td>
+              <td class="unified-col-right unified-pnl-cell">
+                <div class="pnl-stat-grid">
+                  <div class="pnl-stat">
+                    <span class="stat-label">Total Profit</span>
+                    <span class="stat-value positive" id="runningPnlProfit">—</span>
+                  </div>
+                  <div class="pnl-stat">
+                    <span class="stat-label">Total Losses</span>
+                    <span class="stat-value negative" id="runningPnlLosses">—</span>
+                  </div>
+                  <div class="pnl-stat">
+                    <span class="stat-label">Net</span>
+                    <span class="stat-value" id="runningPnlNet">—</span>
+                  </div>
+                  <div class="pnl-stat">
+                    <span class="stat-label">Trades</span>
+                    <span class="stat-value" id="runningPnlTradeCount">0</span>
+                  </div>
+                </div>
+                <div class="unified-recent-label stat-label">Recent exits:</div>
+                <div class="pnl-recent-scroll">
+                  <ul id="runningPnlRecent" class="pnl-recent">
+                    <li class="empty">No sells yet</li>
+                  </ul>
+                </div>
+                <div class="unified-recent-label stat-label">Top Gainers (your trades)</div>
+                <ul id="topGainersList" class="top-gainers-list">
+                  <li class="empty">—</li>
+                </ul>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div id="runningPnlTotals" style="display:none" aria-hidden="true">—</div>
+      </div>
+
+      <!-- Advanced (collapsed) -->
+      <details class="col-12 accordion" id="advancedSection">
+        <summary>Advanced — market movers, trade history, paper session, tax export</summary>
+        <div class="accordion-body">
+          <div class="card top-candidates-slim" id="topCandidatesSection">
+            <h2>Top Candidates</h2>
+            <div style="overflow-x:auto">
+              <table class="top-candidates-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Symbol</th>
+                    <th style="text-align:right">Mom</th>
+                    <th>Src</th>
+                  </tr>
+                </thead>
+                <tbody id="topCandidatesBody">
+                  <tr><td colspan="4" class="empty">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card" id="moversCard">
+            <h2>Market Movers</h2>
+            <div style="overflow-x:auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Source</th>
+                    <th>Price</th>
+                    <th>Momentum</th>
+                    <th>Liq</th>
+                    <th>Vol 24h</th>
+                  </tr>
+                </thead>
+                <tbody id="moversBody">
+                  <tr><td colspan="6" class="empty">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Recent Trades</h2>
+            <div style="overflow-x:auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Action</th>
+                    <th>Symbol</th>
+                    <th>SOL In</th>
+                    <th>SOL Out</th>
+                    <th>Tokens / USD</th>
+                    <th>PnL SOL</th>
+                    <th>PnL %</th>
+                  </tr>
+                </thead>
+                <tbody id="tradesBody">
+                  <tr><td colspan="8" class="empty">No trades yet</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card paper-session-panel" id="paperSessionPanel">
+            <div class="pnl-header">
+              <h2>Paper Session — 24h Test</h2>
+              <span id="paperSessionBadge" class="badge badge-dry">PAPER</span>
+            </div>
+            <p class="compact-hint" style="margin-bottom:0.5rem">24h paper test — resets on new session. Not in live tax records.</p>
+            <div class="row" style="margin-bottom:0.75rem; flex-wrap:wrap; gap:1rem">
+              <div>
+                <div class="stat-label">Session Status</div>
+                <div class="stat" id="paperSessionStatus" style="font-size:1.1rem">Not started</div>
+              </div>
+              <div>
+                <div class="stat-label">Time Remaining</div>
+                <div class="stat" id="paperSessionRemaining">—</div>
+              </div>
+              <div>
+                <div class="stat-label">Current Session</div>
+                <div class="stat" id="paperSessionTotals" style="font-size:0.95rem">—</div>
+              </div>
+              <div>
+                <div class="stat-label">Trade Count</div>
+                <div class="stat" id="paperSessionTradeCount">0</div>
+              </div>
+            </div>
+            <div class="row" style="margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem">
+              <button class="btn-secondary" id="btnExportPaperCsv" type="button" disabled>Download Paper Session CSV</button>
+            </div>
+            <div>
+              <h3 style="font-size:0.95rem; margin:0 0 0.5rem">Recent Paper Trades</h3>
+              <div style="overflow-x:auto">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>Symbol</th>
+                      <th>Action</th>
+                      <th>PnL SOL</th>
+                      <th>Contract</th>
+                    </tr>
+                  </thead>
+                  <tbody id="paperSessionTradesBody">
+                    <tr><td colspan="5" class="empty">No paper trades yet</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Tax Bookkeeping (Live Only)</h2>
+            <p class="compact-hint" style="margin-bottom:0.5rem">One row per live sell. Paper trades excluded.</p>
+            <div class="row" style="margin-bottom:0.75rem; flex-wrap:wrap; gap:1rem">
+              <div>
+                <div class="stat-label">Tax Records</div>
+                <div class="stat" id="taxRecordCount">0</div>
+              </div>
+              <div>
+                <div class="stat-label">All-Time Totals</div>
+                <div class="stat" id="taxTotals" style="font-size:0.95rem">—</div>
+              </div>
+              <div>
+                <div class="stat-label">Current Month</div>
+                <div class="stat" id="taxCurrentMonth" style="font-size:0.95rem">—</div>
+              </div>
+              <div>
+                <div class="stat-label">Current Year</div>
+                <div class="stat" id="taxCurrentYear" style="font-size:0.95rem">—</div>
+              </div>
+            </div>
+            <div class="row" style="margin-bottom:0.75rem; flex-wrap:wrap; gap:0.5rem">
+              <button class="btn-secondary" id="btnExportTaxCsv" type="button">Download CSV (Excel)</button>
+              <button class="btn-secondary" id="btnExportTaxXlsx" type="button">Download Excel</button>
+              <button class="btn-secondary" id="btnExportMonthlyCsv" type="button">Download Monthly CSV</button>
+              <button class="btn-secondary" id="btnExportYearlyCsv" type="button">Download Yearly CSV</button>
+            </div>
+            <div class="row" style="gap:1rem; flex-wrap:wrap">
+              <div style="flex:1; min-width:280px">
+                <h3 style="font-size:0.95rem; margin:0 0 0.5rem">Recent Trades</h3>
+                <div style="overflow-x:auto">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Symbol</th>
+                        <th>Action</th>
+                        <th>PnL SOL</th>
+                        <th>Contract</th>
+                      </tr>
+                    </thead>
+                    <tbody id="taxPreviewBody">
+                      <tr><td colspan="5" class="empty">No live tax records yet</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div style="flex:1; min-width:280px">
+                <h3 style="font-size:0.95rem; margin:0 0 0.5rem">Monthly Summary (last 12)</h3>
+                <div style="overflow-x:auto">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Year</th>
+                        <th>Month</th>
+                        <th>Profit</th>
+                        <th>Losses</th>
+                        <th>Net</th>
+                        <th>Trades</th>
+                      </tr>
+                    </thead>
+                    <tbody id="taxMonthlyBody">
+                      <tr><td colspan="6" class="empty">No monthly data yet</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div style="flex:1; min-width:240px">
+                <h3 style="font-size:0.95rem; margin:0 0 0.5rem">Yearly Summary</h3>
+                <div style="overflow-x:auto">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Year</th>
+                        <th>Profit</th>
+                        <th>Losses</th>
+                        <th>Net</th>
+                        <th>Trades</th>
+                      </tr>
+                    </thead>
+                    <tbody id="taxYearlyBody">
+                      <tr><td colspan="5" class="empty">No yearly data yet</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <footer class="browser-compat-footer" id="browserCompatFooter">
+    <strong>Browser support:</strong> Chrome, Firefox, Safari, Edge, and Brave (Chromium).
+    Same-origin only — all API calls go to this server at <code>127.0.0.1</code>.
+    <strong>Firefox users:</strong> if Start Bot does nothing, hard-refresh with Ctrl+Shift+R (clears cached script).
+    <strong>Brave users:</strong> if buttons do not respond, open the Brave Shields icon in the address bar and
+    set Shields <em>Down</em> for <code>127.0.0.1</code>, or add localhost under
+    <code>brave://settings/shields</code> → Shields down for listed sites. Then hard-refresh with Ctrl+Shift+R.
+  </footer>
+  <div id="browserCompatNote" role="status" aria-live="polite"></div>
+
+  <script>
+    const API = "";
+    let pollTimer = null;
+    let taxPreviewTimer = null;
+    let botSessionTimer = null;
+    const TAX_PREVIEW_POLL_MS = 30000;
+    let serverTimeOffsetMs = 0;
+    let cachedServerUrl = null;
+    let prevBotStatus = null;
+    let prevPaperSessionStatus = null;
+    let seenTradeExitKeys = new Set();
+    let activityEntries = [];
+    let taskDetectionReady = false;
+    const MAX_ACTIVITY_ENTRIES = 30;
+
+    /** Null-safe default (works without ?? in older engines). */
+    function def(v, fallback) {
+      return v !== null && v !== undefined ? v : fallback;
+    }
+
+    function elText(id, fallback) {
+      const el = document.getElementById(id);
+      return el && el.textContent ? el.textContent : (fallback || "");
+    }
+
+    function showBrowserCompatNote(message) {
+      const el = document.getElementById("browserCompatNote");
+      if (!el) return;
+      el.textContent = message;
+      el.style.display = "block";
+    }
+
+    function isFirefox() {
+      return /Firefox\//i.test(navigator.userAgent || "");
+    }
+
+    function bindClick(id, handler) {
+      try {
+        if (typeof id === "function") {
+          console.error("bindClick: missing button id — use bindClick(\"btnId\", handler). Click handler not bound.");
+          return;
+        }
+        if (typeof handler !== "function") {
+          console.error("bindClick: missing handler for button:", id);
+          return;
+        }
+        const el = document.getElementById(id);
+        if (!el) {
+          console.warn("Missing button:", id);
+          return;
+        }
+        if (el.tagName === "BUTTON" && (!el.getAttribute("type") || el.getAttribute("type") === "submit")) {
+          el.setAttribute("type", "button");
+        }
+        el.addEventListener("click", function (ev) {
+          try {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            if (ev && ev.stopPropagation) ev.stopPropagation();
+          } catch (_) { /* ignore */ }
+          return handler.call(el, ev);
+        });
+      } catch (e) {
+        console.error("Failed to bind click:", id, e);
+      }
+    }
+
+    function bindChange(id, handler) {
+      try {
+        const el = document.getElementById(id);
+        if (!el) {
+          console.warn("Missing control:", id);
+          return;
+        }
+        el.addEventListener("change", handler);
+      } catch (e) {
+        console.error("Failed to bind change:", id, e);
+      }
+    }
+
+    /** Update bookmark hint + Revert button from /api/config config_bookmark payload. */
+    function updateBookmarkHint(bookmark) {
+      const el = document.getElementById("bookmarkHint");
+      const btn = document.getElementById("btnRevertBookmark");
+      if (!el || !btn) return;
+      if (!bookmark || !bookmark.exists) {
+        el.textContent = "no bookmark saved";
+        btn.disabled = true;
+        btn.title = "No bookmark saved yet";
+        if (typeof lastStrategyCfg !== "undefined" && lastStrategyCfg) {
+          updateSetupSummaryLine(lastStrategyCfg);
+        }
+        return;
+      }
+      btn.disabled = false;
+      const label = bookmark.label || "bookmark";
+      el.textContent = "bookmark: " + label;
+      btn.title = "Restore " + label + " trading defaults";
+      if (typeof lastStrategyCfg !== "undefined" && lastStrategyCfg) {
+        updateSetupSummaryLine(lastStrategyCfg);
+      }
+    }
+    window.updateBookmarkHint = updateBookmarkHint;
+
+    function resolveServerInfo(s) {
+      if (!s) return null;
+      if (s.server && s.server.url) return s.server;
+      if (s.server_url) {
+        return {
+          host: s.server_host || "127.0.0.1",
+          port: s.server_port || 5000,
+          url: s.server_url,
+        };
+      }
+      return null;
+    }
+
+    function serverDisplayUrl(s) {
+      const info = resolveServerInfo(s);
+      if (!info) return cachedServerUrl;
+      cachedServerUrl = info.url;
+      return info.url;
+    }
+
+    function serverSuffix(s) {
+      const url = serverDisplayUrl(s);
+      return url ? " — " + url : "";
+    }
+
+    function updateServerUI(s) {
+      const el = document.getElementById("serverUrl");
+      if (!el) return;
+      const info = resolveServerInfo(s);
+      if (!info) {
+        el.textContent = cachedServerUrl || "—";
+        return;
+      }
+      cachedServerUrl = info.url;
+      let text = info.url;
+      if (info.lan_url && info.lan_url !== info.url) {
+        text += " (LAN: " + info.lan_url + ")";
+      }
+      el.textContent = text;
+      el.title = "Bind: " + (info.bind_host || info.host) + ":" + info.port;
+    }
+
+    function formatTradeCliLine(t) {
+      if (t.cli_line) return t.cli_line;
+      const paper = (t.paper_trade || t.dry_run) ? " (paper)" : "";
+      if (t.action === "buy") {
+        const solIn = t.sol_in != null ? t.sol_in : t.size_sol;
+        const tokens = t.token_amount != null ? fmtTokens(t.token_amount) : "—";
+        const price = t.entry_price != null ? "$" + Number(t.entry_price).toFixed(8) : "";
+        return "BUY " + (t.symbol || "?") + " " + fmtSol(solIn) + " → " + tokens + " tokens @ " + price + paper;
+      }
+      const action = t.action === "sell_partial"
+        ? "SELL_PARTIAL L" + (t.tp_level || "?")
+        : (t.action || "sell").toUpperCase();
+      const pnlSol = t.net_pnl_sol != null ? t.net_pnl_sol : t.pnl_sol;
+      const pnlPct = t.pnl_pct;
+      let line = action + " " + (t.symbol || "?");
+      if (t.sol_out != null) line += " " + fmtSol(t.sol_out) + " SOL out";
+      if (pnlSol != null) {
+        const sign = pnlSol >= 0 ? "+" : "";
+        line += " " + sign + fmtSol(pnlSol) + " net";
+      }
+      if (pnlPct != null) {
+        const sign = pnlPct >= 0 ? "+" : "";
+        line += " (" + sign + (pnlPct * 100).toFixed(2) + "%)";
+      }
+      if (t.reason) line += " — " + t.reason;
+      return line + paper;
+    }
+
+    function tradeCliEntryClass(t) {
+      if (t.action === "buy") return "buy";
+      const pnl = t.net_pnl_sol != null ? t.net_pnl_sol : t.pnl_sol;
+      if (pnl != null && pnl < 0) return "loss";
+      return "sell";
+    }
+
+    function logActivity(message, s) {
+      const suffix = serverSuffix(s);
+      const text = message + suffix;
+      const ts = new Date().toLocaleTimeString();
+      activityEntries.unshift({ ts, text });
+      if (activityEntries.length > MAX_ACTIVITY_ENTRIES) {
+        activityEntries.length = MAX_ACTIVITY_ENTRIES;
+      }
+      const feed = document.getElementById("activityFeed");
+      if (!feed) return;
+      feed.innerHTML = activityEntries.map((e) =>
+        '<div class="entry"><span class="hint">' + e.ts + '</span> ' + e.text + "</div>"
+      ).join("");
+    }
+
+    function detectTaskCompletions(s) {
+      const recent = (s.running_pnl || {}).recent_trades || [];
+      recent.forEach((t) => {
+        const key = [t.symbol || "", t.pnl_sol ?? "", t.label || "", t.timestamp || ""].join("|");
+        if (!taskDetectionReady) {
+          seenTradeExitKeys.add(key);
+          return;
+        }
+        if (seenTradeExitKeys.has(key)) return;
+        seenTradeExitKeys.add(key);
+        const label = t.label || "";
+        if (/sell|exit|closed|stop|tp|profit|loss/i.test(label)) {
+          logActivity(label, s);
+        }
+      });
+
+      if (!taskDetectionReady) {
+        prevBotStatus = s.status;
+        prevPaperSessionStatus = s.paper_session_status ||
+          (s.paper_session_active ? "active" : (s.paper_session_started_at ? "ended" : "not_started"));
+        taskDetectionReady = true;
+        return;
+      }
+
+      const activeStates = ["running", "starting", "stopping"];
+      if (prevBotStatus !== null) {
+        if (prevBotStatus !== "running" && s.status === "running") {
+          logActivity("Bot started", s);
+        }
+        if (activeStates.includes(prevBotStatus) && s.status === "stopped") {
+          logActivity("Bot stopped", s);
+        }
+      }
+
+      const paperStatus = s.paper_session_status ||
+        (s.paper_session_active ? "active" : (s.paper_session_started_at ? "ended" : "not_started"));
+      if (prevPaperSessionStatus === "active" && paperStatus === "ended") {
+        const reason = s.paper_stop_reason ? " (" + s.paper_stop_reason.replace(/_/g, " ") + ")" : "";
+        logActivity("Paper session ended" + reason, s);
+      }
+
+      prevBotStatus = s.status;
+      prevPaperSessionStatus = paperStatus;
+    }
+
+    function syncServerClock(serverUnix) {
+      if (serverUnix != null && Number.isFinite(serverUnix)) {
+        serverTimeOffsetMs = Date.now() - serverUnix * 1000;
+      }
+    }
+
+    function serverNowMs() {
+      return Date.now() - serverTimeOffsetMs;
+    }
+
+    function updateLastSynced(s) {
+      const el = document.getElementById("lastSynced");
+      if (!el) return;
+      const iso = s.last_updated || s.server_time || s.timestamp;
+      const url = serverDisplayUrl(s);
+      let text = "Last synced: ";
+      if (iso) {
+        text += fmtTime(iso);
+        el.title = "Server UTC: " + iso;
+      } else {
+        text += "—";
+      }
+      if (url) {
+        text += " @ " + url;
+        el.title = (el.title || "") + (el.title ? "\n" : "") + url;
+      }
+      if (s.project_root) {
+        el.title = (el.title || "") + (el.title ? "\n" : "") + "Project: " + s.project_root;
+      }
+      el.textContent = text;
+    }
+
+    async function applyBranding() {
+      try {
+        const branding = await fetch(API + "/api/branding", { cache: "no-store", headers: { "Cache-Control": "no-cache" } }).then(r => r.json());
+        const backdrop = document.getElementById("brandBackdrop");
+        backdrop.style.backgroundImage = `url(${branding.backdrop_url})`;
+        const logo = document.getElementById("brandLogo");
+        logo.src = branding.backdrop_url;
+        logo.alt = branding.name;
+        logo.hidden = false;
+        document.getElementById("favicon").href = branding.favicon_url + "?v=" + Date.now();
+      } catch (e) {
+        console.warn("Branding load failed:", e);
+      }
+    }
+    let spreadDefaults = {
+      trade_size_sol: 0.10,
+      entry_momentum_pct: 0.0075,
+      take_profit_levels: [],
+      take_profit_portions: [],
+      instant_exit_3pct: 0.0325,
+      instant_profit_exit_pct: 0.05,
+      stop_loss_pct: 0.015,
+      loss_reentry_cooldown_minutes: 90,
+      loss_reentry_repeat_cooldown_minutes: 180,
+      wbtc_stop_loss_pct: 0.02,
+      non_watchlist_min_volume_24h_usd: 40000,
+      gmgn_min_liquidity_floor_usd: 20000,
+      target_net_profit_sol: 0.0155,
+    };
+    let configInitialized = false;
+    let lastStrategyCfg = null;
+    let stopLossTouched = false;
+    let tradeSizeTouched = false;
+    let entryMomentumTouched = false;
+    let minFundSol = 0.75;
+    let minFundWaiverActive = false;
+    let paperStartingBalanceSol = 0.75;
+    let paperRunningBalance = null;
+    let minPaperBalanceSol = 0.1;
+    let maxPaperBalanceSol = 5.0;
+    let liveTradeableBalanceSol = 0.75;
+    let minLiveTradeableBalanceSol = 0.75;
+    let maxLiveTradeableBalanceSol = 10.0;
+    let walletBalanceSol = null;
+    let backendMaxWalletTradePct = 0.75;
+    let minSolReserve = 0.02;
+    let maxPositionSol = 0.5;
+    let currentBalance = null;
+    let startInFlight = false;
+    let stopInFlight = false;
+    let lastBotStatus = { status: "stopped", running: false, can_start: true };
+
+    async function api(path, opts) {
+      opts = opts || {};
+      const sep = path.indexOf("?") >= 0 ? "&" : "?";
+      const url = API + path + sep + "_=" + Date.now();
+      const fetchOpts = {
+        method: opts.method || "GET",
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
+        cache: "no-store",
+        credentials: "same-origin",
+      };
+      if (opts.body != null) fetchOpts.body = opts.body;
+      let res;
+      try {
+        res = await fetch(url, fetchOpts);
+      } catch (netErr) {
+        const err = new Error(
+          "Network error — is the server running? Hard-refresh (Ctrl+Shift+R). " +
+          "Brave: disable Shields for 127.0.0.1."
+        );
+        err.code = "network_error";
+        throw err;
+      }
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {
+        data = {};
+      }
+      if (!res.ok) {
+        const err = new Error(data.error || res.statusText || "Request failed");
+        err.code = data.error_code || null;
+        throw err;
+      }
+      return data;
+    }
+
+    function formatStartError(err) {
+      const msg = err.message || String(err);
+      if (err.code === "no_wallet") {
+        return "Live trading requires a wallet. Set your private key first, or enable Paper Trade.";
+      }
+      if (err.code === "insufficient_funds") {
+        return msg;
+      }
+      if (err.code === "already_running") {
+        return msg + "\n\nIf the bot is not actually trading, click Stop (or Force Reset) to clear stale state, then Start again.";
+      }
+      if (/already running/i.test(msg)) {
+        return msg + "\n\nIf the bot is not actually trading, click Stop (or Force Reset) to clear stale state, then Start again.";
+      }
+      if (/wallet|private key/i.test(msg)) {
+        return "Live trading requires a wallet. Set your private key first, or enable Paper Trade.";
+      }
+      return msg;
+    }
+
+    function pct(v) {
+      if (v == null || Number.isNaN(v)) return "—";
+      return (v * 100).toFixed(2) + "%";
+    }
+    function fmtUsd(v) {
+      if (v == null || Number.isNaN(v)) return "—";
+      if (v >= 1e6) return "$" + (v / 1e6).toFixed(1) + "M";
+      if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+      return "$" + v.toFixed(0);
+    }
+    function fmtPriceUsd(v) {
+      if (v == null || Number.isNaN(v)) return "—";
+      return "$" + Number(v).toFixed(8);
+    }
+    function pickTradeCandidates(status, moverList) {
+      const fromStatus = status.trade_candidates;
+      if (Array.isArray(fromStatus) && fromStatus.length) return fromStatus;
+      return moverList || [];
+    }
+    function fmtTime(ts) {
+      if (!ts) return "—";
+      if (typeof ts === "string") {
+        const d = new Date(ts);
+        return Number.isNaN(d.getTime()) ? ts : d.toLocaleString();
+      }
+      const n = Number(ts);
+      if (!Number.isFinite(n)) return "—";
+      const ms = n > 1e12 ? n : n * 1000;
+      return new Date(ms).toLocaleString();
+    }
+
+    function formatCountdown(sec) {
+      if (sec == null || sec <= 0) return "0:00:00";
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = Math.floor(sec % 60);
+      return h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    }
+
+    function formatActiveDuration(sec) {
+      if (sec == null || sec < 0) sec = 0;
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = Math.floor(sec % 60);
+      return `${h}h ${m}m ${String(s).padStart(2, "0")}s`;
+    }
+
+    function parseServerUnixTimestamp(val) {
+      if (val == null) return null;
+      if (typeof val === "number" && Number.isFinite(val)) return val;
+      if (typeof val === "string") {
+        const iso = Date.parse(val);
+        if (!Number.isNaN(iso)) return iso / 1000;
+        const n = parseFloat(val);
+        if (Number.isFinite(n)) return n;
+      }
+      return null;
+    }
+
+    let firewallActive = true;
+    let firewallRateLimit = 120;
+    let botSessionActive = false;
+    let botSessionStartedAtSec = null;
+    let botSessionPaper = true;
+
+    function botSessionTimerSuffix() {
+      if (botSessionActive && botSessionStartedAtSec != null) {
+        const elapsed = Math.max(0, serverNowMs() / 1000 - botSessionStartedAtSec);
+        const mode = botSessionPaper ? "Paper" : "Live";
+        return ` · ${mode} active: ${formatActiveDuration(elapsed)}`;
+      }
+      if (botSessionPaper) return " · Paper idle";
+      return " · Not running";
+    }
+
+    function renderFirewallDetail() {
+      const detail = document.getElementById("firewallDetail");
+      if (!detail) return;
+      let text = "";
+      if (firewallActive) {
+        text = ` (${firewallRateLimit} req/min limit)`;
+      }
+      detail.textContent = text + botSessionTimerSuffix();
+    }
+
+    function syncBotSessionFromStatus(s) {
+      const fw = s.firewall || {};
+      firewallActive = !!fw.active;
+      firewallRateLimit = fw.rate_limit_per_min || 120;
+      const active = botIsActive(s);
+      const serverStartedAt = parseServerUnixTimestamp(s.bot_started_at ?? s.started_at);
+
+      botSessionPaper = isPaperTrade(s);
+
+      if (active) {
+        botSessionActive = true;
+        if (serverStartedAt != null) {
+          botSessionStartedAtSec = serverStartedAt;
+        }
+      } else {
+        botSessionActive = false;
+        botSessionStartedAtSec = null;
+      }
+      renderFirewallDetail();
+    }
+
+    function tickBotSessionTimer() {
+      if (!botSessionActive) return;
+      renderFirewallDetail();
+    }
+
+    function renderPnl(pnl, isPaper) {
+      const modeBadge = document.getElementById("runningPnlModeBadge");
+      if (modeBadge) {
+        modeBadge.textContent = isPaper ? "PAPER" : "LIVE";
+        modeBadge.className = "badge " + (isPaper ? "badge-dry" : "badge-live");
+      }
+      const profit = pnl.profit_sol || 0;
+      const losses = pnl.losses_sol || 0;
+      const net = pnl.net_pnl_sol != null ? pnl.net_pnl_sol : profit - losses;
+      const tradeCount = pnl.trade_count || 0;
+      document.getElementById("runningPnlProfit").textContent = fmtSol(profit) + " SOL";
+      document.getElementById("runningPnlLosses").textContent = fmtSol(losses) + " SOL";
+      const netEl = document.getElementById("runningPnlNet");
+      netEl.textContent = fmtSol(net) + " SOL";
+      netEl.className = "stat-value " + (net >= 0 ? "positive" : "negative");
+      document.getElementById("runningPnlTradeCount").textContent = String(tradeCount);
+      const totalsLegacy = document.getElementById("runningPnlTotals");
+      if (totalsLegacy) {
+        totalsLegacy.innerHTML =
+          '<span class="positive">Total Profit: ' + fmtSol(profit) + ' SOL</span><br>' +
+          '<span class="negative">Total Losses: ' + fmtSol(losses) + ' SOL</span><br>' +
+          '<span class="' + (net >= 0 ? "positive" : "negative") + '">Net Profit (after fees): ' + fmtSol(net) + ' SOL</span>';
+      }
+    }
+
+    function renderRecentExits(recent) {
+      const recentEl = document.getElementById("runningPnlRecent");
+      if (!recent || !recent.length) {
+        recentEl.innerHTML = '<li class="empty">No sells yet</li>';
+        return;
+      }
+      recentEl.innerHTML = recent.slice(0, 10).map((t) => {
+        const val = t.pnl_sol != null ? t.pnl_sol : 0;
+        const cls = val >= 0 ? "positive" : "negative";
+        let label = t.label;
+        if (!label) {
+          const marks = [];
+          if (t.l1_hit) marks.push("L1");
+          if (t.l2_hit) marks.push("L2");
+          if (t.instant_hit) marks.push("+5%");
+          const markStr = marks.length ? " ✓ " + marks.join(" ") : "";
+          label = (val >= 0 ? "+" : "") + fmtSol(val) + " SOL " + (t.symbol || "") + markStr;
+        }
+        return '<li class="' + cls + '">' + label + '</li>';
+      }).join("");
+    }
+
+    function fmtUsdGain(v) {
+      if (v == null || Number.isNaN(v)) return "—";
+      const sign = v >= 0 ? "+" : "";
+      return sign + "$" + Math.abs(v).toFixed(2);
+    }
+
+    function renderTopGainers(gainers) {
+      const el = document.getElementById("topGainersList");
+      if (!el) return;
+      const list = (gainers || []).slice(0, 3);
+      if (!list.length) {
+        el.innerHTML = '<li class="empty">No gainers yet</li>';
+        return;
+      }
+      el.innerHTML = list.map((g, i) => {
+        const pctVal = (g.pct_gain || 0) * 100;
+        const solVal = g.sol_gain_est != null ? g.sol_gain_est : 0;
+        const pctSign = pctVal >= 0 ? "+" : "";
+        const solSign = solVal >= 0 ? "+" : "";
+        const solCls = solVal >= 0 ? "positive" : "negative";
+        return (
+          '<li>' +
+          '<span class="gainer-rank">' + (i + 1) + '.</span>' +
+          '<span class="gainer-sym">' + (g.symbol || "?") + '</span>' +
+          '<span class="gainer-pct ' + solCls + '">' + pctSign + pctVal.toFixed(2) + '%</span>' +
+          '<span class="gainer-sol ' + solCls + '">' + solSign + fmtSol(solVal) + ' SOL</span>' +
+          '<span class="gainer-usd">' + fmtUsdGain(g.usd_gain_est) + '</span>' +
+          '</li>'
+        );
+      }).join("");
+    }
+
+    function positionLadderMarks(pos) {
+      const marks = [];
+      const pct3 = window.__instantExit3Pct != null ? window.__instantExit3Pct : 0.0325;
+      const pct5 = window.__instantExitPct != null ? window.__instantExitPct : 0.05;
+      const hit3 = pos.instant_hit || (pos.peak_pnl_pct != null && pos.peak_pnl_pct >= pct3);
+      const hit5 = pos.instant_5_hit || (pos.peak_pnl_pct != null && pos.peak_pnl_pct >= pct5);
+      if (hit3) marks.push("+" + (pct3 * 100).toFixed(2) + "%");
+      if (hit5) marks.push("+" + Math.round(pct5 * 100) + "%");
+      if (!marks.length) return "";
+      return '<span class="ladder-mark">✓ ' + marks.join(" ") + "</span>";
+    }
+
+    function updateRunningPnlUI(s) {
+      const card = document.getElementById("unifiedTradesCard");
+      if (!card) return;
+      const pnl = s.running_pnl || {};
+      const mode = pnl.mode || (isPaperTrade(s) ? "paper" : "live");
+      renderPnl(pnl, mode === "paper");
+      renderRecentExits(pnl.recent_trades || []);
+      renderTopGainers(s.top_gainers || []);
+    }
+
+    let paperSessionCountdownActive = false;
+    let paperCountdownTimer = null;
+    let paperRemainingAtSync = 0;
+    let paperSyncedAtMs = 0;
+
+    function paperSessionStatusLabel(status, stopReason) {
+      if (status === "active") return "Active";
+      if (status === "ended") {
+        if (stopReason === "balance_depleted") return "Ended — balance depleted";
+        if (stopReason === "session_expired") return "Ended — session expired";
+        return "Ended";
+      }
+      return "Not started";
+    }
+
+    function tickPaperSessionCountdown() {
+      if (!paperSessionCountdownActive) {
+        document.getElementById("paperSessionRemaining").textContent = "—";
+        return;
+      }
+      const elapsedSec = (serverNowMs() - paperSyncedAtMs) / 1000;
+      const remaining = Math.max(0, paperRemainingAtSync - elapsedSec);
+      document.getElementById("paperSessionRemaining").textContent = formatCountdown(remaining);
+    }
+
+    function renderPaperSessionTrades(rows) {
+      const body = document.getElementById("paperSessionTradesBody");
+      if (!rows || !rows.length) {
+        body.innerHTML = '<tr><td colspan="5" class="empty">No paper trades yet</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((t) => {
+        const pnl = t.pnl_sol != null && t.pnl_sol !== "" ? parseFloat(t.pnl_sol) : null;
+        const pnlHtml = pnl != null
+          ? `<span class="${pnl >= 0 ? "positive" : "negative"}">${fmtSol(pnl)}</span>`
+          : "—";
+        const mint = t.contract_address || t.mint || "";
+        const mintShort = mint ? mint.slice(0, 8) + "…" : "—";
+        const ts = fmtTime(t.timestamp);
+        return `<tr>
+          <td>${ts}</td>
+          <td>${t.symbol || "—"}</td>
+          <td>${t.action || "—"}</td>
+          <td>${pnlHtml}</td>
+          <td class="mono">${mintShort}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function updatePaperSessionUI(s) {
+      const panel = document.getElementById("paperSessionPanel");
+      const paperRelevant =
+        isPaperTrade(s) ||
+        s.paper_session_active ||
+        s.paper_session_status === "ended" ||
+        (s.paper_session_started_at != null && (s.paper_session_trade_count || 0) > 0);
+      panel.classList.toggle("dimmed", !paperRelevant);
+
+      const status = s.paper_session_status ||
+        (s.paper_session_active ? "active" : (s.paper_session_started_at ? "ended" : "not_started"));
+      document.getElementById("paperSessionStatus").textContent =
+        paperSessionStatusLabel(status, s.paper_stop_reason);
+
+      paperSessionCountdownActive = status === "active";
+      if (paperSessionCountdownActive) {
+        paperRemainingAtSync = Math.max(0, s.paper_session_remaining_sec || 0);
+        paperSyncedAtMs = serverNowMs();
+        tickPaperSessionCountdown();
+      } else {
+        paperRemainingAtSync = 0;
+        const remainingEl = document.getElementById("paperSessionRemaining");
+        if (status === "ended" && s.paper_stop_reason === "balance_depleted") {
+          remainingEl.textContent = "Balance depleted";
+        } else if (status === "ended" && s.paper_stop_reason === "session_expired") {
+          remainingEl.textContent = "Session ended";
+        } else {
+          remainingEl.textContent = status === "ended" ? "Session ended" : "—";
+        }
+      }
+
+      const profit = s.paper_session_profit_sol || 0;
+      const losses = s.paper_session_losses_sol || 0;
+      const net = s.paper_session_net_pnl_sol != null ? s.paper_session_net_pnl_sol : profit - losses;
+      document.getElementById("paperSessionTotals").innerHTML = fmtPnlBlock(profit, losses, net);
+
+      const tradeCount = s.paper_session_trade_count != null ? s.paper_session_trade_count : 0;
+      document.getElementById("paperSessionTradeCount").textContent = String(tradeCount);
+
+      const hasExportable = tradeCount > 0 && s.paper_session_started_at != null;
+      document.getElementById("btnExportPaperCsv").disabled = !hasExportable;
+
+      renderPaperSessionTrades(s.recent_paper_trades || []);
+    }
+
+    function isPaperTrade(s) {
+      if (s.paper_trade != null) return s.paper_trade;
+      return s.dry_run !== false;
+    }
+
+    function botIsActive(s) {
+      if (stopInFlight) return true;
+      const byFlag = s.running === true;
+      const byStatus =
+        s.status === "running" ||
+        s.status === "starting" ||
+        s.status === "stopping";
+      return byFlag || byStatus;
+    }
+
+    function statusLabel(s) {
+      if (stopInFlight) return "Stopping...";
+      if (s.activity_status) return s.activity_status;
+      if (s.status === "stopping") return "Stopping...";
+      if (botIsActive(s)) {
+        const open = s.open_positions_count || 0;
+        if (open > 0) return "Running - In Trade";
+        if (s.scan_in_progress || (s.scan_count === 0 && !s.last_scan_time)) {
+          return "Running - Scanning…";
+        }
+        return s.status === "starting" ? "Starting" : "Running - Scanning";
+      }
+      return "Idle";
+    }
+
+    function paperBalanceForSizing(paperTrade, status) {
+      if (!paperTrade) return currentBalance;
+      if (status && (status.paper_session_active || botIsActive(status))) {
+        return status.paper_simulated_balance_sol ?? paperRunningBalance ?? paperStartingBalanceSol;
+      }
+      return paperRunningBalance ?? paperStartingBalanceSol;
+    }
+
+    function updatePaperBalanceControls(paperTrade) {
+      const panel = document.getElementById("paperBalancePanel");
+      const livePanel = document.getElementById("liveTradeablePanel");
+      const input = document.getElementById("paperBalanceInput");
+      if (!panel || !input) return;
+      panel.style.display = paperTrade ? "block" : "none";
+      if (livePanel) livePanel.style.display = paperTrade ? "none" : "block";
+      if (paperTrade) {
+        input.min = String(minPaperBalanceSol);
+        input.max = String(maxPaperBalanceSol);
+        input.value = paperStartingBalanceSol.toFixed(2);
+      } else {
+        const liveInput = document.getElementById("liveTradeableInput");
+        if (liveInput) {
+          liveInput.min = String(minLiveTradeableBalanceSol);
+          liveInput.max = String(maxLiveTradeableBalanceSol);
+          liveInput.value = liveTradeableBalanceSol.toFixed(2);
+        }
+      }
+    }
+
+    function updateStrategyBalanceStatus(paperTrade, status) {
+      updatePaperBalanceControls(paperTrade);
+      const simEl = document.getElementById("paperSimulatedBalanceDisplay");
+      const startEl = document.getElementById("paperStartingBalanceDisplay");
+      const walletEl = document.getElementById("liveWalletBalanceDisplay");
+      const effectiveEl = document.getElementById("liveEffectiveBalanceDisplay");
+      if (paperTrade) {
+        const simulated = status && status.paper_simulated_balance_sol != null
+          ? status.paper_simulated_balance_sol
+          : (paperRunningBalance ?? paperStartingBalanceSol);
+        if (simEl) simEl.textContent = simulated.toFixed(2) + " SOL";
+        if (startEl) startEl.textContent = paperStartingBalanceSol.toFixed(2) + " SOL";
+      } else {
+        const wallet = status && status.wallet_balance_sol != null
+          ? status.wallet_balance_sol
+          : walletBalanceSol;
+        const tradeable = status && status.live_tradeable_balance_sol != null
+          ? status.live_tradeable_balance_sol
+          : liveTradeableBalanceSol;
+        if (wallet != null) walletBalanceSol = wallet;
+        liveTradeableBalanceSol = tradeable;
+        const effective = wallet != null ? Math.min(wallet, tradeable) : null;
+        if (walletEl) {
+          walletEl.textContent = wallet != null ? wallet.toFixed(4) + " SOL" : "—";
+        }
+        if (effectiveEl) {
+          effectiveEl.textContent = effective != null ? effective.toFixed(2) + " SOL" : "—";
+        }
+      }
+    }
+
+    function displayBalanceForMode(balance, paperTrade, simulated, status) {
+      const label = document.getElementById("walletBalanceLabel");
+      const el = document.getElementById("walletBalance");
+      const paperConfigured = document.getElementById("paperStartingBalance");
+      const paperConfiguredLabel = document.getElementById("paperStartingBalanceLabel");
+      if (paperTrade || simulated) {
+        const simBal = balance != null
+          ? balance
+          : (paperRunningBalance ?? paperStartingBalanceSol);
+        if (label) label.textContent = "Paper Balance";
+        if (el) el.textContent = simBal.toFixed(2) + " SOL (simulated)";
+        currentBalance = simBal;
+        if (paperConfiguredLabel) {
+          paperConfiguredLabel.style.display = "block";
+          paperConfiguredLabel.innerHTML = 'Configured: <span id="paperStartingBalance">' + paperStartingBalanceSol.toFixed(2) + ' SOL</span>';
+        }
+        updateStrategyBalanceStatus(true, status);
+        return;
+      }
+      if (label) label.textContent = "Wallet Balance";
+      if (status && status.wallet_balance_sol != null) {
+        walletBalanceSol = status.wallet_balance_sol;
+      } else if (balance != null) {
+        walletBalanceSol = balance;
+      }
+      const tradeable = status && status.live_tradeable_balance_sol != null
+        ? status.live_tradeable_balance_sol
+        : liveTradeableBalanceSol;
+      liveTradeableBalanceSol = tradeable;
+      if (el) {
+        el.textContent = walletBalanceSol != null
+          ? walletBalanceSol.toFixed(4) + " SOL"
+          : "—";
+      }
+      if (paperConfiguredLabel) {
+        paperConfiguredLabel.style.display = "block";
+        paperConfiguredLabel.innerHTML = 'Tradeable cap: <span id="paperStartingBalance">' + tradeable.toFixed(2) + ' SOL</span>';
+      }
+      currentBalance = walletBalanceSol != null
+        ? Math.min(walletBalanceSol, tradeable)
+        : null;
+      updateStrategyBalanceStatus(false, status);
+    }
+
+    function effectiveBalanceForSizing(paperTrade, status) {
+      if (paperTrade) return paperBalanceForSizing(true, status);
+      if (status && status.balance_sol != null) return status.balance_sol;
+      if (walletBalanceSol != null) {
+        return Math.min(walletBalanceSol, liveTradeableBalanceSol);
+      }
+      return currentBalance;
+    }
+
+    function updateQuickStartSteps(s) {
+      const paperTrade = document.getElementById("paperTradeToggle").checked;
+      const hasWallet = !!(s.public_key && s.public_key !== "—");
+      document.getElementById("stepWallet").className = (!paperTrade && hasWallet) || paperTrade ? "done" : "";
+      document.getElementById("stepPaper").className = paperTrade ? "done" : "";
+      document.getElementById("stepStart").className = botIsActive(s) ? "done" : "";
+    }
+
+    function updateLiveChecklist(s) {
+      const checklist = document.getElementById("liveChecklist");
+      if (checklist) checklist.style.display = "none";
+    }
+
+    function formatMaxPositions(cfg) {
+      const base = cfg.max_open_positions != null
+        ? cfg.max_open_positions
+        : (elText("maxOpenPositions", "1"));
+      const wbtcMax = def(cfg.max_open_positions_wbtc, 2);
+      if (Number(wbtcMax) > Number(base)) {
+        return base + " (2 w/ WBTC — companion trade enabled)";
+      }
+      return String(base);
+    }
+
+    function formatOpenTradesCount(count, max, companionSlot) {
+      const maxPos = max != null ? max : 1;
+      if (companionSlot || maxPos > 1) {
+        return count + "/" + maxPos;
+      }
+      return String(count);
+    }
+
+    function updateSetupSummaryLine(cfg) {
+      const el = document.getElementById("setupSummaryLine");
+      if (!el || !cfg) return;
+      const levels = cfg.take_profit_levels || spreadDefaults.take_profit_levels || [];
+      const portions = cfg.take_profit_portions || spreadDefaults.take_profit_portions || [];
+      const instantLine = formatInstantExits(cfg);
+      const ladder = levels.length
+        ? levels.map((lvl, i) => {
+          const pct = (lvl * 100).toFixed(0);
+          const portion = portions && portions[i] != null ? (portions[i] * 100).toFixed(0) : "50";
+          return "L" + (i + 1) + " +" + pct + "% (" + portion + "%)";
+        }).join(" · ")
+        : null;
+      const instantPct5 = cfg.instant_profit_exit_pct != null
+        ? Math.round(cfg.instant_profit_exit_pct * 100) : 5;
+      const instantOn = cfg.instant_profit_exit_enabled !== false;
+      const maxPos = formatMaxPositions(cfg);
+      const reentry = cfg.reentry_dip_pct != null
+        ? (cfg.reentry_dip_pct * 100).toFixed(0) + "%"
+        : (elText("reentryDipPct", "10%"));
+      const liq = cfg.min_liquidity_usd != null
+        ? fmtPoolLiquidityMin(cfg.min_liquidity_usd)
+        : (elText("poolLiquidityMin", "$15k"));
+      const l1Prot = cfg.enable_l1_protection === true;
+      const l1Pct = cfg.l1_protection_pct != null
+        ? (cfg.l1_protection_pct * 100).toFixed(2)
+        : "0.10";
+      const entryPct = cfg.entry_momentum_pct != null
+        ? (cfg.entry_momentum_pct * 100).toFixed(2)
+        : (spreadDefaults.entry_momentum_pct != null
+          ? (spreadDefaults.entry_momentum_pct * 100).toFixed(2) : "0.75");
+      const slPct = cfg.stop_loss_pct != null
+        ? (cfg.stop_loss_pct * 100).toFixed(2)
+        : (spreadDefaults.stop_loss_pct != null
+          ? (spreadDefaults.stop_loss_pct * 100).toFixed(2) : "1.50");
+      const wbtcSl = cfg.wbtc_stop_loss_pct ?? spreadDefaults.wbtc_stop_loss_pct ?? 0.02;
+      const volMin = cfg.non_watchlist_min_volume_24h_usd
+        ?? spreadDefaults.non_watchlist_min_volume_24h_usd ?? 40000;
+      const gmgnLiq = cfg.gmgn_min_liquidity_usd
+        ?? spreadDefaults.gmgn_min_liquidity_floor_usd ?? 20000;
+      const minNetWin = cfg.min_net_win_sol ?? spreadDefaults.min_net_win_sol ?? 0.002;
+      const lossCooldown = cfg.loss_reentry_cooldown_minutes
+        ?? spreadDefaults.loss_reentry_cooldown_minutes ?? 90;
+      const repeatCooldown = cfg.loss_reentry_repeat_cooldown_minutes
+        ?? spreadDefaults.loss_reentry_repeat_cooldown_minutes ?? 180;
+      const wbtcProfitOnly = cfg.wbtc_profit_only_exits !== false;
+      const winNote = "best win · " + (cfg.trade_size_sol != null ? cfg.trade_size_sol.toFixed(2) : "0.10")
+        + " SOL · entry +" + entryPct + "% · SL -" + slPct + "% (WBTC -" + (wbtcSl * 100).toFixed(0) + "%)"
+        + " · vol $" + Math.round(volMin / 1000) + "k · GMGN $" + Math.round(gmgnLiq / 1000) + "k"
+        + " · min net " + fmtSol(minNetWin) + " · cooldown " + lossCooldown + "/" + repeatCooldown + "m"
+        + (wbtcProfitOnly ? " · WBTC profit-only exits" : "");
+      const bookmarkEl = document.getElementById("bookmarkHint");
+      const bookmarkNote = bookmarkEl && bookmarkEl.textContent ? bookmarkEl.textContent : "";
+      const entryImpact = cfg.max_entry_price_impact_pct ?? spreadDefaults.max_entry_price_impact_pct ?? 1.0;
+      const exitImpact = cfg.max_exit_price_impact_pct ?? 1.5;
+      const roundTrip = cfg.max_round_trip_impact_pct ?? 2.0;
+      const slippageNote = "slippage entry ≤" + entryImpact.toFixed(1)
+        + "% · exit immediate (log >" + exitImpact.toFixed(1)
+        + "%) · round-trip ≤" + roundTrip.toFixed(1) + "%";
+      const parts = [
+        instantOn ? instantLine : null,
+        ladder ? "Ladder " + ladder : null,
+        l1Prot ? "L1 protect +" + l1Pct + "%" : null,
+        instantOn && ladder ? "instant +" + instantPct5 + "% spike" : null,
+        "max " + maxPos + " pos",
+        "re-entry " + reentry,
+        "liq " + liq,
+        slippageNote,
+        winNote,
+        bookmarkNote || null,
+      ].filter(Boolean);
+      el.textContent = parts.join(" · ");
+    }
+
+    function updateStartButtonState(s) {
+      const status = typeof s === "string" ? s : (s.status || "stopped");
+      const paperTrade = document.getElementById("paperTradeToggle").checked;
+      const liveBlocked = !paperTrade && !minFundWaiverActive && walletBalanceSol != null && walletBalanceSol < minFundSol;
+      let canStart;
+      if (typeof s === "object" && s != null && s.can_start != null) {
+        canStart = s.can_start === true;
+      } else if (status === "stopping") {
+        canStart = true;
+      } else if (typeof s === "string") {
+        canStart = status !== "running" && status !== "starting";
+      } else {
+        canStart = !botIsActive(s);
+      }
+      document.getElementById("btnStart").disabled =
+        !canStart || liveBlocked || startInFlight || stopInFlight;
+    }
+
+    function updateLiveModeWarning() {
+      const paperTrade = document.getElementById("paperTradeToggle").checked;
+      const warn = document.getElementById("liveModeWarning");
+      if (paperTrade) {
+        warn.style.display = "none";
+        return;
+      }
+      const hasWallet = !!(document.getElementById("walletAddress").textContent.trim()
+        && document.getElementById("walletAddress").textContent !== "—");
+      const funded = minFundWaiverActive
+        || (walletBalanceSol != null && walletBalanceSol >= minFundSol);
+      const issues = [];
+      if (!hasWallet) issues.push("set wallet key");
+      if (!funded && walletBalanceSol != null && walletBalanceSol < minFundSol) {
+        issues.push("need ≥" + minFundSol.toFixed(2) + " SOL (have " + walletBalanceSol.toFixed(4) + ")");
+      } else if (!funded && walletBalanceSol == null) {
+        issues.push("wallet balance unknown");
+      }
+      if (issues.length) {
+        warn.style.display = "block";
+        warn.textContent = "Live: " + issues.join("; ") + ".";
+        return;
+      }
+      if (minFundWaiverActive && walletBalanceSol != null && walletBalanceSol < minFundSol) {
+        warn.style.display = "block";
+        warn.textContent = minFundSol.toFixed(2) + " SOL min waived · wallet " + walletBalanceSol.toFixed(4) + " SOL · real swaps enabled.";
+        return;
+      }
+      warn.style.display = "block";
+      warn.textContent = "Live mode — real funds used for swaps.";
+    }
+
+    const SCANNER_API_BADGE = {
+      configured: { label: "Configured ✓", className: "badge-configured" },
+      public: { label: "Public (no key)", className: "badge-public" },
+      skipped: { label: "Skipped (no key)", className: "badge-public" },
+      fallback: { label: "Fallback (no key)", className: "badge-public" },
+      recommended: { label: "Add key", className: "badge-recommended" },
+      missing: { label: "Add key", className: "badge-recommended" },
+    };
+
+    function updateScannerApiKeyBadges(keys, birdeyeScanStatus, pumpfunScanStatus, gmgnScanStatus) {
+      const map = [
+        ["apiKeyDex", "dexscreener", "public"],
+        ["apiKeyPump", "pumpfun", "public"],
+        ["apiKeyBird", "birdeye", "recommended"],
+        ["apiKeyGmgn", "gmgn", "public"],
+      ];
+      for (const [elId, name, fallback] of map) {
+        const el = document.getElementById(elId);
+        if (!el) continue;
+        let status = keys && keys[name] ? keys[name] : fallback;
+        if (name === "birdeye" && status === "recommended" && birdeyeScanStatus === "fallback") {
+          status = "fallback";
+        } else if (name === "birdeye" && status === "recommended" && birdeyeScanStatus === "failed") {
+          status = "missing";
+        } else if (name === "pumpfun" && status === "public" && pumpfunScanStatus === "add_key") {
+          status = "missing";
+        } else if (name === "gmgn" && status === "public" && gmgnScanStatus === "failed") {
+          status = "missing";
+        }
+        const badge = SCANNER_API_BADGE[status] || SCANNER_API_BADGE[fallback];
+        el.textContent = badge.label;
+        el.className = "badge " + badge.className;
+      }
+    }
+
+    function updateScannerZeroWarning(s) {
+      const el = document.getElementById("scannerZeroWarning");
+      if (!el) return;
+      const streaks = s.scanner_zero_streaks || {};
+      const enabled = s.scanners_enabled || {};
+      const ZERO_WARN_THRESHOLD = 3;
+      const warnings = [];
+      const labels = { dexscreener: "DexScreener", pumpfun: "pump.fun", birdeye: "Birdeye", gmgn: "GMGN" };
+      for (const [key, label] of Object.entries(labels)) {
+        if (enabled[key] === false) continue;
+        if (key === "birdeye" && s.birdeye_scan_status === "fallback") continue;
+        if (key === "pumpfun" && (s.pumpfun_scan_status === "fallback" || s.pumpfun_scan_status === "add_key")) continue;
+        if (key === "gmgn" && s.gmgn_scan_status === "failed") continue;
+        const streak = streaks[key] || 0;
+        if (streak >= ZERO_WARN_THRESHOLD) {
+          warnings.push(label + " returned 0 movers for " + streak + " consecutive scans");
+        }
+      }
+      if (!warnings.length) {
+        el.style.display = "none";
+        el.textContent = "";
+        return;
+      }
+      el.style.display = "block";
+      el.innerHTML = "<strong>Scanner warning:</strong> " + warnings.join("; ") +
+        ". Check API keys, filters, or network.";
+    }
+
+    function updateStatusUI(s) {
+      lastBotStatus = s;
+      syncServerClock(s.server_time_unix);
+      updateLastSynced(s);
+      updateServerUI(s);
+      detectTaskCompletions(s);
+      const badge = document.getElementById("statusBadge");
+      const active = botIsActive(s);
+      badge.textContent = statusLabel(s);
+      badge.className = "badge " + (active ? "badge-running" : "badge-stopped");
+
+      const paperTrade = isPaperTrade(s);
+      const mode = document.getElementById("modeBadge");
+      mode.textContent = paperTrade ? "Paper Trade" : "Live Trading";
+      mode.className = "badge " + (paperTrade ? "badge-dry" : "badge-live");
+
+      document.getElementById("walletAddress").textContent = s.public_key || "—";
+      document.getElementById("lastScan").textContent = s.last_scan_iso || fmtTime(s.last_scan_time) || "—";
+      document.getElementById("activityStatus").textContent = statusLabel(s);
+      const openCount = s.open_positions_count || 0;
+      let lastActionText = s.last_action;
+      if (s.last_entry_skip_reason) {
+        lastActionText = s.last_entry_skip_reason;
+      } else if (!lastActionText || lastActionText === "Bot initialized") {
+        if (active) {
+          lastActionText = openCount > 0
+            ? `Monitoring ${openCount} open position${openCount === 1 ? "" : "s"}`
+            : "Waiting for first scan…";
+        } else {
+          lastActionText = "—";
+        }
+      } else if (active && openCount > 0 && /^scanning/i.test(lastActionText)) {
+        lastActionText = `Monitoring ${openCount} open position${openCount === 1 ? "" : "s"}`;
+      }
+      document.getElementById("lastAction").textContent = lastActionText;
+      document.getElementById("lastActionTime").textContent =
+        s.last_action_iso || fmtTime(s.last_action_time) || "—";
+      const dexCount = s.dexscreener_scan_count ?? s.dexscreener_count;
+      document.getElementById("dexCount").textContent =
+        dexCount != null ? `${dexCount} movers` : "—";
+      const dexHealthEl = document.getElementById("dexHealth");
+      if (dexHealthEl) {
+        const dh = s.dexscreener_health || {};
+        const hs = dh.status || "ok";
+        const healthLabels = {
+          ok: "API OK",
+          rate_limited: "Rate limited",
+          recovering: "Recovering",
+          idle: "—",
+        };
+        const healthClasses = {
+          ok: "badge-public",
+          rate_limited: "badge-live",
+          recovering: "badge-dry",
+          idle: "badge-public",
+        };
+        dexHealthEl.textContent = healthLabels[hs] || hs;
+        dexHealthEl.className = "badge " + (healthClasses[hs] || "badge-public");
+        dexHealthEl.style.fontSize = "0.7rem";
+        if (dh.scan_interval_boost_sec > 0) {
+          dexHealthEl.title = `Scan interval +${dh.scan_interval_boost_sec}s while throttled`;
+        } else {
+          dexHealthEl.title = "";
+        }
+      }
+      const jupHealthEl = document.getElementById("jupHealth");
+      if (jupHealthEl) {
+        const jh = s.jupiter_health || {};
+        const jhs = jh.status || "ok";
+        const jupHealthLabels = {
+          ok: "API OK",
+          rate_limited: "Rate limited",
+          recovering: "Recovering",
+          idle: "—",
+        };
+        const jupHealthClasses = {
+          ok: "badge-public",
+          rate_limited: "badge-live",
+          recovering: "badge-dry",
+          idle: "badge-public",
+        };
+        jupHealthEl.textContent = jupHealthLabels[jhs] || jhs;
+        jupHealthEl.className = "badge " + (jupHealthClasses[jhs] || "badge-public");
+        jupHealthEl.style.fontSize = "0.7rem";
+        const jupTitle = [];
+        if (jh.poll_interval_boost_sec > 0) {
+          jupTitle.push(`Poll interval +${jh.poll_interval_boost_sec}s while throttled`);
+        }
+        if (jh.api_key_configured === false) {
+          jupTitle.push("No JUPITER_API_KEY — set one at portal.jup.ag for higher limits");
+        }
+        jupHealthEl.title = jupTitle.join(" · ");
+      }
+      const solTrendEl = document.getElementById("solTrendBadge");
+      if (solTrendEl) {
+        const enabled = s.sol_trend_filter_enabled !== false;
+        const h1 = s.sol_trend_1h_pct;
+        const h4 = s.sol_trend_4h_pct;
+        const sess = s.sol_trend_session_pct;
+        const ok = s.sol_trend_ok;
+        if (!enabled) {
+          solTrendEl.textContent = "off";
+          solTrendEl.className = "badge badge-public";
+          solTrendEl.title = "SOL trend filter disabled";
+        } else if (h1 == null && h4 == null) {
+          solTrendEl.textContent = "—";
+          solTrendEl.className = "badge badge-dry";
+          solTrendEl.title = "SOL trend data unavailable";
+        } else {
+          const fmt = (v) => (v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`);
+          solTrendEl.textContent = `1h ${fmt(h1)} · 4h ${fmt(h4)}`;
+          solTrendEl.className = "badge " + (ok ? "badge-public" : "badge-live");
+          const parts = [
+            `1h ${fmt(h1)}`,
+            `4h ${fmt(h4)}`,
+            sess != null ? `session ${fmt(sess)}` : null,
+            ok ? "memecoin entries OK" : "memecoin entries blocked",
+          ].filter(Boolean);
+          if (s.sol_price_usd != null) {
+            parts.push(`SOL $${Number(s.sol_price_usd).toFixed(2)}`);
+          }
+          solTrendEl.title = parts.join(" · ");
+        }
+        solTrendEl.style.fontSize = "0.65rem";
+      }
+      const regimeEl = document.getElementById("marketRegimeBadge");
+      if (regimeEl) {
+        const regime = (s.market_regime || "neutral").toLowerCase();
+        const hotMode = s.hot_market_mode_enabled === true;
+        const targetWr = s.target_win_rate;
+        const gates = s.regime_gates || {};
+        const passing = s.scanner_passing_count;
+        if (!hotMode) {
+          regimeEl.textContent = "off";
+          regimeEl.className = "badge badge-public";
+          regimeEl.title = "Hot-market adaptive gates disabled";
+        } else {
+          const labels = { hot: "HOT", neutral: "NEUTRAL", cold: "COLD" };
+          const classes = {
+            hot: "badge-live",
+            neutral: "badge-public",
+            cold: "badge-dry",
+          };
+          regimeEl.textContent = labels[regime] || regime.toUpperCase();
+          regimeEl.className = "badge " + (classes[regime] || "badge-public");
+          const parts = [
+            `Regime: ${labels[regime] || regime}`,
+            targetWr != null ? `target WR ${(targetWr * 100).toFixed(0)}%` : null,
+            passing != null ? `${passing} scanner candidates` : null,
+          ];
+          if (gates.entry_momentum_pct != null) {
+            parts.push(`entry ${(gates.entry_momentum_pct * 100).toFixed(2)}%`);
+          }
+          if (gates.min_momentum_pct != null) {
+            parts.push(`scanner ${(gates.min_momentum_pct * 100).toFixed(1)}%`);
+          }
+          if (gates.min_volume_24h_usd != null) {
+            parts.push(`vol $${Math.round(gates.min_volume_24h_usd / 1000)}k`);
+          }
+          regimeEl.title = parts.filter(Boolean).join(" · ");
+        }
+        regimeEl.style.fontSize = "0.65rem";
+      }
+      const pfCount = s.pumpfun_scan_count ?? s.pumpfun_count;
+      document.getElementById("pumpfunCount").textContent =
+        pfCount != null ? `${pfCount} movers` : "—";
+      const pfHealthEl = document.getElementById("pumpfunHealth");
+      if (pfHealthEl) {
+        const ps = s.pumpfun_scan_status || "idle";
+        const pfHealthLabels = {
+          active: "API OK",
+          fallback: "Unavailable (DexScreener fallback)",
+          add_key: "Add key",
+          idle: "—",
+        };
+        const pfHealthClasses = {
+          active: "badge-public",
+          fallback: "badge-dry",
+          add_key: "badge-recommended",
+          idle: "badge-public",
+        };
+        pfHealthEl.textContent = pfHealthLabels[ps] || ps;
+        pfHealthEl.className = "badge " + (pfHealthClasses[ps] || "badge-public");
+        pfHealthEl.style.fontSize = "0.7rem";
+        if (ps === "add_key") {
+          pfHealthEl.title = "Set PUMPFUN_API_KEY (JWT from wallet login) in .env";
+        } else if (ps === "fallback") {
+          pfHealthEl.title = "pump.fun API down — DexScreener search is used instead";
+        } else {
+          pfHealthEl.title = "";
+        }
+      }
+      const beCount = s.birdeye_scan_count ?? s.birdeye_count;
+      const beSkipped = s.config && s.config.scanner_api_keys && s.config.scanner_api_keys.birdeye === "skipped";
+      let beLabel = beCount != null ? `${beCount} movers` : (beSkipped ? "skipped (no key)" : "—");
+      if (beCount != null && s.birdeye_scan_status === "fallback") {
+        beLabel += " (DexScreener fallback)";
+      } else if (beCount != null && s.birdeye_scan_status === "failed") {
+        beLabel += " (API failed)";
+      }
+      document.getElementById("birdeyeCount").textContent = beLabel;
+      const gmgnCount = s.gmgn_scan_count ?? s.gmgn_count;
+      let gmgnLabel = gmgnCount != null ? `${gmgnCount} movers` : "—";
+      if (gmgnCount != null && s.gmgn_scan_status === "failed") {
+        gmgnLabel += " (API failed)";
+      }
+      const gmgnCountEl = document.getElementById("gmgnCount");
+      if (gmgnCountEl) gmgnCountEl.textContent = gmgnLabel;
+      const gmgnHealthEl = document.getElementById("gmgnHealth");
+      if (gmgnHealthEl) {
+        const gs = s.gmgn_scan_status || "idle";
+        const gmgnHealthLabels = {
+          active: "API OK",
+          failed: "Unavailable",
+          idle: "—",
+        };
+        const gmgnHealthClasses = {
+          active: "badge-public",
+          failed: "badge-dry",
+          idle: "badge-public",
+        };
+        gmgnHealthEl.textContent = gmgnHealthLabels[gs] || gs;
+        gmgnHealthEl.className = "badge " + (gmgnHealthClasses[gs] || "badge-public");
+        gmgnHealthEl.style.fontSize = "0.7rem";
+        gmgnHealthEl.title = gs === "failed"
+          ? "GMGN quotation API failed — check network or GMGN_API_KEY"
+          : "";
+      }
+      const wlContainer = document.getElementById("watchlistMintsContainer");
+      const wlStatuses = (s.watchlist_mint_statuses && s.watchlist_mint_statuses.length)
+        ? s.watchlist_mint_statuses
+        : (s.watchlist_mint_status && s.watchlist_mint_status.enabled !== false
+          ? [s.watchlist_mint_status]
+          : []);
+      const solTrade = s.sol_trade_status;
+      const wethTrade = s.weth_trade_status;
+      const specialAssetRows = [...wlStatuses];
+      if (solTrade && solTrade.enabled !== false) specialAssetRows.push(solTrade);
+      if (wethTrade && wethTrade.enabled !== false) specialAssetRows.push(wethTrade);
+      const specialAssets = specialAssetRows;
+      if (wlContainer) {
+        if (!specialAssets.length || (specialAssets.length === 1 && specialAssets[0].enabled === false)) {
+          wlContainer.innerHTML = "";
+        } else {
+          wlContainer.innerHTML = specialAssets.map((wl) => {
+            const isWsol = wl.asset_type === "sol_wsol" || (wl.mint && wl.mint === wl.wsol_mint);
+            const isWeth = wl.asset_type === "weth" || wl.label === "WETH";
+            const isSolProxy = wl.asset_type === "sol_proxy" || wl.label === "SOL";
+            const badge = isWeth ? "WETH" : (isWsol ? "WSOL" : (isSolProxy ? "SOL" : "WL"));
+            const sym = wl.symbol || (wl.mint ? wl.mint.slice(0, 8) : "?");
+            const mintCa = wl.mint ? ` · CA ${wl.mint}` : "";
+            const priceStr = wl.price_usd != null
+              ? `$${Number(wl.price_usd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`
+              : "—";
+            const ruleNote = wl.entry_rule_summary
+              ? ` [${wl.entry_rule_summary}; ${wl.exit_rule_summary || "standard exits"}]`
+              : "";
+            let gainNote = "";
+            if ((isWsol || isWeth) && wl.momentum_pct != null) {
+              const mom = (Number(wl.momentum_pct) * 100).toFixed(2);
+              const minMom = wl.entry_momentum_pct != null
+                ? (Number(wl.entry_momentum_pct) * 100).toFixed(2)
+                : "0.50";
+              const need = !wl.qualifies && wl.momentum_pct < (wl.entry_momentum_pct || 0.005)
+                ? ` (need +${(((wl.entry_momentum_pct || 0.005) - wl.momentum_pct) * 100).toFixed(2)}% more)`
+                : "";
+              gainNote = ` momentum ${mom >= 0 ? "+" : ""}${mom}% (min +${minMom}%)${need}`;
+            } else if (isSolProxy && !isWsol && wl.sol_trend_1h_pct != null) {
+              const h1 = Number(wl.sol_trend_1h_pct).toFixed(2);
+              const minH1 = wl.sol_trade_min_momentum_1h_pct != null
+                ? Number(wl.sol_trade_min_momentum_1h_pct).toFixed(1)
+                : "0.5";
+              const need = !wl.qualifies && wl.sol_trend_1h_pct < (wl.sol_trade_min_momentum_1h_pct || 0.5)
+                ? ` (need +${((wl.sol_trade_min_momentum_1h_pct || 0.5) - wl.sol_trend_1h_pct).toFixed(2)}% more on 1h)`
+                : "";
+              gainNote = ` SOL 1h ${h1 >= 0 ? "+" : ""}${h1}% (min +${minH1}%)${need}`;
+              if (wl.proxy_symbol) {
+                gainNote += ` via ${wl.proxy_symbol}`;
+              }
+            } else if (wl.day_pct_gain != null && wl.min_day_pct_gain != null) {
+              const pct = (wl.day_pct_gain * 100).toFixed(2);
+              const minPct = (wl.min_day_pct_gain * 100).toFixed(0);
+              const need = !wl.qualifies && wl.day_pct_gain < wl.min_day_pct_gain
+                ? ` (need +${((wl.min_day_pct_gain - wl.day_pct_gain) * 100).toFixed(2)}% more)`
+                : "";
+              gainNote = ` +${pct}% (24h, min ${minPct}%)${need}`;
+            } else if (wl.usd_gain != null || wl.day_usd_gain != null) {
+              const dayGain = wl.day_usd_gain != null ? wl.day_usd_gain : wl.usd_gain;
+              const minGain = wl.watchlist_min_usd_gain != null && wl.watchlist_min_usd_gain > 0
+                ? ` (min $${wl.watchlist_min_usd_gain.toFixed(0)} day)`
+                : "";
+              const needMore = !wl.qualifies && dayGain != null && wl.watchlist_min_usd_gain != null
+                && dayGain < wl.watchlist_min_usd_gain
+                ? ` (need +$${(wl.watchlist_min_usd_gain - dayGain).toFixed(2)} more today)`
+                : "";
+              gainNote = dayGain != null ? ` +$${dayGain.toFixed(2)} (24h)${minGain}${needMore}` : "";
+            } else if (wl.usd_gain == null && wl.session_usd_gain == null && wl.day_usd_gain == null && wl.day_pct_gain == null) {
+              return `<div class="scanner-source-row"><span class="badge badge-dex">WL</span> <span>${sym} ${priceStr}: building baseline…${ruleNote}</span></div>`;
+            }
+            const sessNote = wl.session_usd_gain != null && Math.abs(wl.session_usd_gain) > 0.01
+              ? ` [session ${wl.session_usd_gain >= 0 ? "+" : ""}$${wl.session_usd_gain.toFixed(2)}]`
+              : "";
+            const statusLabel = wl.entry_status || (wl.qualifies ? "eligible" : "standby");
+            const badgeClass = (isWsol || isSolProxy) ? "badge-birdeye" : (isWeth ? "badge-gmgn" : "badge-dex");
+            return `<div class="scanner-source-row"><span class="badge ${badgeClass}">${badge}</span> <span>${sym} ${priceStr}${mintCa}${gainNote}${sessNote}${ruleNote} — ${statusLabel}</span></div>`;
+          }).join("");
+        }
+      }
+      updateScannerZeroWarning(s);
+      const maxPotBadge = document.getElementById("maxPotentialBadge");
+      if (maxPotBadge) {
+        const maxPot = (s.config && s.config.max_potential_mode) || false;
+        maxPotBadge.style.display = maxPot ? "inline-block" : "none";
+      }
+      updateScannerApiKeyBadges((s.config || {}).scanner_api_keys, s.birdeye_scan_status, s.pumpfun_scan_status, s.gmgn_scan_status);
+      document.getElementById("botError").textContent = s.error || "—";
+
+      const fw = s.firewall || {};
+      const fwEl = document.getElementById("firewallStatus");
+      if (fw.active) {
+        fwEl.innerHTML = `<span class="badge badge-firewall">Active — localhost only</span>`;
+      } else {
+        fwEl.innerHTML = `<span class="badge badge-stopped">Inactive</span>`;
+      }
+      syncBotSessionFromStatus(s);
+
+      const tg = s.transfer_guard || {};
+      const tgEl = document.getElementById("transferGuardStatus");
+      if (tgEl) {
+        if (tg.active) {
+          const blocked = tg.blocked_transfer_attempts || 0;
+          tgEl.innerHTML = `<span class="badge badge-firewall">Active — Jupiter swaps only</span>` +
+            (blocked > 0 ? ` <span class="hint">(${blocked} blocked)</span>` : "");
+        } else {
+          tgEl.innerHTML = `<span class="badge badge-stopped">Disabled</span>`;
+        }
+      }
+
+      if (s.balance_sol != null || s.balance_simulated || s.wallet_balance_sol != null) {
+        displayBalanceForMode(
+          s.balance_sol,
+          isPaperTrade(s) || s.balance_simulated,
+          s.balance_simulated,
+          s
+        );
+      } else if (isPaperTrade(s) || document.getElementById("paperTradeToggle").checked) {
+        displayBalanceForMode(paperRunningBalance ?? paperStartingBalanceSol, true, true, s);
+      }
+      if (s.paper_simulated_balance_sol != null) {
+        paperRunningBalance = s.paper_simulated_balance_sol;
+      }
+      if (s.paper_target_balance_sol != null) {
+        paperStartingBalanceSol = s.paper_target_balance_sol;
+      }
+      if (s.live_tradeable_balance_sol != null) {
+        liveTradeableBalanceSol = s.live_tradeable_balance_sol;
+        const liveInput = document.getElementById("liveTradeableInput");
+        if (liveInput && !document.getElementById("paperTradeToggle").checked) {
+          liveInput.value = liveTradeableBalanceSol.toFixed(2);
+        }
+      }
+      updateStrategyBalanceStatus(
+        isPaperTrade(s) || document.getElementById("paperTradeToggle").checked,
+        s
+      );
+      if (s.min_fund_sol != null) minFundSol = s.min_fund_sol;
+      minFundWaiverActive = s.min_fund_waiver_active === true || s.min_fund_waived === true;
+      if (s.max_wallet_trade_pct != null) backendMaxWalletTradePct = s.max_wallet_trade_pct;
+      document.getElementById("minFunding").textContent =
+        minFundWaiverActive
+          ? minFundSol.toFixed(2) + " SOL (waived — active session)"
+          : minFundSol.toFixed(2) + " SOL";
+      updateTradeSizeUI(s);
+      if (s.computed_trade_size_sol != null) {
+        document.getElementById("computedTradeSize").textContent =
+          s.computed_trade_size_sol.toFixed(4) + " SOL";
+      } else {
+        updateComputedTradeSize(
+          effectiveBalanceForSizing(isPaperTrade(s), s),
+          isPaperTrade(s),
+          s
+        );
+      }
+      updateFundingUI(effectiveBalanceForSizing(isPaperTrade(s), s), isPaperTrade(s));
+
+      const btnStop = document.getElementById("btnStop");
+      const stopping = s.status === "stopping" || stopInFlight;
+      btnStop.disabled = !active || stopInFlight;
+      btnStop.textContent = stopping ? "Stopping..." : "Stop Bot";
+      if (active) {
+        document.getElementById("paperTradeToggle").checked = paperTrade;
+        document.getElementById("paperTradeToggle").disabled = true;
+        document.getElementById("includePumpfunToggle").disabled = true;
+        document.getElementById("includeBirdeyeToggle").disabled = true;
+        document.getElementById("includeGmgnToggle").disabled = true;
+      } else {
+        document.getElementById("paperTradeToggle").disabled = false;
+        document.getElementById("includePumpfunToggle").disabled = false;
+        document.getElementById("includeBirdeyeToggle").disabled = false;
+        document.getElementById("includeGmgnToggle").disabled = false;
+      }
+      updateLiveModeWarning();
+      updateLiveChecklist(s);
+      updateQuickStartSteps(s);
+      updateStartButtonState(s);
+      updateRunningPnlUI(s);
+      updatePaperSessionUI(s);
+    }
+
+    function formatInstantExits(cfg) {
+      const pct3 = cfg && cfg.instant_exit_3pct != null
+        ? (cfg.instant_exit_3pct * 100).toFixed(2) : "3.25";
+      const pct5 = cfg && cfg.instant_profit_exit_pct != null
+        ? Math.round(cfg.instant_profit_exit_pct * 100) : 5;
+      const enabled = !cfg || cfg.instant_profit_exit_enabled !== false;
+      if (!enabled) return "instant exit disabled";
+      return "Instant +" + pct3 + "% / +" + pct5 + "% full exit";
+    }
+
+    function formatTpLadder(levels, portions, cfg) {
+      if (!levels || !levels.length) {
+        return formatInstantExits(cfg || {
+          instant_exit_3pct: spreadDefaults.instant_exit_3pct,
+          instant_profit_exit_pct: spreadDefaults.instant_profit_exit_pct,
+        });
+      }
+      return levels.map((lvl, i) => {
+        const pct = (lvl * 100).toFixed(2);
+        const portion = portions && portions[i] != null ? (portions[i] * 100).toFixed(0) : "50";
+        return `L${i + 1}: +${pct}% (sell ${portion}%)`;
+      }).join(" · ");
+    }
+
+    function renderTpLadder(levels, portions, cfg) {
+      const el = document.getElementById("tpLadderDisplay");
+      if (!el) return;
+      if (!levels || !levels.length) {
+        el.textContent = formatInstantExits(cfg || lastStrategyCfg || spreadDefaults);
+        return;
+      }
+      el.textContent = levels.map((lvl, i) => {
+        const pct = (lvl * 100).toFixed(2);
+        const portion = portions && portions[i] != null ? (portions[i] * 100).toFixed(0) : "50";
+        return `L${i + 1} +${pct}% (${portion}%)`;
+      }).join(" · ");
+    }
+
+    function fmtSol(v) {
+      if (v == null || Number.isNaN(v)) return "—";
+      return v.toFixed(4);
+    }
+
+    function fmtTokens(v) {
+      if (v == null) return "—";
+      const n = Number(v);
+      if (Number.isNaN(n)) return "—";
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+      if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+      return n.toLocaleString();
+    }
+
+    function setStopLossPct(value) {
+      const el = document.getElementById("slPct");
+      const num = parseFloat(value);
+      const allowed = ["0.015", "0.02", "0.03", "0.05"];
+      if (!Number.isFinite(num)) {
+        el.value = "0.015";
+        return;
+      }
+      const match = allowed.find((v) => Math.abs(num - parseFloat(v)) < 1e-9);
+      el.value = match ?? "0.015";
+    }
+
+    function setEntryMomentumPct(value) {
+      const el = document.getElementById("entryPct");
+      const num = parseFloat(value);
+      const allowed = ["0.0025", "0.005", "0.0075"];
+      if (!Number.isFinite(num)) {
+        el.value = "0.0075";
+        return;
+      }
+      const match = allowed.find((v) => Math.abs(num - parseFloat(v)) < 1e-9);
+      el.value = match ?? "0.0075";
+    }
+
+    function setTradeSize(value) {
+      const el = document.getElementById("tradeSize");
+      const num = parseFloat(value);
+      const allowed = ["0.05", "0.07", "0.10", "0.20", "0.30", "0.50", "1.0"];
+      if (!Number.isFinite(num)) {
+        el.value = "0.05";
+        return;
+      }
+      const match = allowed.find((v) => Math.abs(num - parseFloat(v)) < 1e-9);
+      el.value = match ?? "0.05";
+    }
+
+    function updateTradeSizeUI(status) {
+      const tradeSize = parseFloat(document.getElementById("tradeSize").value) || 0;
+      const maxEl = document.getElementById("maxPerTrade");
+      if (maxEl) maxEl.textContent = tradeSize.toFixed(2) + " SOL";
+      const usePaper = document.getElementById("paperTradeToggle").checked;
+      const sizingBalance = paperBalanceForSizing(usePaper, status);
+      const walletLabelEl = document.getElementById("tradeSizeWalletLabel");
+      if (walletLabelEl) {
+        walletLabelEl.textContent = usePaper ? "paper wallet" : "tradeable wallet";
+      }
+      const capHint = document.getElementById("tradeSizeCapHint");
+      if (sizingBalance != null && capHint) {
+        const available = Math.max(sizingBalance - minSolReserve, 0);
+        const walletCap = available * backendMaxWalletTradePct;
+        const effective = Math.min(tradeSize, maxPositionSol, walletCap);
+        if (effective < tradeSize - 1e-9) {
+          capHint.style.display = "block";
+          capHint.textContent =
+            "Capped to ~" + effective.toFixed(2) + " SOL — increase balance or pick smaller size.";
+        } else {
+          capHint.style.display = "none";
+        }
+      } else if (capHint) {
+        capHint.style.display = "none";
+      }
+      updateComputedTradeSize(sizingBalance, usePaper, status);
+    }
+
+    function updateSpreadHints() {
+      document.getElementById("entryDefaultHint").textContent =
+        `(default: ${(spreadDefaults.entry_momentum_pct * 100).toFixed(2)}%)`;
+      document.getElementById("tpDefaultHint").textContent =
+        `(default: ${formatTpLadder(spreadDefaults.take_profit_levels, spreadDefaults.take_profit_portions, spreadDefaults)})`;
+      document.getElementById("slDefaultHint").textContent =
+        `(default: ${(spreadDefaults.stop_loss_pct * 100).toFixed(2)}%)`;
+    }
+
+    function fmtPoolLiquidityMin(usd) {
+      if (usd == null || Number.isNaN(usd)) return "—";
+      if (usd >= 1000 && usd % 1000 === 0) return "$" + (usd / 1000) + "k";
+      return fmtUsd(usd);
+    }
+
+    function renderStrategyProfitPanel(cfg) {
+      lastStrategyCfg = cfg;
+      const minNet = cfg.min_expected_net_profit_sol ?? 0.001;
+      const l1Prot = cfg.enable_l1_protection === true;
+      const l1Pct = cfg.l1_protection_pct != null
+        ? (cfg.l1_protection_pct * 100).toFixed(2)
+        : "0.10";
+      const minNetWin = cfg.min_net_win_sol ?? spreadDefaults.min_net_win_sol ?? 0.002;
+      const lossCooldown = cfg.loss_reentry_cooldown_minutes
+        ?? spreadDefaults.loss_reentry_cooldown_minutes ?? 90;
+      const repeatCooldown = cfg.loss_reentry_repeat_cooldown_minutes
+        ?? spreadDefaults.loss_reentry_repeat_cooldown_minutes ?? 180;
+      const slPct = cfg.stop_loss_pct != null
+        ? (cfg.stop_loss_pct * 100).toFixed(2)
+        : "1.50";
+      const wbtcSl = cfg.wbtc_stop_loss_pct ?? spreadDefaults.wbtc_stop_loss_pct ?? 0.02;
+      const maxLoss = cfg.max_loss_per_trade_sol
+        ?? spreadDefaults.max_loss_per_trade_sol ?? 0.012;
+      const wbtcProfitOnly = cfg.wbtc_profit_only_exits !== false;
+      const note = document.getElementById("profitFirstNote");
+      if (note) {
+        const entryImpact = cfg.max_entry_price_impact_pct ?? 1.0;
+        const exitImpact = cfg.max_exit_price_impact_pct ?? 1.5;
+        const roundTrip = cfg.max_round_trip_impact_pct ?? 2.0;
+        note.textContent =
+          "Profit-first: min ladder net " + fmtSol(minNet) + " SOL" +
+          ", min net win " + fmtSol(minNetWin) + " SOL" +
+          ", loss re-entry cooldown " + lossCooldown + "/" + repeatCooldown + " min" +
+          ", SL -" + slPct + "% (WBTC -" + (wbtcSl * 100).toFixed(0) + "%)" +
+          ", max loss alert " + fmtSol(maxLoss) + " SOL" +
+          ", slippage entry ≤" + entryImpact.toFixed(1) + "% / exit immediate (log >"
+          + exitImpact.toFixed(1) + "%) / round-trip ≤" + roundTrip.toFixed(1) + "%" +
+          (l1Prot ? ", L1 protection at +" + l1Pct + "% after L1 partial" : "") +
+          (wbtcProfitOnly ? ", WBTC profit-only exits (net ≥ " + fmtSol(minNetWin) + " after fees)" : "");
+      }
+      const earlyNote = document.getElementById("earlyExitNote");
+      if (earlyNote) {
+        const ladderLevels = cfg.take_profit_levels || [];
+        if (!ladderLevels.length) {
+          earlyNote.textContent = "Early exit: momentum slowdown (no ladder partials)";
+        } else {
+          const levels = cfg.ladder_early_exit_levels || [2, 3];
+          const pct = cfg.momentum_slowdown_pct != null
+            ? Math.round(cfg.momentum_slowdown_pct * 100)
+            : 50;
+          earlyNote.textContent =
+            "Early exit: slowdown after L" + levels.join("/L") +
+            " (momentum < " + pct + "% of peak)";
+        }
+      }
+      const instantNote = document.getElementById("instantExitNote");
+      if (instantNote) {
+        instantNote.textContent = formatInstantExits(cfg);
+      }
+      const weakenNote = document.getElementById("weakenExitNote");
+      if (weakenNote) {
+        const weakenEnabled = cfg.weaken_exit_enabled !== false;
+        const minPct = cfg.weaken_exit_min_profit_pct != null
+          ? Math.round(cfg.weaken_exit_min_profit_pct * 100)
+          : 2;
+        weakenNote.textContent = weakenEnabled
+          ? "Weakening trend + ≥" + minPct + "% profit → sell all"
+          : "Global weaken exit disabled";
+      }
+      const fees = cfg.estimated_fees_sol;
+      const ladderNet = cfg.expected_ladder_net_sol;
+      const ladderGross = cfg.expected_ladder_gross_sol ?? cfg.gross_profit_target_sol;
+      const feeText = fees != null ? "~" + fmtSol(fees) + " SOL" : "—";
+      document.getElementById("expectedLadderNet").textContent =
+        ladderNet != null ? fmtSol(ladderNet) + " SOL" : "—";
+      document.getElementById("estimatedFees").textContent = feeText;
+      document.getElementById("expectedLadderGross").textContent =
+        ladderGross != null ? fmtSol(ladderGross) + " SOL" : "—";
+      const roundTripFees = document.getElementById("roundTripFeesDisplay");
+      if (roundTripFees) roundTripFees.textContent = feeText;
+      const roundTripNet = document.getElementById("roundTripNetDisplay");
+      if (roundTripNet) {
+        roundTripNet.textContent = ladderNet != null ? fmtSol(ladderNet) + " SOL" : "—";
+      }
+      const feeHint = document.getElementById("feeSourceHint");
+      if (feeHint) {
+        const src = cfg.fee_source || "fallback";
+        const labels = (cfg.fee_breakdown && cfg.fee_breakdown.route_labels_buy) || [];
+        feeHint.textContent = src === "jupiter"
+          ? "live Jupiter quote" + (labels.length ? " via " + labels.slice(0, 2).join(", ") : "")
+          : "conservative estimate (chain + DEX bps)";
+      }
+      updateSetupSummaryLine(cfg);
+    }
+
+    async function refreshStrategyPreview(tradeSizeSol) {
+      const size = tradeSizeSol != null ? tradeSizeSol : parseFloat(document.getElementById("tradeSize").value);
+      if (!Number.isFinite(size) || size <= 0) return;
+      try {
+        const cfg = await api("/api/config?trade_size_sol=" + size + "&live_fees=true");
+        renderTpLadder(cfg.take_profit_levels, cfg.take_profit_portions, cfg);
+        if (cfg.spread_defaults) spreadDefaults = cfg.spread_defaults;
+        renderStrategyProfitPanel(cfg);
+        updateSpreadHints();
+      } catch (e) {
+        console.warn("Strategy preview refresh failed:", e);
+      }
+    }
+
+    function fillConfig(cfg, respectTouched = true) {
+      if (cfg.spread_defaults) spreadDefaults = cfg.spread_defaults;
+      if (cfg.instant_profit_exit_pct != null) {
+        window.__instantExitPct = cfg.instant_profit_exit_pct;
+      }
+      if (cfg.instant_exit_3pct != null) {
+        window.__instantExit3Pct = cfg.instant_exit_3pct;
+      }
+      if (cfg.min_fund_sol != null) minFundSol = cfg.min_fund_sol;
+      if (cfg.paper_target_balance_sol != null) {
+        paperStartingBalanceSol = cfg.paper_target_balance_sol;
+      } else if (cfg.paper_simulated_balance_sol != null) {
+        paperStartingBalanceSol = cfg.paper_simulated_balance_sol;
+      }
+      if (cfg.min_paper_simulated_balance_sol != null) {
+        minPaperBalanceSol = cfg.min_paper_simulated_balance_sol;
+      }
+      if (cfg.max_paper_simulated_balance_sol != null) {
+        maxPaperBalanceSol = cfg.max_paper_simulated_balance_sol;
+      }
+      if (cfg.max_paper_balance_sol != null) {
+        maxPaperBalanceSol = cfg.max_paper_balance_sol;
+      }
+      if (cfg.live_tradeable_balance_sol != null) {
+        liveTradeableBalanceSol = cfg.live_tradeable_balance_sol;
+      }
+      if (cfg.min_live_tradeable_balance_sol != null) {
+        minLiveTradeableBalanceSol = cfg.min_live_tradeable_balance_sol;
+      }
+      if (cfg.max_live_tradeable_balance_sol != null) {
+        maxLiveTradeableBalanceSol = cfg.max_live_tradeable_balance_sol;
+      }
+      const paperInput = document.getElementById("paperBalanceInput");
+      if (paperInput && document.getElementById("paperTradeToggle").checked) {
+        paperInput.value = paperStartingBalanceSol.toFixed(2);
+      }
+      const liveInput = document.getElementById("liveTradeableInput");
+      if (liveInput && !document.getElementById("paperTradeToggle").checked) {
+        liveInput.value = liveTradeableBalanceSol.toFixed(2);
+        liveInput.min = String(minLiveTradeableBalanceSol);
+        liveInput.max = String(maxLiveTradeableBalanceSol);
+      }
+      if (cfg.max_wallet_trade_pct != null) backendMaxWalletTradePct = cfg.max_wallet_trade_pct;
+      if (cfg.min_sol_reserve != null) minSolReserve = cfg.min_sol_reserve;
+      if (cfg.max_position_sol != null) maxPositionSol = cfg.max_position_sol;
+      if (!respectTouched || !tradeSizeTouched) {
+        setTradeSize(cfg.trade_size_sol);
+      }
+      if (!respectTouched || !entryMomentumTouched) {
+        setEntryMomentumPct(cfg.entry_momentum_pct ?? spreadDefaults.entry_momentum_pct);
+      }
+      renderTpLadder(cfg.take_profit_levels, cfg.take_profit_portions, cfg);
+      renderStrategyProfitPanel(cfg);
+      if (!respectTouched || !stopLossTouched) {
+        setStopLossPct(cfg.stop_loss_pct ?? spreadDefaults.stop_loss_pct);
+      }
+      document.getElementById("rpcUrl").value = cfg.solana_rpc_url || "";
+      if (cfg.scan_pumpfun != null) {
+        document.getElementById("includePumpfunToggle").checked = cfg.scan_pumpfun;
+      } else if (cfg.include_pumpfun != null) {
+        document.getElementById("includePumpfunToggle").checked = cfg.include_pumpfun;
+      }
+      if (cfg.scan_birdeye != null) {
+        document.getElementById("includeBirdeyeToggle").checked = cfg.scan_birdeye;
+      }
+      if (cfg.scan_gmgn != null) {
+        document.getElementById("includeGmgnToggle").checked = cfg.scan_gmgn;
+      } else if (cfg.gmgn_enabled != null) {
+        document.getElementById("includeGmgnToggle").checked = cfg.gmgn_enabled;
+      }
+      updateScannerApiKeyBadges(cfg.scanner_api_keys);
+      if (cfg.max_open_positions != null) {
+        document.getElementById("maxOpenPositions").textContent = formatMaxPositions(cfg);
+      }
+      if (cfg.reentry_dip_pct != null) {
+        document.getElementById("reentryDipPct").textContent =
+          (cfg.reentry_dip_pct * 100).toFixed(0) + "%";
+      }
+      if (cfg.min_liquidity_usd != null) {
+        document.getElementById("poolLiquidityMin").textContent =
+          fmtPoolLiquidityMin(cfg.min_liquidity_usd);
+      }
+      document.getElementById("minFunding").textContent = minFundSol.toFixed(2) + " SOL";
+      updateTradeSizeUI();
+      updateSpreadHints();
+      if (cfg.config_bookmark != null) {
+        window.updateBookmarkHint(cfg.config_bookmark);
+      }
+      const paperTrade = document.getElementById("paperTradeToggle").checked;
+      if (paperTrade) {
+        displayBalanceForMode(paperRunningBalance ?? paperStartingBalanceSol, true, true);
+      }
+      updateStrategyBalanceStatus(paperTrade);
+      updateComputedTradeSize(currentBalance, paperTrade);
+    }
+
+    function configPayloadFromUI() {
+      return {
+        trade_size_sol: parseFloat(document.getElementById("tradeSize").value),
+        entry_momentum_pct: parseFloat(document.getElementById("entryPct").value),
+        stop_loss_pct: parseFloat(document.getElementById("slPct").value),
+        solana_rpc_url: document.getElementById("rpcUrl").value.trim(),
+        include_pumpfun: document.getElementById("includePumpfunToggle").checked,
+        scan_pumpfun: document.getElementById("includePumpfunToggle").checked,
+        scan_birdeye: document.getElementById("includeBirdeyeToggle").checked,
+        scan_gmgn: document.getElementById("includeGmgnToggle").checked,
+      };
+    }
+
+    function updateComputedTradeSize(balance, paperTrade, status) {
+      const el = document.getElementById("computedTradeSize");
+      const usePaper = paperTrade != null ? paperTrade : document.getElementById("paperTradeToggle").checked;
+      const sizingBalance = usePaper ? paperBalanceForSizing(true, status) : balance;
+      if (sizingBalance == null) {
+        el.textContent = "—";
+        return;
+      }
+      const available = Math.max(sizingBalance - minSolReserve, 0);
+      const cap = available * backendMaxWalletTradePct;
+      const tradeSize = parseFloat(document.getElementById("tradeSize").value) || 0;
+      const computed = Math.min(tradeSize, maxPositionSol, cap);
+      el.textContent = computed.toFixed(4) + " SOL";
+    }
+
+    function updateFundingUI(balance, paperTrade) {
+      const warn = document.getElementById("fundingWarning");
+      const usePaper = paperTrade != null ? paperTrade : document.getElementById("paperTradeToggle").checked;
+      if (usePaper) {
+        warn.style.display = "none";
+        return;
+      }
+      const walletBal = walletBalanceSol != null ? walletBalanceSol : balance;
+      if (minFundWaiverActive && walletBal != null && walletBal < minFundSol) {
+        warn.style.display = "block";
+        warn.className = "hint";
+        warn.textContent =
+          minFundSol.toFixed(2) + " SOL minimum waived (active session). Wallet: " + walletBal.toFixed(4) + " SOL.";
+        return;
+      }
+      warn.className = "negative";
+      if (walletBal != null && walletBal < minFundSol) {
+        warn.style.display = "block";
+        warn.textContent =
+          `Live trading requires at least ${minFundSol.toFixed(2)} SOL in wallet. Current: ${walletBal.toFixed(4)} SOL.`;
+      } else {
+        warn.style.display = "none";
+      }
+    }
+
+    function sourceBadge(source) {
+      const src = (source || "dexscreener").toLowerCase();
+      if (src === "pumpfun") {
+        return '<span class="badge badge-pumpfun">pumpfun</span>';
+      }
+      if (src === "birdeye") {
+        return '<span class="badge badge-birdeye">birdeye</span>';
+      }
+      if (src === "gmgn") {
+        return '<span class="badge badge-gmgn">gmgn</span>';
+      }
+      if (src === "watchlist_mint") {
+        return '<span class="badge badge-dex">watchlist</span>';
+      }
+      return '<span class="badge badge-dex">dex</span>';
+    }
+
+    function renderTopCandidates(candidates, status, candidateLimit) {
+      const body = document.getElementById("topCandidatesBody");
+      if (!body) return;
+      const limit = candidateLimit || 10;
+      const scanning = status && botIsActive(status) && (
+        status.scan_in_progress ||
+        (status.scan_count === 0 && !status.last_scan_time)
+      );
+      const top = (candidates || []).slice(0, limit);
+      if (!top.length) {
+        body.innerHTML = scanning
+          ? '<tr><td colspan="4" class="empty">Scanning…</td></tr>'
+          : '<tr><td colspan="4" class="empty">No candidates yet</td></tr>';
+        return;
+      }
+      body.innerHTML = top.map((m, i) => {
+        const mom = pct(m.momentum_pct);
+        const gainVal = m.day_usd_gain != null ? m.day_usd_gain : m.usd_gain_baseline;
+        const gain = m.source === "watchlist_mint" && gainVal != null
+          ? ` (+$${Number(gainVal).toFixed(2)} day)`
+          : "";
+        const price = m.source === "watchlist_mint" && m.price_usd != null
+          ? `$${Number(m.price_usd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} `
+          : "";
+        const qual = m.source === "watchlist_mint"
+          ? (m.qualifies || m.entry_status === "eligible" ? " eligible" : " standby")
+          : "";
+        return `<tr>
+          <td class="rank">#${i + 1}</td>
+          <td class="sym">${m.symbol}</td>
+          <td class="mom">${price}${mom}${gain}${qual}</td>
+          <td>${sourceBadge(m.source)}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderMovers(movers, status) {
+      const body = document.getElementById("moversBody");
+      if (!body) return;
+      const list = movers || [];
+      const scanning = status && botIsActive(status) && (
+        status.scan_in_progress ||
+        (status.scan_count === 0 && !status.last_scan_time)
+      );
+      if (!list.length) {
+        if (scanning) {
+          body.innerHTML = '<tr><td colspan="6" class="empty">Scanning…</td></tr>';
+          return;
+        }
+        body.innerHTML = '<tr><td colspan="6" class="empty">No movers found</td></tr>';
+        return;
+      }
+      body.innerHTML = list.map(m => `
+        <tr>
+          <td><strong>${m.symbol || "?"}</strong></td>
+          <td>${sourceBadge(m.source)}</td>
+          <td>${fmtPriceUsd(m.price_usd)}</td>
+          <td class="positive">${pct(m.momentum_pct)}</td>
+          <td>${fmtUsd(m.liquidity_usd)}</td>
+          <td>${fmtUsd(m.volume_24h_usd)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderPositionCard(pos, watchlistMints) {
+      const cls = pos.pnl_pct >= 0 ? "positive" : "negative";
+      const wlSet = watchlistMints instanceof Set
+        ? watchlistMints
+        : new Set(watchlistMints ? [watchlistMints] : []);
+      const wlBadge = wlSet.has(pos.mint)
+        ? ' <span class="badge badge-dex" style="font-size:0.65rem">watch</span>'
+        : "";
+      const ladderMarks = positionLadderMarks(pos);
+      const sizeSol = pos.sol_invested ?? pos.size_sol;
+      return `
+        <div class="unified-position-row">
+          <div class="unified-position-main">
+            <span class="sym">${pos.symbol}${wlBadge}${ladderMarks}</span>
+            <span class="position-card-pnl ${cls}">${pct(pos.pnl_pct)}</span>
+          </div>
+          <div class="unified-position-detail">
+            entry <strong>$${pos.entry_price.toFixed(8)}</strong>
+            · current <strong>$${pos.current_price.toFixed(8)}</strong>
+            · <strong>${sizeSol} SOL</strong>
+            · ${Math.round(pos.hold_sec)}s
+          </div>
+        </div>`;
+    }
+
+    function renderPositions(positions, maxPositions, watchlistMints, companionSlot) {
+      const el = document.getElementById("positionPanel");
+      const countEl = document.getElementById("positionsCount");
+      const openCountEl = document.getElementById("openTradesCount");
+      const count = positions ? positions.length : 0;
+      const max = maxPositions != null ? maxPositions : 1;
+      const headerCount = formatOpenTradesCount(count, max, companionSlot);
+      if (countEl) countEl.textContent = `${count}/${max}`;
+      if (openCountEl) openCountEl.textContent = headerCount;
+      if (!count) {
+        el.className = "unified-positions empty";
+        el.innerHTML = "No open positions";
+        return;
+      }
+      el.className = "unified-positions";
+      el.innerHTML = positions.map(p => renderPositionCard(p, watchlistMints)).join("");
+    }
+
+    function renderPosition(pos) {
+      renderPositions(pos ? [pos] : [], 1);
+    }
+
+    function renderTrades(trades) {
+      const body = document.getElementById("tradesBody");
+      if (!trades.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty">No trades yet</td></tr>';
+        return;
+      }
+      body.innerHTML = trades.map(t => {
+        const pnlPct = t.pnl_pct != null ? t.pnl_pct : t.pnl_pct_sol;
+        const pnlPctHtml = pnlPct != null
+          ? `<span class="${pnlPct >= 0 ? "positive" : "negative"}">${pct(pnlPct)}</span>`
+          : "—";
+        const pnlSol = t.pnl_sol != null
+          ? `<span class="${t.pnl_sol >= 0 ? "positive" : "negative"}">${fmtSol(t.pnl_sol)}</span>`
+          : "—";
+        const solIn = t.sol_in != null ? fmtSol(t.sol_in) : (t.action === "buy" ? fmtSol(t.size_sol) : "—");
+        const solOut = t.sol_out != null ? fmtSol(t.sol_out) : "—";
+        const tokenAmt = t.token_amount != null ? fmtTokens(t.token_amount) : (t.token_amount_raw != null ? fmtTokens(t.token_amount_raw) : "—");
+        const usdVal = t.tokens_usd_value != null
+          ? ` <span class="hint">($${Number(t.tokens_usd_value).toFixed(2)})</span>`
+          : (t.action === "buy" && t.entry_price && t.token_amount
+            ? ` <span class="hint">($${(t.token_amount * t.entry_price).toFixed(2)})</span>`
+            : "");
+        const tokens = tokenAmt + usdVal;
+        const actionLabel = t.action === "sell_partial"
+          ? `sell L${t.tp_level || "?"}`
+          : t.action;
+        const cliLine = formatTradeCliLine(t);
+        return `<tr>
+          <td>${fmtTime(t.timestamp)}</td>
+          <td>${actionLabel}${(t.paper_trade || t.dry_run) ? " (paper)" : ""}</td>
+          <td>${t.symbol || "—"}</td>
+          <td>${solIn}</td>
+          <td>${solOut}</td>
+          <td>${tokens}</td>
+          <td>${pnlSol}</td>
+          <td>${pnlPctHtml}</td>
+        </tr>
+        <tr><td colspan="8" class="trade-cli-feed" style="padding:0.35rem 0.75rem;font-size:0.72rem;border-bottom:1px solid var(--border)">${cliLine}</td></tr>`;
+      }).join("");
+    }
+
+    function renderLogs(logs) {
+      const box = document.getElementById("logBox");
+      if (!box) return;
+      box.textContent = logs.length ? logs.join("\n") : "No logs yet";
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function fmtPnlBlock(profit, losses, net) {
+      const netVal = net != null ? net : (profit - losses);
+      const netClass = netVal >= 0 ? "positive" : "negative";
+      return (
+        `<span class="positive">Profit: ${fmtSol(profit)}</span>` +
+        ` | <span class="negative">Losses: ${fmtSol(losses)}</span>` +
+        ` | <span class="${netClass}">Net: ${fmtSol(netVal)}</span>`
+      );
+    }
+
+    function renderTaxPreview(data) {
+      document.getElementById("taxRecordCount").textContent = data.count ?? 0;
+      const hasRecords = !!data.count;
+      ["btnExportTaxCsv", "btnExportTaxXlsx", "btnExportMonthlyCsv", "btnExportYearlyCsv"].forEach(id => {
+        document.getElementById(id).disabled = !hasRecords;
+      });
+
+      const totalsEl = document.getElementById("taxTotals");
+      const profit = data.total_profit_sol ?? 0;
+      const losses = data.total_losses_sol ?? 0;
+      if (hasRecords) {
+        totalsEl.innerHTML = fmtPnlBlock(profit, losses);
+      } else {
+        totalsEl.textContent = "—";
+      }
+
+      const monthEl = document.getElementById("taxCurrentMonth");
+      const yearEl = document.getElementById("taxCurrentYear");
+      if (data.current_month) {
+        const m = data.current_month;
+        monthEl.innerHTML = fmtPnlBlock(
+          m.total_profit_sol ?? 0,
+          m.total_losses_sol ?? 0,
+          m.net_pnl_sol
+        );
+      } else {
+        monthEl.textContent = "—";
+      }
+      if (data.current_year) {
+        const y = data.current_year;
+        yearEl.innerHTML = fmtPnlBlock(
+          y.total_profit_sol ?? 0,
+          y.total_losses_sol ?? 0,
+          y.net_pnl_sol
+        );
+      } else {
+        yearEl.textContent = "—";
+      }
+
+      const body = document.getElementById("taxPreviewBody");
+      const rows = data.rows || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="5" class="empty">No live tax records yet</td></tr>';
+      } else {
+        body.innerHTML = rows.map(r => {
+          const pnl = r.pnl_sol != null && r.pnl_sol !== "" ? parseFloat(r.pnl_sol) : null;
+          const pnlHtml = pnl != null
+            ? `<span class="${pnl >= 0 ? "positive" : "negative"}">${fmtSol(pnl)}</span>`
+            : "—";
+          const mint = r.contract_address || "";
+          const mintShort = mint ? mint.slice(0, 8) + "…" : "—";
+          const ts = fmtTime(r.timestamp);
+          return `<tr>
+            <td>${ts}</td>
+            <td>${r.token_symbol || "—"}</td>
+            <td>${r.action || "—"}</td>
+            <td>${pnlHtml}</td>
+            <td class="mono">${mintShort}</td>
+          </tr>`;
+        }).join("");
+      }
+
+      const monthlyBody = document.getElementById("taxMonthlyBody");
+      const monthly = data.monthly || [];
+      if (!monthly.length) {
+        monthlyBody.innerHTML = '<tr><td colspan="6" class="empty">No monthly data yet</td></tr>';
+      } else {
+        monthlyBody.innerHTML = monthly.map(r => {
+          const net = parseFloat(r.net_pnl_sol || 0);
+          return `<tr>
+            <td>${r.year}</td>
+            <td>${r.month}</td>
+            <td class="positive">${fmtSol(parseFloat(r.total_profit_sol || 0))}</td>
+            <td class="negative">${fmtSol(parseFloat(r.total_losses_sol || 0))}</td>
+            <td class="${net >= 0 ? "positive" : "negative"}">${fmtSol(net)}</td>
+            <td>${r.trade_count}</td>
+          </tr>`;
+        }).join("");
+      }
+
+      const yearlyBody = document.getElementById("taxYearlyBody");
+      const yearly = data.yearly || [];
+      if (!yearly.length) {
+        yearlyBody.innerHTML = '<tr><td colspan="5" class="empty">No yearly data yet</td></tr>';
+      } else {
+        yearlyBody.innerHTML = yearly.map(r => {
+          const net = parseFloat(r.net_pnl_sol || 0);
+          return `<tr>
+            <td>${r.year}</td>
+            <td class="positive">${fmtSol(parseFloat(r.total_profit_sol || 0))}</td>
+            <td class="negative">${fmtSol(parseFloat(r.total_losses_sol || 0))}</td>
+            <td class="${net >= 0 ? "positive" : "negative"}">${fmtSol(net)}</td>
+            <td>${r.trade_count}</td>
+          </tr>`;
+        }).join("");
+      }
+    }
+
+    async function refreshTaxPreview() {
+      try {
+        const data = await api("/api/tax/preview?limit=20");
+        renderTaxPreview(data);
+      } catch (e) {
+        console.warn("Tax preview failed:", e);
+      }
+    }
+
+    async function refresh() {
+      try {
+        const status = await api("/api/bot/status");
+        const candidateLimit = def(status.config && status.config.trade_candidate_top_n, 10);
+        const watchlistLimit = def(status.config && status.config.watchlist_top_n, 40);
+        const moversLimit = botIsActive(status) ? watchlistLimit : candidateLimit;
+        const [movers, posData, trades, logs] = await Promise.all([
+          api("/api/movers?limit=" + moversLimit),
+          api("/api/positions"),
+          api("/api/trades?limit=20"),
+          api("/api/logs?limit=80"),
+        ]);
+        try {
+          updateStatusUI(status);
+          if (status.config) {
+            if (!configInitialized) {
+              fillConfig(status.config, false);
+              configInitialized = true;
+            } else if (!botIsActive(status)) {
+              fillConfig(status.config, true);
+            }
+          }
+        } catch (uiErr) {
+          console.error("Status UI update failed:", uiErr);
+        }
+        const moverList = movers.movers || [];
+        const tradeCandidates = pickTradeCandidates(status, moverList);
+        try {
+          renderTopCandidates(tradeCandidates, status, candidateLimit);
+          renderMovers(moverList, status);
+        } catch (moverErr) {
+          console.error("Movers render failed:", moverErr);
+        }
+        const wlMints = new Set(
+          (status.watchlist_mint_statuses || [])
+            .map(w => w.mint)
+            .filter(Boolean)
+        );
+        if (!wlMints.size && status.watchlist_mint_status && status.watchlist_mint_status.mint) {
+          wlMints.add(status.watchlist_mint_status.mint);
+        }
+        try {
+          renderPositions(
+            posData.positions || [],
+            def(posData.max, status.max_open_positions),
+            wlMints,
+            def(posData.wbtc_companion_slot_open, status.wbtc_companion_slot_open)
+          );
+        } catch (posErr) {
+          console.error("Positions render failed:", posErr);
+        }
+        try {
+          renderTrades(trades.trades || []);
+        } catch (trErr) {
+          console.error("Trades render failed:", trErr);
+        }
+        try {
+          renderLogs(logs.logs || []);
+        } catch (logErr) {
+          console.error("Logs render failed:", logErr);
+        }
+        try {
+          updateLiveModeWarning();
+          updateStartButtonState(status);
+        } catch (btnErr) {
+          console.error("Button state update failed:", btnErr);
+        }
+      } catch (e) {
+        console.error("Refresh failed:", e);
+      }
+    }
+
+    function bindUiHandlers() {
+    bindClick("btnSetWallet", async () => {
+      const key = document.getElementById("privateKey").value.trim();
+      if (!key) return alert("Paste your private key first");
+      try {
+        const r = await api("/api/wallet", { method: "POST", body: JSON.stringify({ private_key: key }) });
+        document.getElementById("privateKey").value = "";
+        alert("Wallet set: " + r.public_key);
+        refresh();
+      } catch (e) { alert("Error: " + e.message); }
+    });
+
+    bindClick("btnSaveEnv", async () => {
+      if (!confirm("Save the session private key to .env on disk? Only do this on a trusted machine.")) return;
+      try {
+        await api("/api/wallet/save-env", { method: "POST", body: JSON.stringify({ confirm: true }) });
+        alert("Saved to .env");
+      } catch (e) { alert("Error: " + e.message); }
+    });
+
+    bindClick("btnSetPaperBalance", async () => {
+      const input = document.getElementById("paperBalanceInput");
+      const amount = parseFloat(input.value);
+      if (!Number.isFinite(amount) || amount < minPaperBalanceSol || amount > maxPaperBalanceSol) {
+        alert("Enter a paper balance between " + minPaperBalanceSol + " and " + maxPaperBalanceSol + " SOL.");
+        return;
+      }
+      try {
+        const r = await api("/api/paper/balance", {
+          method: "POST",
+          body: JSON.stringify({ amount }),
+        });
+        if (r.paper_target_balance_sol != null) {
+          paperStartingBalanceSol = r.paper_target_balance_sol;
+          input.value = paperStartingBalanceSol.toFixed(2);
+        }
+        if (r.paper_simulated_balance_sol != null) {
+          paperRunningBalance = r.paper_simulated_balance_sol;
+          displayBalanceForMode(r.paper_simulated_balance_sol, true, true, r);
+        }
+        updateStrategyBalanceStatus(true, r);
+        updateComputedTradeSize(paperRunningBalance ?? paperStartingBalanceSol, true);
+        updateFundingUI(paperRunningBalance ?? paperStartingBalanceSol, true);
+        logActivity("Paper balance set to " + paperStartingBalanceSol.toFixed(2) + " SOL");
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    });
+
+    bindClick("btnResetPaperBalance", async () => {
+      try {
+        const r = await api("/api/paper/balance/reset", { method: "POST", body: "{}" });
+        if (r.paper_target_balance_sol != null) {
+          paperStartingBalanceSol = r.paper_target_balance_sol;
+          document.getElementById("paperBalanceInput").value = paperStartingBalanceSol.toFixed(2);
+        }
+        if (r.paper_simulated_balance_sol != null) {
+          paperRunningBalance = r.paper_simulated_balance_sol;
+          displayBalanceForMode(r.paper_simulated_balance_sol, true, true, r);
+        }
+        updateStrategyBalanceStatus(true, r);
+        updateComputedTradeSize(paperRunningBalance ?? paperStartingBalanceSol, true);
+        updateFundingUI(paperRunningBalance ?? paperStartingBalanceSol, true);
+        logActivity("Paper balance reset to " + paperStartingBalanceSol.toFixed(2) + " SOL");
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    });
+
+    bindClick("btnSetLiveTradeable", async () => {
+      const input = document.getElementById("liveTradeableInput");
+      const amount = parseFloat(input.value);
+      if (!Number.isFinite(amount) || amount < minLiveTradeableBalanceSol || amount > maxLiveTradeableBalanceSol) {
+        alert("Enter a tradeable balance between " + minLiveTradeableBalanceSol + " and " + maxLiveTradeableBalanceSol + " SOL.");
+        return;
+      }
+      try {
+        const r = await api("/api/live/tradeable-balance", {
+          method: "POST",
+          body: JSON.stringify({ amount }),
+        });
+        if (r.live_tradeable_balance_sol != null) {
+          liveTradeableBalanceSol = r.live_tradeable_balance_sol;
+          input.value = liveTradeableBalanceSol.toFixed(2);
+        }
+        if (r.wallet_balance_sol != null) {
+          walletBalanceSol = r.wallet_balance_sol;
+        }
+        displayBalanceForMode(r.effective_balance_sol, false, false, r);
+        updateComputedTradeSize(effectiveBalanceForSizing(false, r), false, r);
+        updateFundingUI(walletBalanceSol, false);
+        logActivity("Tradeable balance set to " + liveTradeableBalanceSol.toFixed(2) + " SOL");
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    });
+
+    bindClick("btnResetLiveTradeable", async () => {
+      try {
+        const r = await api("/api/live/tradeable-balance", {
+          method: "POST",
+          body: JSON.stringify({ amount: minLiveTradeableBalanceSol }),
+        });
+        if (r.live_tradeable_balance_sol != null) {
+          liveTradeableBalanceSol = r.live_tradeable_balance_sol;
+          document.getElementById("liveTradeableInput").value = liveTradeableBalanceSol.toFixed(2);
+        }
+        if (r.wallet_balance_sol != null) {
+          walletBalanceSol = r.wallet_balance_sol;
+        }
+        displayBalanceForMode(r.effective_balance_sol, false, false, r);
+        updateComputedTradeSize(effectiveBalanceForSizing(false, r), false, r);
+        updateFundingUI(walletBalanceSol, false);
+        logActivity("Tradeable balance reset to " + liveTradeableBalanceSol.toFixed(2) + " SOL");
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    });
+
+    bindChange("paperTradeToggle", () => {
+      const paperTrade = document.getElementById("paperTradeToggle").checked;
+      updatePaperBalanceControls(paperTrade);
+      if (paperTrade) {
+        displayBalanceForMode(paperRunningBalance ?? paperStartingBalanceSol, true, true);
+      } else if (walletBalanceSol != null) {
+        displayBalanceForMode(
+          walletBalanceSol != null ? Math.min(walletBalanceSol, liveTradeableBalanceSol) : null,
+          false,
+          false,
+          { wallet_balance_sol: walletBalanceSol, live_tradeable_balance_sol: liveTradeableBalanceSol }
+        );
+      } else {
+        displayBalanceForMode(null, false, false);
+      }
+      updateComputedTradeSize(effectiveBalanceForSizing(paperTrade), paperTrade);
+      updateFundingUI(paperTrade ? currentBalance : walletBalanceSol, paperTrade);
+      updateLiveModeWarning();
+      updateLiveChecklist({ has_wallet: !!document.getElementById("walletAddress").textContent.trim() && document.getElementById("walletAddress").textContent !== "—" });
+      updateQuickStartSteps({ public_key: document.getElementById("walletAddress").textContent });
+      updateStartButtonState(lastBotStatus);
+    });
+
+    bindChange("entryPct", () => {
+      entryMomentumTouched = true;
+    });
+
+    bindChange("slPct", () => {
+      stopLossTouched = true;
+    });
+
+    bindChange("tradeSize", () => {
+      tradeSizeTouched = true;
+      updateComputedTradeSize(currentBalance);
+      updateTradeSizeUI();
+      refreshStrategyPreview();
+    });
+
+    async function startBotRequest(paper_trade, cfg) {
+      const payload = { paper_trade, ...cfg };
+      try {
+        await api("/api/bot/start", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      } catch (e) {
+        const isAlreadyRunning =
+          e.code === "already_running" || /already running/i.test(e.message || "");
+        if (!isAlreadyRunning) throw e;
+        await api("/api/bot/force-reset", { method: "POST", body: "{}" });
+        await api("/api/bot/start", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+    }
+
+    bindClick("btnStart", async () => {
+      if (startInFlight) return;
+      const paper_trade = document.getElementById("paperTradeToggle").checked;
+      if (!paper_trade) {
+        if (!minFundWaiverActive && currentBalance != null && currentBalance < minFundSol) {
+          alert(
+            "Live Trading requires at least " + minFundSol.toFixed(2) + " SOL. " +
+            "Current balance: " + currentBalance.toFixed(4) + " SOL."
+          );
+          return;
+        }
+        if (!confirm("Start LIVE trading? Real funds will be used for Jupiter swaps.")) return;
+      }
+      const cfg = configPayloadFromUI();
+      const slBefore = cfg.stop_loss_pct;
+      const entryBefore = cfg.entry_momentum_pct;
+      const btnStart = document.getElementById("btnStart");
+      startInFlight = true;
+      btnStart.disabled = true;
+      try {
+        await api("/api/bot/force-reset", { method: "POST", body: "{}" });
+        await startBotRequest(paper_trade, cfg);
+        await refresh();
+        setStopLossPct(slBefore);
+        setEntryMomentumPct(entryBefore);
+      } catch (e) {
+        alert("Error: " + formatStartError(e));
+        try {
+          await refresh();
+        } catch (_) { /* keep button state from finally */ }
+      } finally {
+        startInFlight = false;
+        try {
+          const status = await api("/api/bot/status");
+          updateStatusUI(status);
+        } catch (_) {
+          updateStartButtonState({ status: "stopped", running: false, can_start: true });
+        }
+      }
+    });
+
+    async function pollUntilStopped(timeoutMs = 10000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const status = await api("/api/bot/status");
+        updateStatusUI(status);
+        const active = status.running != null
+          ? status.running
+          : (status.status === "running" || status.status === "starting" || status.status === "stopping");
+        if (!active) {
+          return status;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      return api("/api/bot/status");
+    }
+
+    async function applyPresetToServer(preset) {
+      const payload = {};
+      for (const [key, val] of Object.entries(preset)) {
+        payload[key] = val;
+      }
+      try {
+        await api("/api/config", { method: "POST", body: JSON.stringify(payload) });
+      } catch (e) {
+        console.warn("Preset config apply failed:", e);
+      }
+    }
+
+    async function applySteadyTradePreset() {
+      const preset = spreadDefaults.steady_trade_strategy_preset
+        || spreadDefaults.steady_trade_preset || {
+        trade_size_sol: 0.10,
+        entry_momentum_pct: 0.005,
+        stop_loss_pct: 0.015,
+        min_liquidity_usd: 15000,
+        min_volume_24h_usd: 50000,
+        non_watchlist_min_volume_24h_usd: 50000,
+        min_momentum_pct: 0.015,
+        min_expected_net_profit_sol: 0.002,
+        min_net_win_sol: 0.002,
+        max_entry_price_impact_pct: 1.0,
+        loss_reentry_cooldown_minutes: 120,
+        loss_reentry_repeat_cooldown_minutes: 240,
+        reentry_min_momentum_pct: 0.015,
+        weaken_exit_min_profit_pct: 0.01,
+        reentry_dip_pct: 0.10,
+        max_potential_mode: false,
+        gmgn_min_liquidity_usd: 15000,
+        take_profit_levels: [],
+        take_profit_portions: [],
+        instant_exit_3pct: 0.0325,
+        instant_profit_exit_pct: 0.05,
+      };
+      try {
+        const r = await api("/api/config/apply-steady-trade-strategy", {
+          method: "POST",
+          body: JSON.stringify({ save_bookmark: true }),
+        });
+        if (r.config) fillConfig(r.config, false);
+        window.updateBookmarkHint(r.config_bookmark || { exists: true, label: "pre-steady-trade" });
+        logActivity("Applied Steady Trade strategy", { preset: r.preset || "steady_trade_strategy" });
+      } catch (e) {
+        console.warn("Steady Trade strategy apply failed, falling back to preset POST:", e);
+        try {
+          const bookmark = await api("/api/config/save-bookmark", {
+            method: "POST",
+            body: JSON.stringify({ label: "pre-steady-trade" }),
+          });
+          window.updateBookmarkHint(bookmark.config_bookmark || { exists: true, label: bookmark.label });
+        } catch (bookmarkErr) {
+          console.warn("Bookmark save failed:", bookmarkErr);
+        }
+        await applyPresetToServer(preset);
+      }
+      setTradeSize(preset.trade_size_sol ?? 0.10);
+      setEntryMomentumPct(preset.entry_momentum_pct ?? 0.005);
+      setStopLossPct(preset.stop_loss_pct ?? 0.015);
+      tradeSizeTouched = true;
+      stopLossTouched = true;
+      entryMomentumTouched = true;
+      if (preset.take_profit_levels && preset.take_profit_portions) {
+        renderTpLadder(preset.take_profit_levels, preset.take_profit_portions, preset);
+      }
+      refreshStrategyPreview(preset.trade_size_sol ?? 0.10);
+      if (lastStrategyCfg) {
+        updateSetupSummaryLine({
+          ...lastStrategyCfg,
+          ...preset,
+          max_potential_mode: preset.max_potential_mode ?? false,
+        });
+      }
+    }
+
+    async function applyBalancedWinPreset() {
+      const preset = spreadDefaults.balanced_win_strategy_preset
+        || spreadDefaults.balanced_win_preset || {
+        trade_size_sol: 0.10,
+        entry_momentum_pct: 0.005,
+        stop_loss_pct: 0.015,
+        min_liquidity_usd: 15000,
+        min_volume_24h_usd: 50000,
+        non_watchlist_min_volume_24h_usd: 50000,
+        min_momentum_pct: 0.015,
+        min_expected_net_profit_sol: 0.002,
+        min_net_win_sol: 0.002,
+        max_entry_price_impact_pct: 1.0,
+        loss_reentry_cooldown_minutes: 90,
+        loss_reentry_repeat_cooldown_minutes: 180,
+        reentry_min_momentum_pct: 0.005,
+        weaken_exit_min_profit_pct: 0.01,
+        reentry_dip_pct: 0.10,
+        max_potential_mode: false,
+        gmgn_min_liquidity_usd: 15000,
+        take_profit_levels: [],
+        take_profit_portions: [],
+        instant_exit_3pct: 0.0325,
+        instant_profit_exit_pct: 0.05,
+      };
+      try {
+        const r = await api("/api/config/apply-balanced-win-strategy", {
+          method: "POST",
+          body: JSON.stringify({ save_bookmark: true }),
+        });
+        if (r.config) fillConfig(r.config, false);
+        window.updateBookmarkHint(r.config_bookmark || { exists: true, label: "pre-best-win" });
+        logActivity("Applied Balanced Win strategy", { preset: r.preset || "balanced_win_strategy" });
+      } catch (e) {
+        console.warn("Balanced Win strategy apply failed, falling back to preset POST:", e);
+        try {
+          const bookmark = await api("/api/config/save-bookmark", {
+            method: "POST",
+            body: JSON.stringify({ label: "pre-balanced-win" }),
+          });
+          window.updateBookmarkHint(bookmark.config_bookmark || { exists: true, label: bookmark.label });
+        } catch (bookmarkErr) {
+          console.warn("Bookmark save failed:", bookmarkErr);
+        }
+        await applyPresetToServer(preset);
+      }
+      setTradeSize(preset.trade_size_sol ?? 0.10);
+      setEntryMomentumPct(preset.entry_momentum_pct ?? 0.005);
+      setStopLossPct(preset.stop_loss_pct ?? 0.015);
+      tradeSizeTouched = true;
+      stopLossTouched = true;
+      entryMomentumTouched = true;
+      if (preset.take_profit_levels && preset.take_profit_portions) {
+        renderTpLadder(preset.take_profit_levels, preset.take_profit_portions, preset);
+      }
+      refreshStrategyPreview(preset.trade_size_sol ?? 0.10);
+      if (lastStrategyCfg) {
+        updateSetupSummaryLine({
+          ...lastStrategyCfg,
+          ...preset,
+          max_potential_mode: preset.max_potential_mode ?? false,
+        });
+      }
+    }
+
+    async function applyBestWinPreset() {
+      const preset = spreadDefaults.best_win_strategy_preset
+        || spreadDefaults.best_win_preset
+        || spreadDefaults.win_focused_preset || {
+        trade_size_sol: 0.10,
+        entry_momentum_pct: 0.0075,
+        stop_loss_pct: 0.015,
+        min_liquidity_usd: 15000,
+        min_volume_24h_usd: 40000,
+        non_watchlist_min_volume_24h_usd: 40000,
+        min_momentum_pct: 0.015,
+        min_expected_net_profit_sol: 0.002,
+        min_net_win_sol: 0.002,
+        loss_reentry_cooldown_minutes: 90,
+        loss_reentry_repeat_cooldown_minutes: 180,
+        weaken_exit_min_profit_pct: 0.01,
+        reentry_dip_pct: 0.10,
+        max_potential_mode: false,
+        take_profit_levels: [],
+        take_profit_portions: [],
+        instant_exit_3pct: 0.0325,
+        instant_profit_exit_pct: 0.05,
+      };
+      try {
+        const r = await api("/api/config/apply-best-win-strategy", {
+          method: "POST",
+          body: JSON.stringify({ save_bookmark: true }),
+        });
+        if (r.config) fillConfig(r.config, false);
+        window.updateBookmarkHint(r.config_bookmark || { exists: true, label: "pre-best-win" });
+        logActivity("Applied Best Win strategy", { preset: r.preset || "best_win_strategy" });
+      } catch (e) {
+        console.warn("Best Win strategy apply failed, falling back to preset POST:", e);
+        try {
+          const bookmark = await api("/api/config/save-bookmark", {
+            method: "POST",
+            body: JSON.stringify({ label: "pre-best-win" }),
+          });
+          window.updateBookmarkHint(bookmark.config_bookmark || { exists: true, label: bookmark.label });
+        } catch (bookmarkErr) {
+          console.warn("Bookmark save failed:", bookmarkErr);
+        }
+        await applyPresetToServer(preset);
+      }
+      setTradeSize(preset.trade_size_sol ?? 0.10);
+      setEntryMomentumPct(preset.entry_momentum_pct ?? 0.0075);
+      setStopLossPct(preset.stop_loss_pct ?? 0.015);
+      tradeSizeTouched = true;
+      stopLossTouched = true;
+      entryMomentumTouched = true;
+      if (preset.take_profit_levels && preset.take_profit_portions) {
+        renderTpLadder(preset.take_profit_levels, preset.take_profit_portions, preset);
+      }
+      refreshStrategyPreview(preset.trade_size_sol ?? 0.10);
+      if (lastStrategyCfg) {
+        updateSetupSummaryLine({
+          ...lastStrategyCfg,
+          ...preset,
+          max_potential_mode: preset.max_potential_mode ?? false,
+        });
+      }
+    }
+
+    function applyWinPreset() {
+      applyBestWinPreset();
+    }
+
+    function applyTightLossesPreset() {
+      const preset = spreadDefaults.tight_losses_preset || {
+        trade_size_sol: 0.10,
+        entry_momentum_pct: 0.005,
+        stop_loss_pct: 0.02,
+        min_expected_net_profit_sol: 0.002,
+        min_net_win_sol: 0.003,
+        loss_reentry_cooldown_minutes: 60,
+        weaken_exit_min_profit_pct: 0.01,
+      };
+      setTradeSize(preset.trade_size_sol ?? 0.10);
+      setEntryMomentumPct(preset.entry_momentum_pct ?? 0.005);
+      setStopLossPct(preset.stop_loss_pct ?? 0.02);
+      tradeSizeTouched = true;
+      stopLossTouched = true;
+      entryMomentumTouched = true;
+      refreshStrategyPreview(preset.trade_size_sol ?? 0.10);
+      applyPresetToServer(preset);
+    }
+
+    bindClick("btnRevertBookmark", async () => {
+      if (!confirm("Revert trading setup to the saved pre-Best-Win bookmark? This updates runtime config and .env.")) return;
+      try {
+        const r = await api("/api/config/restore-bookmark", { method: "POST", body: "{}" });
+        stopLossTouched = false;
+        tradeSizeTouched = false;
+        entryMomentumTouched = false;
+        fillConfig(r.config, false);
+        window.updateBookmarkHint(r.config && r.config.config_bookmark ? r.config.config_bookmark : { exists: true, label: r.label });
+        logActivity("Reverted to config bookmark", { label: r.label });
+        alert("Reverted to bookmark: " + (r.label || "pre-best-win") + serverSuffix(r));
+      } catch (e) {
+        alert("Revert failed: " + e.message);
+      }
+    });
+
+    bindClick("btnTightLosses", () => {
+      applyTightLossesPreset();
+    });
+
+    bindClick("btnBestWin", () => {
+      applyBestWinPreset();
+    });
+
+    bindClick("btnBalancedWin", () => {
+      applyBalancedWinPreset();
+    });
+
+    bindClick("btnSteadyTrade", () => {
+      applySteadyTradePreset();
+    });
+
+    bindClick("btnWinPreset", () => {
+      applyWinPreset();
+    });
+
+    bindClick("btnResetSpreads", async () => {
+      setTradeSize(spreadDefaults.trade_size_sol ?? 0.10);
+      setEntryMomentumPct(spreadDefaults.entry_momentum_pct);
+      renderTpLadder(spreadDefaults.take_profit_levels, spreadDefaults.take_profit_portions, spreadDefaults);
+      stopLossTouched = false;
+      tradeSizeTouched = false;
+      entryMomentumTouched = false;
+      setStopLossPct(spreadDefaults.stop_loss_pct);
+      try {
+        const cfg = await api("/api/config");
+        if (cfg.config_bookmark != null) {
+          window.updateBookmarkHint(cfg.config_bookmark);
+        }
+      } catch (e) {
+        console.warn("Reset defaults bookmark hint refresh failed:", e);
+      }
+    });
+
+    bindClick("btnStop", async () => {
+      if (stopInFlight) return;
+      const btnStop = document.getElementById("btnStop");
+      stopInFlight = true;
+      btnStop.disabled = true;
+      btnStop.textContent = "Stopping...";
+      document.getElementById("statusBadge").textContent = "Stopping...";
+      document.getElementById("activityStatus").textContent = "Stopping...";
+      try {
+        const stopResult = await api("/api/bot/stop", { method: "POST", body: "{}" });
+        if (stopResult.paper_balance_reset_on_stop) {
+          if (stopResult.paper_simulated_balance_sol != null) {
+            paperRunningBalance = stopResult.paper_simulated_balance_sol;
+          }
+          if (stopResult.paper_target_balance_sol != null) {
+            paperStartingBalanceSol = stopResult.paper_target_balance_sol;
+          }
+        }
+        await pollUntilStopped(10000);
+        await refresh();
+      } catch (e) {
+        try {
+          await api("/api/bot/force-reset", { method: "POST", body: "{}" });
+          await pollUntilStopped(10000);
+          await refresh();
+        } catch (e2) {
+          alert("Error: " + e2.message);
+        }
+      } finally {
+        stopInFlight = false;
+        try {
+          const status = await api("/api/bot/status");
+          updateStatusUI(status);
+        } catch (_) {
+          btnStop.textContent = "Stop Bot";
+        }
+      }
+    });
+
+    bindClick("btnForceReset", async () => {
+      if (!confirm("Force reset bot state? Use this if Start says 'already running' but the bot is idle.")) return;
+      try {
+        await api("/api/bot/force-reset", { method: "POST", body: "{}" });
+        logActivity("Bot force reset to idle", { server_url: cachedServerUrl });
+        alert("Bot reset to idle." + serverSuffix({ server_url: cachedServerUrl }));
+        refresh();
+      } catch (e) { alert("Error: " + e.message); }
+    });
+
+    bindClick("btnApplyConfig", async () => {
+      try {
+        const r = await api("/api/config", { method: "POST", body: JSON.stringify(configPayloadFromUI()) });
+        stopLossTouched = false;
+        tradeSizeTouched = false;
+        entryMomentumTouched = false;
+        fillConfig(r.config, false);
+        if (r.needs_restart && r.needs_restart.length) {
+          alert("Applied. Restart bot for: " + r.needs_restart.join(", ") + serverSuffix(r.config || r));
+        } else {
+          alert("Config applied" + serverSuffix(r.config || r));
+        }
+        logActivity("Config applied", r.config || r);
+      } catch (e) { alert("Error: " + e.message); }
+    });
+
+    function downloadTaxExport(format, report) {
+      window.location.href = API + `/api/tax/export?format=${format}&report=${report}`;
+    }
+
+    bindClick("btnExportTaxCsv", () => {
+      downloadTaxExport("csv", "trades");
+    });
+    bindClick("btnExportTaxXlsx", () => {
+      downloadTaxExport("xlsx", "trades");
+    });
+    bindClick("btnExportMonthlyCsv", () => {
+      downloadTaxExport("csv", "monthly");
+    });
+    bindClick("btnExportYearlyCsv", () => {
+      downloadTaxExport("csv", "yearly");
+    });
+
+    bindClick("btnExportPaperCsv", () => {
+      window.location.href = API + "/api/paper/export";
+    });
+
+    bindClick("toggleKeyVis", () => {
+      const inp = document.getElementById("privateKey");
+      const btn = document.getElementById("toggleKeyVis");
+      if (inp.type === "password") { inp.type = "text"; btn.textContent = "Hide"; }
+      else { inp.type = "password"; btn.textContent = "Show"; }
+    });
+    }
+
+    async function initApp() {
+      try {
+        const status = await api("/api/bot/status");
+        updateStatusUI(status);
+      } catch (e) {
+        console.warn("Initial status load failed:", e);
+      }
+      try {
+        const cfg = await api("/api/config");
+        fillConfig(cfg, false);
+        configInitialized = true;
+        if (cfg.server_time_unix != null) syncServerClock(cfg.server_time_unix);
+        updateLastSynced(cfg);
+        updateServerUI(cfg);
+        logActivity("Dashboard connected", cfg);
+      } catch (e) {
+        console.warn("Initial config load failed:", e);
+      }
+      applyBranding();
+      try {
+        await refresh();
+      } catch (e) {
+        console.error("Initial refresh failed:", e);
+      }
+      try {
+        await refreshTaxPreview();
+      } catch (e) {
+        console.warn("Initial tax preview failed:", e);
+      }
+      pollTimer = setInterval(function () {
+        refresh().catch(function (e) { console.error("Poll refresh failed:", e); });
+      }, 3000);
+      taxPreviewTimer = setInterval(function () {
+        refreshTaxPreview().catch(function (e) { console.warn("Tax poll failed:", e); });
+      }, TAX_PREVIEW_POLL_MS);
+      paperCountdownTimer = setInterval(tickPaperSessionCountdown, 1000);
+      botSessionTimer = setInterval(tickBotSessionTimer, 1000);
+    }
+
+    async function registerServiceWorkerSafe() {
+      if (!("serviceWorker" in navigator)) return;
+      try {
+        await navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+      } catch (err) {
+        console.warn("Service worker registration failed (OK in Brave strict mode):", err);
+        showBrowserCompatNote(
+          "Offline cache disabled (service worker blocked). Dashboard API buttons still work — " +
+          "in Brave, lower Shields for 127.0.0.1 if fetch fails."
+        );
+        try {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (let i = 0; i < regs.length; i++) {
+            await regs[i].unregister();
+          }
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    function bootDashboard() {
+      if (isFirefox()) {
+        console.info("[Firefox] Solana Mover dashboard boot —", navigator.userAgent);
+      }
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem("_sol_bot_ping", String(Date.now()));
+        }
+      } catch (storageErr) {
+        console.warn("localStorage unavailable (private browsing OK):", storageErr);
+      }
+      bindUiHandlers();
+      initApp().catch(function (e) {
+        console.error("initApp failed:", e);
+        const hint = isFirefox()
+          ? "Dashboard init error — hard refresh (Ctrl+Shift+R) to reload scripts."
+          : "Dashboard init error — hard refresh (Ctrl+Shift+R). Brave: disable Shields for 127.0.0.1.";
+        showBrowserCompatNote(hint);
+      });
+      registerServiceWorkerSafe();
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", bootDashboard);
+    } else {
+      bootDashboard();
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+trades.jsonl
+*.log
+.flask.lock
+.flask.browser
+.flask.server.lock
