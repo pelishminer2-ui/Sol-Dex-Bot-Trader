@@ -131,7 +131,7 @@ class TradingBot:
     ) -> Optional[float]:
         """30s feed momentum; use best of feed vs scanner short-term signal."""
         feed_mom = self.price_feed.get_momentum(mint, current_price)
-        scanner_mom = candidate.price_change_5m or candidate.momentum_pct
+        scanner_mom = candidate.scanner_discovery_momentum() or candidate.momentum_pct
         if feed_mom is None:
             return scanner_mom
         if scanner_mom is None:
