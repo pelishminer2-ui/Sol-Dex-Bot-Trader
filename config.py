@@ -24,6 +24,7 @@ def resolve_data_path(value: str) -> Path:
     return PROJECT_ROOT / path
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
+JITOSOL_MINT = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn"
 WETH_MINT = "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs"
 
 # Standard strategy defaults (used for env fallbacks and GUI "Reset to defaults")
@@ -103,6 +104,9 @@ DEFAULT_INSTANT_PROFIT_EXIT_PCT = 0.05
 DEFAULT_INSTANT_PROFIT_EXIT_ENABLED = True
 DEFAULT_STOP_LOSS_PCT = 0.015
 DEFAULT_WBTC_STOP_LOSS_PCT = 0.02
+DEFAULT_STOP_LOSS_QUOTE_CHECK = True
+DEFAULT_EMERGENCY_STOP_LOSS_PCT = 0.03
+DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = 4.0
 DEFAULT_WBTC_PROFIT_ONLY_EXITS = True
 DEFAULT_GMGN_MIN_LIQUIDITY_USD = 25000
 DEFAULT_MIN_VOLUME_24H_USD = 75000
@@ -139,9 +143,9 @@ DEFAULT_SOL_MIN_CHANGE_1H_PCT = -0.5
 DEFAULT_SOL_MIN_CHANGE_4H_PCT = -1.5
 DEFAULT_SOL_TREND_CACHE_TTL_SEC = 60
 DEFAULT_LOSS_ONE_STRIKE_PER_SESSION = True
-# SOL self-trading via WSOL (default) or liquid-staking proxy on Jupiter.
+# SOL self-trading via JitoSOL (default) or WSOL / other liquid-staking proxy on Jupiter.
 DEFAULT_ENABLE_SOL_TRADING = False
-DEFAULT_SOL_TRADE_MINT = SOL_MINT  # WSOL — tracks SOL/USDC for PnL
+DEFAULT_SOL_TRADE_MINT = JITOSOL_MINT  # JitoSOL — liquid-staking proxy on Jupiter
 DEFAULT_SOL_TRADE_MIN_MOMENTUM_1H_PCT = 0.5  # DexScreener percent points (+0.5%)
 DEFAULT_SOL_TRADE_INSTANT_EXIT_PCT = 0.03
 DEFAULT_SOL_TRADE_EXIT_ON_TREND_COLD = True
@@ -163,6 +167,15 @@ DEFAULT_COLD_MARKET_MIN_VOLUME_24H_USD = 45000.0
 DEFAULT_HOT_MARKET_TARGET_WIN_RATE = 0.55
 DEFAULT_NEUTRAL_MARKET_TARGET_WIN_RATE = 0.50
 DEFAULT_COLD_MARKET_TARGET_WIN_RATE = 0.45
+DEFAULT_SETUP_LEARNING_ENABLED = True
+DEFAULT_SETUP_LEARNING_MIN_TRADES = 5
+DEFAULT_SETUP_LEARNING_MAX_HISTORY = 100
+DEFAULT_SETUP_LEARNING_RAW_HISTORY = 50
+DEFAULT_SETUP_LEARNING_CONDENSE_EVERY = 10
+DEFAULT_SETUP_LEARNING_MAX_AGE_DAYS = 10
+DEFAULT_SETUP_LEARNING_CENTROID_WEIGHT = 0.7
+DEFAULT_SETUP_LEARNING_WIN_WEIGHT = 0.6
+DEFAULT_SETUP_LEARNING_LOSS_WEIGHT = 0.4
 
 
 def is_wbtc_watchlist_mint(mint: str) -> bool:
@@ -423,6 +436,8 @@ STEADY_TRADE_STRATEGY_PRESET = {
     "watchlist_min_usd_gain": DEFAULT_WATCHLIST_MIN_USD_GAIN,
     "gmgn_min_liquidity_usd": 15000.0,
     "hot_market_mode_enabled": True,
+    # Steady Trade tolerates mild SOL pullbacks; cold regime still blocks deep dumps via 4h gate.
+    "sol_min_change_1h_pct": -1.0,
 }
 
 CONFIG_BOOKMARK_PATH = resolve_data_path("presets/win_focused_bookmark.json")
@@ -486,11 +501,13 @@ BEST_WIN_RUNTIME_KEYS = {
 STEADY_TRADE_ENV_KEYS = {
     **BEST_WIN_ENV_KEYS,
     "hot_market_mode_enabled": "HOT_MARKET_MODE_ENABLED",
+    "sol_min_change_1h_pct": "SOL_MIN_CHANGE_1H_PCT",
 }
 
 STEADY_TRADE_RUNTIME_KEYS = {
     **BEST_WIN_RUNTIME_KEYS,
     "hot_market_mode_enabled": "HOT_MARKET_MODE_ENABLED",
+    "sol_min_change_1h_pct": "SOL_MIN_CHANGE_1H_PCT",
 }
 
 
@@ -1089,7 +1106,23 @@ class Config:
         )
     )
     PRICE_POLL_SEC = int(os.getenv("PRICE_POLL_SEC", "5"))
-    POSITION_MONITOR_SEC = int(os.getenv("POSITION_MONITOR_SEC", "2"))
+    POSITION_MONITOR_SEC = int(os.getenv("POSITION_MONITOR_SEC", "1"))
+    STOP_LOSS_QUOTE_CHECK = (
+        os.getenv(
+            "STOP_LOSS_QUOTE_CHECK",
+            "true" if DEFAULT_STOP_LOSS_QUOTE_CHECK else "false",
+        ).lower()
+        == "true"
+    )
+    EMERGENCY_STOP_LOSS_PCT = float(
+        os.getenv("EMERGENCY_STOP_LOSS_PCT", str(DEFAULT_EMERGENCY_STOP_LOSS_PCT))
+    )
+    MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = float(
+        os.getenv(
+            "MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT",
+            str(DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT),
+        )
+    )
     BASELINE_WINDOW_SEC = int(os.getenv("BASELINE_WINDOW_SEC", "30"))
 
     WATCHLIST_MINT = os.getenv("WATCHLIST_MINT", DEFAULT_WATCHLIST_MINT).strip()
@@ -1381,6 +1414,62 @@ class Config:
         )
     except ValueError:
         LIVE_TRADEABLE_BALANCE_SOL = DEFAULT_LIVE_TRADEABLE_BALANCE_SOL
+
+    SETUP_LEARNING_ENABLED = (
+        os.getenv(
+            "SETUP_LEARNING_ENABLED",
+            "true" if DEFAULT_SETUP_LEARNING_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    SETUP_LEARNING_MIN_TRADES = int(
+        os.getenv(
+            "SETUP_LEARNING_MIN_TRADES",
+            str(DEFAULT_SETUP_LEARNING_MIN_TRADES),
+        )
+    )
+    SETUP_LEARNING_MAX_HISTORY = int(
+        os.getenv(
+            "SETUP_LEARNING_MAX_HISTORY",
+            str(DEFAULT_SETUP_LEARNING_MAX_HISTORY),
+        )
+    )
+    SETUP_LEARNING_RAW_HISTORY = int(
+        os.getenv(
+            "SETUP_LEARNING_RAW_HISTORY",
+            str(DEFAULT_SETUP_LEARNING_RAW_HISTORY),
+        )
+    )
+    SETUP_LEARNING_CONDENSE_EVERY = int(
+        os.getenv(
+            "SETUP_LEARNING_CONDENSE_EVERY",
+            str(DEFAULT_SETUP_LEARNING_CONDENSE_EVERY),
+        )
+    )
+    SETUP_LEARNING_MAX_AGE_DAYS = int(
+        os.getenv(
+            "SETUP_LEARNING_MAX_AGE_DAYS",
+            str(DEFAULT_SETUP_LEARNING_MAX_AGE_DAYS),
+        )
+    )
+    SETUP_LEARNING_CENTROID_WEIGHT = float(
+        os.getenv(
+            "SETUP_LEARNING_CENTROID_WEIGHT",
+            str(DEFAULT_SETUP_LEARNING_CENTROID_WEIGHT),
+        )
+    )
+    SETUP_LEARNING_WIN_WEIGHT = float(
+        os.getenv(
+            "SETUP_LEARNING_WIN_WEIGHT",
+            str(DEFAULT_SETUP_LEARNING_WIN_WEIGHT),
+        )
+    )
+    SETUP_LEARNING_LOSS_WEIGHT = float(
+        os.getenv(
+            "SETUP_LEARNING_LOSS_WEIGHT",
+            str(DEFAULT_SETUP_LEARNING_LOSS_WEIGHT),
+        )
+    )
 
     TRADE_JOURNAL_PATH = str(resolve_data_path(os.getenv("TRADE_JOURNAL_PATH", "trades.jsonl")))
     SESSION_PNL_PATH = str(resolve_data_path(os.getenv("SESSION_PNL_PATH", "session_pnl.json")))
@@ -1722,6 +1811,8 @@ class Config:
         "MAX_POTENTIAL_MODE": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "BLOCK_STOCK_RELATED_TOKENS": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "HOT_MARKET_MODE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "SOL_MIN_CHANGE_1H_PCT": float,
+        "SOL_MIN_CHANGE_4H_PCT": float,
     }
 
     @classmethod
@@ -2057,6 +2148,15 @@ class Config:
             "hot_market_target_win_rate": cls.HOT_MARKET_TARGET_WIN_RATE,
             "neutral_market_target_win_rate": cls.NEUTRAL_MARKET_TARGET_WIN_RATE,
             "cold_market_target_win_rate": cls.COLD_MARKET_TARGET_WIN_RATE,
+            "setup_learning_enabled": cls.SETUP_LEARNING_ENABLED,
+            "setup_learning_min_trades": cls.SETUP_LEARNING_MIN_TRADES,
+            "setup_learning_max_history": cls.SETUP_LEARNING_MAX_HISTORY,
+            "setup_learning_raw_history": cls.SETUP_LEARNING_RAW_HISTORY,
+            "setup_learning_condense_every": cls.SETUP_LEARNING_CONDENSE_EVERY,
+            "setup_learning_max_age_days": cls.SETUP_LEARNING_MAX_AGE_DAYS,
+            "setup_learning_centroid_weight": cls.SETUP_LEARNING_CENTROID_WEIGHT,
+            "setup_learning_win_weight": cls.SETUP_LEARNING_WIN_WEIGHT,
+            "setup_learning_loss_weight": cls.SETUP_LEARNING_LOSS_WEIGHT,
         }
 
 

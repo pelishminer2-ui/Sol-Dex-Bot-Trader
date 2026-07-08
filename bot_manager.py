@@ -710,6 +710,13 @@ class BotManager:
         }
         result.update(paper_session_manager.get_session_stats())
         result.update(trade_activity.status_fields())
+        from setup_learner import SetupLearner
+
+        result["setup_learning"] = (
+            bot.setup_learner.get_stats()
+            if bot
+            else SetupLearner().get_stats()
+        )
         result["running_pnl"] = pnl_tracker.get_running_pnl()
         result["trade_candidates"] = trade_candidates
         if not trade_candidates and not running:
@@ -753,7 +760,7 @@ class BotManager:
     def _run_idle_scan(self) -> None:
         try:
             from scanner import scan_unified
-            from similarity import SimilarityScorer
+            from setup_learner import SetupLearner
             from watchlist_scanner import fetch_all_watchlist_candidates
             from price_feed import PriceFeed
 
@@ -763,7 +770,12 @@ class BotManager:
                 Config.scan_gmgn_enabled(),
                 first_scan=True,
             )
-            ranked = SimilarityScorer().rank(merged)
+            learner = SetupLearner()
+            ranked = learner.rank(merged) if learner.learning_active else merged
+            if not learner.learning_active:
+                from similarity import SimilarityScorer
+
+                ranked = SimilarityScorer().rank(merged)
             cached = [self._candidate_to_dict(c) for c in ranked[: Config.WATCHLIST_TOP_N]]
             for wl_candidate in reversed(fetch_all_watchlist_candidates(PriceFeed())):
                 wl_dict = self._candidate_to_dict(wl_candidate)

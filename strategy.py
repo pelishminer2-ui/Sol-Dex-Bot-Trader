@@ -97,9 +97,13 @@ class Position:
     def update_peak_pnl(self, current_price: float) -> float:
         """Track highest PnL seen since entry (catches spikes between polls)."""
         pnl = self.pnl_pct(current_price)
-        if pnl > self.peak_pnl_pct:
-            self.peak_pnl_pct = pnl
+        self.bump_peak_pnl(pnl)
         return pnl
+
+    def bump_peak_pnl(self, pnl_pct: float) -> None:
+        """Record highest PnL from any source (mark price, quote, etc.)."""
+        if pnl_pct > self.peak_pnl_pct:
+            self.peak_pnl_pct = pnl_pct
 
     @property
     def tp_level_count(self) -> int:
@@ -755,25 +759,35 @@ class MomentumStrategy:
         position: Position,
         pnl: float,
         effective_pnl: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
     ) -> Optional[ExitSignal]:
-        """Full exit at +5% (fast spike) or +3.25% — higher target checked first."""
+        """Full exit at +5% (fast spike) or +3.25% — mark, peak, or quote PnL."""
         if not Config.INSTANT_PROFIT_EXIT_ENABLED:
             return None
-        if effective_pnl >= Config.INSTANT_PROFIT_EXIT_PCT:
+        trigger_pnl = effective_pnl
+        if executable_pnl_pct is not None:
+            trigger_pnl = max(trigger_pnl, executable_pnl_pct)
+        quote_label = (
+            f"{executable_pnl_pct:.4f}" if executable_pnl_pct is not None else "n/a"
+        )
+        if trigger_pnl >= Config.INSTANT_PROFIT_EXIT_PCT:
             logger.info(
-                "Instant profit exit (+5%%): %s pnl=%.4f peak=%.4f >= %.2f%%",
+                "INSTANT EXIT TRIGGERED (+5%%): %s mark=%.4f peak=%.4f quote=%s >= %.2f%%",
                 position.symbol,
                 pnl,
                 position.peak_pnl_pct,
+                quote_label,
                 Config.INSTANT_PROFIT_EXIT_PCT * 100,
             )
             return ExitSignal(SignalType.SELL_INSTANT_PROFIT)
-        if effective_pnl >= Config.INSTANT_EXIT_3PCT:
+        if trigger_pnl >= Config.INSTANT_EXIT_3PCT:
             logger.info(
-                "Instant profit exit (+3.25%%): %s pnl=%.4f peak=%.4f >= %.2f%%",
+                "INSTANT EXIT TRIGGERED (+3.25%%): %s mark=%.4f peak=%.4f quote=%s >= %.2f%%",
                 position.symbol,
                 pnl,
                 position.peak_pnl_pct,
+                quote_label,
                 Config.INSTANT_EXIT_3PCT * 100,
             )
             return ExitSignal(SignalType.SELL_INSTANT_PROFIT)
@@ -784,20 +798,30 @@ class MomentumStrategy:
         position: Position,
         pnl: float,
         hold_sec: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
     ) -> None:
         """Debug why a position with meaningful profit is still held."""
         peak = position.peak_pnl_pct
         if pnl < 0.03 and peak < 0.03:
-            return
+            if executable_pnl_pct is None or executable_pnl_pct < 0.03:
+                return
 
         reasons: List[str] = []
         if Config.INSTANT_PROFIT_EXIT_ENABLED:
             effective = max(pnl, peak)
+            if executable_pnl_pct is not None:
+                effective = max(effective, executable_pnl_pct)
             if effective < Config.INSTANT_EXIT_3PCT:
+                quote_note = (
+                    f" quote={executable_pnl_pct:.2%}"
+                    if executable_pnl_pct is not None
+                    else ""
+                )
                 reasons.append(
                     f"instant needs >={Config.INSTANT_EXIT_3PCT:.2%} "
                     f"(+5% spike at {Config.INSTANT_PROFIT_EXIT_PCT:.2%}) "
-                    f"(current={pnl:.2%} peak={peak:.2%})"
+                    f"(current={pnl:.2%} peak={peak:.2%}{quote_note})"
                 )
         else:
             reasons.append("instant exit disabled")
@@ -821,16 +845,68 @@ class MomentumStrategy:
             "; ".join(reasons) if reasons else "no exit rule matched",
         )
 
+    def _evaluate_stop_loss(
+        self,
+        position: Position,
+        mark_pnl: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
+    ) -> Optional[ExitSignal]:
+        """Stop on mark price and/or Jupiter sell-quote net PnL (catches stale feeds)."""
+        stop = effective_stop_loss_pct(position.mint)
+        emergency = max(stop * 2, Config.EMERGENCY_STOP_LOSS_PCT)
+
+        if mark_pnl <= -stop:
+            logger.info(
+                "Stop loss (mark): %s mark=%.4f stop=%.2f%%",
+                position.symbol,
+                mark_pnl,
+                stop * 100,
+            )
+            return ExitSignal(SignalType.SELL_SL)
+
+        if (
+            Config.STOP_LOSS_QUOTE_CHECK
+            and executable_pnl_pct is not None
+            and executable_pnl_pct <= -stop
+        ):
+            logger.info(
+                "Stop loss (quote): %s mark=%.4f executable=%.4f stop=%.2f%%",
+                position.symbol,
+                mark_pnl,
+                executable_pnl_pct,
+                stop * 100,
+            )
+            return ExitSignal(SignalType.SELL_SL)
+
+        if mark_pnl <= -emergency or (
+            executable_pnl_pct is not None and executable_pnl_pct <= -emergency
+        ):
+            logger.warning(
+                "Emergency stop loss: %s mark=%.4f executable=%s emergency=%.2f%%",
+                position.symbol,
+                mark_pnl,
+                f"{executable_pnl_pct:.4f}" if executable_pnl_pct is not None else "n/a",
+                emergency * 100,
+            )
+            return ExitSignal(SignalType.SELL_SL)
+
+        return None
+
     def _evaluate_watchlist_override_exit(
         self,
         position: Position,
         pnl: float,
         rule: WatchlistMintRule,
+        *,
+        executable_pnl_pct: Optional[float] = None,
     ) -> Optional[ExitSignal]:
         """Custom exit: hold until sell_at_pct; stop-loss still applies."""
-        if pnl <= -effective_stop_loss_pct(position.mint):
-            logger.info("Stop loss (watchlist): %s pnl=%.4f", position.symbol, pnl)
-            return ExitSignal(SignalType.SELL_SL)
+        stop_signal = self._evaluate_stop_loss(
+            position, pnl, executable_pnl_pct=executable_pnl_pct
+        )
+        if stop_signal is not None:
+            return stop_signal
         if rule.sell_at_pct is not None and pnl >= rule.sell_at_pct - 1e-9:
             logger.info(
                 "Watchlist target exit: %s pnl=%.4f >= %.2f%%",
@@ -852,18 +928,24 @@ class MomentumStrategy:
         can_afford_dca: bool = True,
         jupiter_route_ok: bool = True,
         sol_trend_snapshot: Optional[dict] = None,
+        executable_pnl_pct: Optional[float] = None,
     ) -> Optional[ExitSignal]:
         if position.remaining_token_amount_raw <= 0:
             return None
 
         pnl = position.update_peak_pnl(current_price)
         effective_pnl = max(pnl, position.peak_pnl_pct)
+        if executable_pnl_pct is not None:
+            position.bump_peak_pnl(executable_pnl_pct)
+            effective_pnl = max(effective_pnl, executable_pnl_pct)
         hold_sec = time.time() - position.entry_time
         ladder_missed = self._ladder_never_hit(position)
 
-        if pnl <= -effective_stop_loss_pct(position.mint):
-            logger.info("Stop loss: %s pnl=%.4f", position.symbol, pnl)
-            return ExitSignal(SignalType.SELL_SL)
+        stop_signal = self._evaluate_stop_loss(
+            position, pnl, executable_pnl_pct=executable_pnl_pct
+        )
+        if stop_signal is not None:
+            return stop_signal
         if (
             Config.ENABLE_L1_PROTECTION
             and position.l1_protection_armed
@@ -882,7 +964,7 @@ class MomentumStrategy:
             from sol_trading import sol_trend_exit_cold
 
             instant_signal = self._evaluate_instant_exits(
-                position, pnl, effective_pnl
+                position, pnl, effective_pnl, executable_pnl_pct=executable_pnl_pct
             )
             if instant_signal is not None:
                 return instant_signal
@@ -897,26 +979,22 @@ class MomentumStrategy:
                 return ExitSignal(SignalType.SELL_SOL_TREND_COLD)
         else:
             instant_signal = self._evaluate_instant_exits(
-                position, pnl, effective_pnl
+                position, pnl, effective_pnl, executable_pnl_pct=executable_pnl_pct
             )
             if instant_signal is not None:
                 return instant_signal
 
         rule = get_watchlist_rule(position.mint)
         if rule and rule.override_ladder:
-            return self._evaluate_watchlist_override_exit(position, pnl, rule)
+            return self._evaluate_watchlist_override_exit(
+                position, pnl, rule, executable_pnl_pct=executable_pnl_pct
+            )
 
         if Config.ENABLE_LADDER_TIME_EXITS and ladder_missed:
             dca_sec = Config.LADDER_MISSED_NEGATIVE_DCA_MINUTES * 60
             pos_exit_sec = Config.LADDER_MISSED_POSITIVE_EXIT_MINUTES * 60
             if hold_sec >= dca_sec and pnl <= 0:
-                if is_wbtc_watchlist_mint(position.mint):
-                    logger.debug(
-                        "WBTC ladder timeout: deferring forced negative exit at %.0fs pnl=%.4f",
-                        hold_sec,
-                        pnl,
-                    )
-                elif self._prefer_dca_on_ladder_timeout(
+                if self._prefer_dca_on_ladder_timeout(
                     position,
                     current_price,
                     price_feed=price_feed,
@@ -943,7 +1021,7 @@ class MomentumStrategy:
                     return ExitSignal(SignalType.SELL_LADDER_MISSED_30M)
             if hold_sec >= pos_exit_sec and pnl > 0:
                 if not self._meets_min_net_win(position, pnl):
-                    self._log_hold_reason_if_profitable(position, pnl, hold_sec)
+                    self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
                     return None
                 logger.info(
                     "Ladder timeout sell (positive): %s held=%.0fs pnl=%.4f",
@@ -962,7 +1040,7 @@ class MomentumStrategy:
                 and pnl <= 0
             ):
                 if pnl > 0 and not self._meets_min_net_win(position, pnl):
-                    self._log_hold_reason_if_profitable(position, pnl, hold_sec)
+                    self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
                     return None
                 logger.info("Time stop: %s held=%.0fs pnl=%.4f", position.symbol, hold_sec, pnl)
                 return ExitSignal(SignalType.SELL_TIME).with_wbtc_quote_check(position)
@@ -977,7 +1055,7 @@ class MomentumStrategy:
             if last_hit in self._early_exit_level_indices():
                 if self.evaluate_momentum_slowdown(mint, position, price_feed, current_price):
                     if not self._meets_min_net_win(position, pnl):
-                        self._log_hold_reason_if_profitable(position, pnl, hold_sec)
+                        self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
                         return None
                     return ExitSignal(
                         SignalType.SELL_SLOWDOWN,
@@ -992,7 +1070,7 @@ class MomentumStrategy:
             and self._detect_momentum_weakening(mint, position, price_feed, current_price)
         ):
             if not self._meets_min_net_win(position, pnl):
-                self._log_hold_reason_if_profitable(position, pnl, hold_sec)
+                self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
                 return None
             logger.info(
                 "Trend weaken exit: %s pnl=%.4f >= %.2f%%",
@@ -1012,7 +1090,7 @@ class MomentumStrategy:
             if not self._meets_min_net_win(
                 position, pnl, level_index=next_level, level_pct=level_pct
             ):
-                self._log_hold_reason_if_profitable(position, pnl, hold_sec)
+                self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
                 return None
             logger.info(
                 "Take profit ladder level %d: %s pnl=%.4f target=%.4f net_target=%.4f fees=%.4f",
@@ -1027,7 +1105,7 @@ class MomentumStrategy:
                 SignalType.SELL_TP_PARTIAL, tp_level_index=next_level
             ).with_wbtc_quote_check(position)
 
-        self._log_hold_reason_if_profitable(position, pnl, hold_sec)
+        self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
         return None
 
     def open_position(

@@ -30,6 +30,7 @@ from price_feed import PriceFeed
 from reentry_tracker import ReentryTracker
 from risk import RiskManager
 from scanner import MoverCandidate, scan_unified
+from setup_learner import SetupLearner, features_from_position_profile
 from similarity import SimilarityScorer
 from solana_client import SolanaClient
 from strategy import ExitSignal, MomentumStrategy, Position, SignalType
@@ -62,8 +63,14 @@ FORCED_EXIT_TYPES = frozenset({
     SignalType.SELL_L1_PROTECTION,
     SignalType.SELL_TIME,
     SignalType.SELL_LADDER_MISSED_30M,
+    SignalType.SELL_LADDER_MISSED_10M,
     SignalType.SELL_INSTANT_PROFIT,
+    SignalType.SELL_WATCHLIST_TARGET,
+    SignalType.SELL_TP_PARTIAL,
 })
+
+FORCED_SELL_QUOTE_RETRIES = 3
+FORCED_SELL_QUOTE_BACKOFF_SEC = 0.3
 
 
 class TradingBot:
@@ -104,6 +111,7 @@ class TradingBot:
         self.price_feed = PriceFeed()
         self.strategy = MomentumStrategy()
         self.similarity = SimilarityScorer()
+        self.setup_learner = SetupLearner()
         self.risk = RiskManager()
         self.reentry_tracker = ReentryTracker()
         self.solana: Optional[SolanaClient] = None
@@ -430,7 +438,7 @@ class TradingBot:
         self.last_pumpfun_count = pumpfun_count
         self.last_birdeye_count = birdeye_count
         self.last_gmgn_count = gmgn_count
-        ranked = self.similarity.rank(movers)
+        ranked = self._rank_movers(movers)
         self.watchlist = ranked[: Config.WATCHLIST_TOP_N]
         self._merge_pinned_watchlist_mint()
         self._merge_sol_trade_candidate()
@@ -478,7 +486,7 @@ class TradingBot:
 
         self.sol_trend_snapshot = get_sol_trend_snapshot()
         self._update_scan_zero_streaks(dex_count, pumpfun_count, birdeye_count, gmgn_count)
-        ranked = self.similarity.rank(movers)
+        ranked = self._rank_movers(movers)
         self.watchlist = ranked[: Config.WATCHLIST_TOP_N]
 
         self._merge_pinned_watchlist_mint()
@@ -585,8 +593,72 @@ class TradingBot:
             return self.strategy.partial_sell_amount_raw(position, exit_signal.tp_level_index)
         return position.remaining_token_amount_raw
 
+    async def _fetch_sell_quote(
+        self,
+        position: Position,
+        token_raw: int,
+        exit_signal: ExitSignal,
+        *,
+        preview_quote: Optional[SwapQuote] = None,
+        use_cache: bool = True,
+    ) -> Optional[SwapQuote]:
+        """Fetch a sell quote; forced exits retry and accept high impact."""
+        assert self.jupiter
+        forced = self._is_forced_exit(exit_signal)
+
+        if (
+            preview_quote
+            and token_raw == position.remaining_token_amount_raw
+            and preview_quote.in_amount == token_raw
+        ):
+            if forced or self.jupiter.validate_quote(preview_quote):
+                return preview_quote
+
+        attempts = FORCED_SELL_QUOTE_RETRIES if forced else 1
+        for attempt in range(1, attempts + 1):
+            quote = self.jupiter.sell_token(
+                position.mint,
+                token_raw,
+                use_cache=use_cache and attempt == 1,
+                allow_high_impact=forced,
+            )
+            if quote:
+                if attempt > 1:
+                    logger.info(
+                        "Sell quote recovered for %s %s on attempt %d/%d",
+                        position.symbol,
+                        exit_signal.signal_type.value,
+                        attempt,
+                        attempts,
+                    )
+                return quote
+            if attempt < attempts:
+                logger.warning(
+                    "Sell quote failed for %s %s (attempt %d/%d) — retrying in %.0fms",
+                    position.symbol,
+                    exit_signal.signal_type.value,
+                    attempt,
+                    attempts,
+                    FORCED_SELL_QUOTE_BACKOFF_SEC * 1000,
+                )
+                await asyncio.sleep(FORCED_SELL_QUOTE_BACKOFF_SEC)
+
+        logger.error(
+            "Sell stalled: no Jupiter quote for %s %s after %d attempt(s)",
+            position.symbol,
+            exit_signal.signal_type.value,
+            attempts,
+        )
+        return None
+
     async def _execute_sell(
-        self, position: Position, token_raw: int, quote: Optional[SwapQuote] = None
+        self,
+        position: Position,
+        token_raw: int,
+        quote: Optional[SwapQuote] = None,
+        *,
+        forced_exit: bool = False,
+        exit_signal: Optional[ExitSignal] = None,
     ) -> Optional[str]:
         assert self.solana and self.jupiter
 
@@ -605,20 +677,34 @@ class TradingBot:
             return None
 
         if quote is None:
-            quote = self.jupiter.sell_token(position.mint, token_raw)
+            if exit_signal is None:
+                quote = self.jupiter.sell_token(
+                    position.mint, token_raw, allow_high_impact=forced_exit
+                )
+            else:
+                quote = await self._fetch_sell_quote(
+                    position, token_raw, exit_signal, use_cache=False
+                )
         if not quote:
             return None
 
-        ok, reason = self.risk.pre_trade_check(
-            await self.solana.get_balance(),
-            quote.price_impact_pct,
-            dry_run=self.dry_run,
-        )
-        if not ok:
-            logger.warning("Sell blocked: %s", reason)
-            return None
+        if not forced_exit:
+            ok, reason = self.risk.pre_trade_check(
+                await self.solana.get_balance(),
+                quote.price_impact_pct,
+                dry_run=self.dry_run,
+            )
+            if not ok:
+                logger.warning(
+                    "Sell blocked (non-forced): %s — %s",
+                    position.symbol,
+                    reason,
+                )
+                return None
 
-        return await self.jupiter.execute_quote(quote, self.solana)
+        return await self.jupiter.execute_quote(
+            quote, self.solana, forced_exit=forced_exit
+        )
 
     def _preview_l1_sell_quote(
         self, mint: str, buy_quote: SwapQuote
@@ -778,6 +864,47 @@ class TradingBot:
                 Config.MAX_LOSS_PER_TRADE_SOL,
             )
 
+    def _rank_movers(self, movers: List[MoverCandidate]) -> List[MoverCandidate]:
+        """Rank scanner candidates: setup learner when active, else similarity."""
+        if Config.SETUP_LEARNING_ENABLED and self.setup_learner.learning_active:
+            return self.setup_learner.rank(movers)
+        return self.similarity.rank(movers)
+
+    def _record_setup_learning(
+        self,
+        position: Position,
+        profile,
+        *,
+        net_pnl_sol: float,
+        exit_reason: Optional[str] = None,
+        entry_route_labels=None,
+        entry_price_impact_pct: Optional[float] = None,
+    ) -> None:
+        if not Config.SETUP_LEARNING_ENABLED:
+            return
+        hold_time_sec = time.time() - position.entry_time
+        if profile is not None:
+            hold_time_sec = getattr(profile, "hold_duration_sec", hold_time_sec)
+        features = features_from_position_profile(
+            position.profile,
+            hold_time_sec=hold_time_sec,
+            entry_price_impact_pct=entry_price_impact_pct
+            or position.profile.get("entry_price_impact_pct"),
+            route_labels=entry_route_labels,
+            scanner_source=position.profile.get("scanner_source"),
+        )
+        pnl_pct = profile.pnl_pct if profile is not None else position.pnl_pct(
+            position.entry_price
+        )
+        self.setup_learner.record_completed_trade(
+            features,
+            net_pnl_sol,
+            pnl_pct=pnl_pct,
+            exit_reason=exit_reason,
+            mint=position.mint,
+            symbol=position.symbol,
+        )
+
     def _record_completed_trade_outcome(
         self, mint: str, symbol: str, net_pnl_sol: float
     ) -> None:
@@ -820,6 +947,21 @@ class TradingBot:
             jupiter_ok = quote is not None
         return can_afford, jupiter_ok
 
+    def _executable_pnl_pct(
+        self, position: Position, token_raw: int, quote: SwapQuote
+    ) -> Optional[float]:
+        """Net SOL PnL % from a Jupiter sell quote (executable, not chart mark)."""
+        if token_raw <= 0 or position.initial_token_amount_raw <= 0:
+            return None
+        sol_basis = entry_sol_basis(
+            position.size_sol, token_raw, position.initial_token_amount_raw
+        )
+        if sol_basis <= 0:
+            return None
+        fees = self._preview_sell_fees(position, None)
+        _, sol_out = quote_sol_flow(quote)
+        return (sol_out - sol_basis - fees) / sol_basis
+
     async def _monitor_open_position(
         self, position: Position, current_price: Optional[float] = None, *, allow_stopped: bool = False
     ):
@@ -843,6 +985,18 @@ class TradingBot:
             position.update_peak_pnl(peak_price)
         position.update_peak_pnl(current_price)
 
+        token_raw = position.remaining_token_amount_raw
+        preview_quote = self.jupiter.sell_token(
+            position.mint, token_raw, use_cache=True, allow_high_impact=True
+        )
+        executable_pnl_pct = (
+            self._executable_pnl_pct(position, token_raw, preview_quote)
+            if preview_quote
+            else None
+        )
+        if executable_pnl_pct is not None:
+            position.bump_peak_pnl(executable_pnl_pct)
+
         while allow_stopped or self.should_run():
             can_afford_dca, jupiter_route_ok = await self._ladder_dca_gates(
                 position, current_price
@@ -865,18 +1019,33 @@ class TradingBot:
                 can_afford_dca=can_afford_dca,
                 jupiter_route_ok=jupiter_route_ok,
                 sol_trend_snapshot=self.sol_trend_snapshot,
+                executable_pnl_pct=executable_pnl_pct,
             )
             if exit_signal is None:
                 pnl = position.pnl_pct(current_price)
                 logger.debug(
-                    "Holding %s pnl=%.4f peak=%.4f levels=%d/%d",
+                    "Holding %s pnl=%.4f peak=%.4f quote=%s levels=%d/%d",
                     position.symbol,
                     pnl,
                     position.peak_pnl_pct,
+                    f"{executable_pnl_pct:.4f}"
+                    if executable_pnl_pct is not None
+                    else "n/a",
                     len(position.tp_levels_hit),
                     len(Config.TAKE_PROFIT_LEVELS),
                 )
                 return
+
+            if exit_signal.signal_type == SignalType.SELL_INSTANT_PROFIT:
+                logger.info(
+                    "Instant profit exit executing: %s mark=%.4f peak=%.4f quote=%s",
+                    position.symbol,
+                    position.pnl_pct(current_price),
+                    position.peak_pnl_pct,
+                    f"{executable_pnl_pct:.4f}"
+                    if executable_pnl_pct is not None
+                    else "n/a",
+                )
 
             if exit_signal.signal_type == SignalType.BUY_DCA_LADDER_TIMEOUT:
                 dca_ok = await self._execute_dca_entry(position, current_price)
@@ -889,18 +1058,72 @@ class TradingBot:
                 exit_signal = ExitSignal(SignalType.SELL_LADDER_MISSED_30M)
 
             token_raw = self._sell_amount_for_exit(position, exit_signal)
-            quote = self.jupiter.sell_token(position.mint, token_raw)
+            forced = self._is_forced_exit(exit_signal)
+            quote = await self._fetch_sell_quote(
+                position,
+                token_raw,
+                exit_signal,
+                preview_quote=preview_quote,
+            )
+            preview_quote = None
             if not quote:
                 return
 
             if not self._quote_meets_min_net(position, token_raw, quote, exit_signal):
-                return
+                if exit_signal.signal_type == SignalType.SELL_INSTANT_PROFIT:
+                    logger.warning(
+                        "Instant exit min-net gate bypass failed for %s — forcing sell",
+                        position.symbol,
+                    )
+                else:
+                    logger.info(
+                        "Exit skipped (min-net gate): %s %s",
+                        position.symbol,
+                        exit_signal.signal_type.value,
+                    )
+                    return
 
             if self._should_defer_exit_for_impact(position, quote, exit_signal):
+                logger.warning(
+                    "Exit skipped (impact defer — unexpected): %s %s impact=%.2f%%",
+                    position.symbol,
+                    exit_signal.signal_type.value,
+                    quote.price_impact_pct,
+                )
                 return
 
-            signature = await self._execute_sell(position, token_raw, quote)
+            exec_attempts = FORCED_SELL_QUOTE_RETRIES if forced else 1
+            signature = None
+            for attempt in range(1, exec_attempts + 1):
+                signature = await self._execute_sell(
+                    position,
+                    token_raw,
+                    quote,
+                    forced_exit=forced,
+                )
+                if signature:
+                    break
+                if attempt < exec_attempts:
+                    logger.warning(
+                        "Sell execution failed for %s %s (attempt %d/%d) — retrying",
+                        position.symbol,
+                        exit_signal.signal_type.value,
+                        attempt,
+                        exec_attempts,
+                    )
+                    quote = await self._fetch_sell_quote(
+                        position, token_raw, exit_signal, use_cache=False
+                    )
+                    if not quote:
+                        break
+                    await asyncio.sleep(FORCED_SELL_QUOTE_BACKOFF_SEC)
             if not signature:
+                logger.error(
+                    "Sell stalled: execution failed for %s %s after %d attempt(s)",
+                    position.symbol,
+                    exit_signal.signal_type.value,
+                    exec_attempts,
+                )
                 return
 
             pnl = position.pnl_pct(current_price)
@@ -955,6 +1178,12 @@ class TradingBot:
                 if profile:
                     if profile.profitable:
                         self.similarity.set_reference(profile)
+                    self._record_setup_learning(
+                        position,
+                        profile,
+                        net_pnl_sol=position.realized_net_pnl_sol,
+                        exit_reason=partial_journal.get("reason"),
+                    )
                     self._record_completed_trade_outcome(
                         position.mint, position.symbol, position.realized_net_pnl_sol
                     )
@@ -1028,6 +1257,12 @@ class TradingBot:
                 paper_session_manager.record_sell(sell_journal.get("sol_out", 0.0))
             append_tax_row(sell_journal, str(self.solana.public_key))
             position.realized_net_pnl_sol += sell_journal.get("net_pnl_sol", 0.0)
+            self._record_setup_learning(
+                position,
+                profile,
+                net_pnl_sol=position.realized_net_pnl_sol,
+                exit_reason=sell_journal.get("reason"),
+            )
             self._record_completed_trade_outcome(
                 position.mint, position.symbol, position.realized_net_pnl_sol
             )
@@ -1059,12 +1294,15 @@ class TradingBot:
             logger.warning("Force sell: no tokens remaining for %s", position.symbol)
             return None
 
-        quote = self.jupiter.sell_token(position.mint, token_raw)
+        forced_signal = ExitSignal(SignalType.SELL_TIME)
+        quote = await self._fetch_sell_quote(position, token_raw, forced_signal)
         if not quote:
             logger.warning("Force sell: no quote for %s", position.symbol)
             return None
 
-        signature = await self._execute_sell(position, token_raw, quote)
+        signature = await self._execute_sell(
+            position, token_raw, quote, forced_exit=True
+        )
         if not signature:
             return None
 
@@ -1104,6 +1342,12 @@ class TradingBot:
             paper_session_manager.record_sell(sell_journal.get("sol_out", 0.0))
         append_tax_row(sell_journal, str(self.solana.public_key))
         position.realized_net_pnl_sol += sell_journal.get("net_pnl_sol", 0.0)
+        self._record_setup_learning(
+            position,
+            profile,
+            net_pnl_sol=position.realized_net_pnl_sol,
+            exit_reason=sell_journal.get("reason"),
+        )
         self._record_completed_trade_outcome(
             position.mint, position.symbol, position.realized_net_pnl_sol
         )
@@ -1151,12 +1395,19 @@ class TradingBot:
             if token_raw <= 0:
                 continue
 
-            quote = self.jupiter.sell_token(position.mint, token_raw)
+            quote = await self._fetch_sell_quote(
+                position,
+                token_raw,
+                ExitSignal(SignalType.SELL_TIME),
+                use_cache=False,
+            )
             if not quote:
                 logger.warning("Session expiry: no sell quote for %s", position.symbol)
                 continue
 
-            signature = await self._execute_sell(position, token_raw, quote)
+            signature = await self._execute_sell(
+                position, token_raw, quote, forced_exit=True
+            )
             if not signature:
                 continue
 
@@ -1190,6 +1441,12 @@ class TradingBot:
             if self.dry_run:
                 paper_session_manager.record_sell(sell_journal.get("sol_out", 0.0))
             position.realized_net_pnl_sol += sell_journal.get("net_pnl_sol", 0.0)
+            self._record_setup_learning(
+                position,
+                profile,
+                net_pnl_sol=position.realized_net_pnl_sol,
+                exit_reason=sell_journal.get("reason"),
+            )
             self.risk.record_trade_outcome(position.realized_net_pnl_sol)
 
     async def _stop_for_paper_balance_depletion(self) -> None:
@@ -1266,6 +1523,22 @@ class TradingBot:
             return False
 
         sell_preview = self._preview_l1_sell_quote(candidate.mint, quote)
+        full_sell_preview = self.jupiter.sell_token(
+            candidate.mint, quote.out_amount, use_cache=True
+        )
+        if full_sell_preview:
+            full_impact = abs(full_sell_preview.price_impact_pct)
+            if full_impact > Config.MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT:
+                reason = (
+                    f"full exit preview impact {full_impact:.2f}% > "
+                    f"{Config.MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT:.1f}% "
+                    f"for {candidate.symbol}"
+                )
+                self._note_entry_skip(reason)
+                self._record_action(f"Entry skipped: {reason}")
+                logger.warning("Buy blocked: %s", reason)
+                return False
+
         fee_budget, fee_breakdown = self._entry_fee_estimate(
             trade_size, quote, sell_preview
         )
@@ -1337,6 +1610,16 @@ class TradingBot:
             fee_budget_sol=fee_budget,
             estimated_fees_sol=fee_budget,
         )
+        open_position = self.strategy.get_open_position()
+        if open_position and open_position.mint == candidate.mint:
+            from fee_estimator import extract_route_labels
+
+            route_labels = extract_route_labels(quote.raw)
+            open_position.profile["entry_price_impact_pct"] = quote.price_impact_pct
+            open_position.profile["scanner_source"] = candidate.source
+            open_position.profile["is_pumpfun_route"] = any(
+                "Pump.fun" in str(label) for label in route_labels
+            )
         if is_dip_reentry:
             self.strategy.traded_mints_cooldown.pop(candidate.mint, None)
 

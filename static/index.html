@@ -2462,8 +2462,9 @@
           wlContainer.innerHTML = specialAssets.map((wl) => {
             const isWsol = wl.asset_type === "sol_wsol" || (wl.mint && wl.mint === wl.wsol_mint);
             const isWeth = wl.asset_type === "weth" || wl.label === "WETH";
-            const isSolProxy = wl.asset_type === "sol_proxy" || wl.label === "SOL";
-            const badge = isWeth ? "WETH" : (isWsol ? "WSOL" : (isSolProxy ? "SOL" : "WL"));
+            const isJitoSol = wl.label === "JitoSOL" || wl.symbol === "JitoSOL" || wl.mint === "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
+            const isSolProxy = wl.asset_type === "sol_proxy" || wl.label === "SOL" || isJitoSol;
+            const badge = isWeth ? "WETH" : (isWsol ? "WSOL" : (isJitoSol ? "JitoSOL" : (isSolProxy ? "SOL" : "WL")));
             const sym = wl.symbol || (wl.mint ? wl.mint.slice(0, 8) : "?");
             const mintCa = wl.mint ? ` · CA ${wl.mint}` : "";
             const priceStr = wl.price_usd != null

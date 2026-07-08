@@ -68,6 +68,35 @@ def test_peak_pnl_triggers_instant_exit():
     print("PASS: peak +5% / current +3% -> instant full exit via peak tracking")
 
 
+def test_quote_pnl_triggers_when_mark_lags():
+    """Mark shows +2% but Jupiter sell quote net is +6% — instant must fire."""
+    strategy = MomentumStrategy()
+    pos = _make_position()
+    current_price = 1.02  # +2% mark — below 3.25%
+
+    signal = strategy.evaluate_exit(
+        pos, current_price, executable_pnl_pct=0.06
+    )
+    assert signal is not None
+    assert signal.signal_type == SignalType.SELL_INSTANT_PROFIT
+    assert pos.peak_pnl_pct >= 0.06
+    print("PASS: quote +6% triggers instant exit when mark lags at +2%")
+
+
+def test_quote_pnl_triggers_325_when_mark_lags():
+    """Mark flat; executable quote at +3.5% triggers +3.25% tier."""
+    strategy = MomentumStrategy()
+    pos = _make_position()
+    current_price = 1.01
+
+    signal = strategy.evaluate_exit(
+        pos, current_price, executable_pnl_pct=0.035
+    )
+    assert signal is not None
+    assert signal.signal_type == SignalType.SELL_INSTANT_PROFIT
+    print("PASS: quote +3.5% triggers +3.25% instant when mark lags")
+
+
 def test_no_instant_exit_below_325pct():
     strategy = MomentumStrategy()
     pos = _make_position()
@@ -178,6 +207,8 @@ def main():
     test_instant_exit_at_325pct()
     test_instant_exit_at_5pct()
     test_peak_pnl_triggers_instant_exit()
+    test_quote_pnl_triggers_when_mark_lags()
+    test_quote_pnl_triggers_325_when_mark_lags()
     test_no_instant_exit_below_325pct()
     test_between_325_and_5_instant_fires()
     test_instant_exit_disabled()

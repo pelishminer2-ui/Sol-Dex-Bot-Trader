@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Set
 
 from config import (
     Config,
+    JITOSOL_MINT,
     SOL_MINT,
     is_wsol_trade_mint,
     sol_trading_enabled,
@@ -219,10 +220,14 @@ def probe_sol_trade_status(
         qualifies = sol_entry_qualifies(snap)
         entry_rule = _proxy_entry_rule_summary()
         exit_rule = _proxy_exit_rule_summary()
-        symbol = "SOL"
-        label = "SOL"
-        asset_type = "sol_proxy"
         proxy_symbol = meta["symbol"]
+        if mint.strip() == JITOSOL_MINT:
+            symbol = "JitoSOL"
+            label = "JitoSOL"
+        else:
+            symbol = "SOL"
+            label = "SOL"
+        asset_type = "sol_proxy"
         momentum = None
 
     if mint in held:
@@ -333,10 +338,17 @@ def fetch_sol_trade_candidate(
         status.get("entry_status"),
     )
 
+    if mint.strip() == JITOSOL_MINT:
+        display_symbol = "JitoSOL"
+        display_name = "JitoSOL (SOL exposure)"
+    else:
+        display_symbol = "SOL"
+        display_name = f"SOL ({meta['symbol']} proxy)"
+
     return MoverCandidate(
         mint=mint,
-        symbol="SOL",
-        name=f"SOL ({meta['symbol']} proxy)",
+        symbol=display_symbol,
+        name=display_name,
         pair_address=meta["pair_address"],
         dex=meta["dex"],
         price_usd=current,
