@@ -38,7 +38,7 @@ DEFAULT_LOSS_REENTRY_COOLDOWN_MINUTES = 120
 DEFAULT_LOSS_REENTRY_REPEAT_COOLDOWN_MINUTES = 240
 DEFAULT_REENTRY_MIN_MOMENTUM_PCT = 0.015
 DEFAULT_MAX_LOSS_PER_TRADE_SOL = 0.012
-DEFAULT_MIN_LIQUIDITY_USD = 15000
+DEFAULT_MIN_LIQUIDITY_USD = 25000
 DEFAULT_MIN_MOMENTUM_PCT = 0.015
 # Slippage / price-impact gates (percent points, e.g. 1.0 = 1%).
 # Entry default 1.0%; optional relax to 1.5% via MAX_ENTRY_PRICE_IMPACT_PCT in .env.
@@ -185,8 +185,8 @@ DEFAULT_HOT_MARKET_MIN_MOMENTUM_PCT = 0.015
 DEFAULT_HOT_MARKET_MIN_VOLUME_24H_USD = 45000.0
 # NEUTRAL regime = moderately tight (between hot-loose and cold-tight).
 DEFAULT_NEUTRAL_MARKET_ENTRY_MOMENTUM_PCT = 0.006
-DEFAULT_NEUTRAL_MARKET_MIN_MOMENTUM_PCT = 0.018
-DEFAULT_NEUTRAL_MARKET_MIN_VOLUME_24H_USD = 60000.0
+DEFAULT_NEUTRAL_MARKET_MIN_MOMENTUM_PCT = 0.02
+DEFAULT_NEUTRAL_MARKET_MIN_VOLUME_24H_USD = 65000.0
 # COLD regime = tightest / most selective (Best-Win-ish quality bar).
 DEFAULT_COLD_MARKET_ENTRY_MOMENTUM_PCT = 0.0075
 DEFAULT_COLD_MARKET_MIN_MOMENTUM_PCT = 0.020
@@ -230,7 +230,7 @@ DEFAULT_MAX_ENTRY_PRICE_CHANGE_5M_PCT = 50000.0
 DEFAULT_HIGH_MOMENTUM_QUALITY_PCT = 300.0
 # High-momentum flat-book floor: a high-momentum candidate with less than this
 # much pool liquidity (USD) is treated as an instant-dump trap.
-DEFAULT_SPIKE_MIN_LIQUIDITY_USD = 8000.0
+DEFAULT_SPIKE_MIN_LIQUIDITY_USD = 20000.0
 # High-momentum freshness: require at least this much recent movement (max of 5m
 # and 1h, stored percent) so we only chase pops that are happening NOW, not stale
 # 6h/24h spikes that already ran and reversed.
@@ -243,7 +243,7 @@ DEFAULT_SPIKE_MAX_ROUNDTRIP_IMPACT_PCT = 0.0
 # centroid over the loss centroid before entering (not just ranking). Falls back
 # to "allow" when the learner has insufficient data.
 DEFAULT_SETUP_LEARNING_ENTRY_GATE_ENABLED = True
-DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN = 0.0
+DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN = 0.05
 
 
 def is_wbtc_watchlist_mint(mint: str) -> bool:
