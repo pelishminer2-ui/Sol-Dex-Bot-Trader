@@ -78,6 +78,12 @@ def test_regime_gates_hot_vs_cold():
     sol_hot = {"sol_trend_1h_pct": 1.0, "sol_trend_4h_pct": 0.5}
     watchlist = [_candidate(f"mint{i:032d}") for i in range(6)]
     with patch.object(Config, "HOT_MARKET_MODE_ENABLED", True), patch.object(
+        Config, "STEADY_TRADE_AUTO_ADJUST", True
+    ), patch.object(
+        Config, "SOL_MIN_CHANGE_1H_PCT", -1.5
+    ), patch.object(
+        Config, "SOL_MIN_CHANGE_4H_PCT", -1.5
+    ), patch.object(
         Config, "ENTRY_MOMENTUM_PCT", STEADY_TRADE_PRESET["entry_momentum_pct"]
     ), patch.object(
         Config, "MIN_MOMENTUM_PCT", STEADY_TRADE_PRESET["min_momentum_pct"]
@@ -92,13 +98,17 @@ def test_regime_gates_hot_vs_cold():
         assert hot_gates["entry_momentum_pct"] == Config.HOT_MARKET_ENTRY_MOMENTUM_PCT
         assert hot_gates["min_momentum_pct"] == Config.HOT_MARKET_MIN_MOMENTUM_PCT
 
+        # SOL below the -1.5 macro floor -> genuine COLD regime (tightest gates).
         cold_snap = update_market_regime(
-            {"sol_trend_1h_pct": -1.0, "sol_trend_4h_pct": -0.5}, watchlist
+            {"sol_trend_1h_pct": -2.0, "sol_trend_4h_pct": -2.0}, watchlist
         )
         cold_gates = cold_snap["regime_gates"]
         assert cold_gates["entry_momentum_pct"] == Config.COLD_MARKET_ENTRY_MOMENTUM_PCT
         assert cold_gates["min_momentum_pct"] == Config.COLD_MARKET_MIN_MOMENTUM_PCT
-    print("PASS: regime gates differ hot vs cold")
+        # Self-adjust: cold must be strictly TIGHTER than hot.
+        assert cold_gates["entry_momentum_pct"] > hot_gates["entry_momentum_pct"]
+        assert cold_gates["min_volume_24h_usd"] >= hot_gates["min_volume_24h_usd"]
+    print("PASS: regime gates differ hot vs cold (cold tighter)")
 
 
 def test_effective_entry_momentum_follows_regime():

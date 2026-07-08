@@ -3,7 +3,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from config import (
     Config,
@@ -11,6 +11,7 @@ from config import (
     can_open_more_positions,
     effective_stop_loss_pct,
     is_memecoin_standard_special_mint,
+    is_non_memecoin_proxy_mint,
     is_sol_trade_mint,
     is_weth_trade_mint,
     is_wsol_trade_mint,
@@ -18,6 +19,7 @@ from config import (
     wbtc_min_net_win_threshold,
     wbtc_profit_gate_applies,
 )
+from entry_filters import entry_winrate_skip_reason
 from fee_estimator import (
     compute_take_profit_levels,
     estimate_full_exit_net_sol,
@@ -44,6 +46,7 @@ class SignalType(Enum):
     SELL_SLOWDOWN = "sell_slowdown"
     SELL_WEAKEN = "sell_trend_weaken_2pct"
     SELL_INSTANT_PROFIT = "sell_instant_5pct"
+    SELL_MAX_HOLD_PROFIT = "sell_max_hold_profit"
     SELL_LADDER_MISSED_10M = "sell_ladder_missed_10m_positive"
     SELL_LADDER_MISSED_30M = "sell_ladder_missed_30m_negative"
     SELL_WATCHLIST_TARGET = "sell_watchlist_target"
@@ -91,6 +94,7 @@ class Position:
     momentum_at_entry: float = 0.0
     l1_protection_armed: bool = False
     peak_pnl_pct: float = 0.0
+    trough_pnl_pct: float = 0.0
     profile: Dict[str, float] = field(default_factory=dict)
     buy_count: int = 1
 
@@ -98,12 +102,18 @@ class Position:
         """Track highest PnL seen since entry (catches spikes between polls)."""
         pnl = self.pnl_pct(current_price)
         self.bump_peak_pnl(pnl)
+        self.bump_trough_pnl(pnl)
         return pnl
 
     def bump_peak_pnl(self, pnl_pct: float) -> None:
         """Record highest PnL from any source (mark price, quote, etc.)."""
         if pnl_pct > self.peak_pnl_pct:
             self.peak_pnl_pct = pnl_pct
+
+    def bump_trough_pnl(self, pnl_pct: float) -> None:
+        """Record worst (most negative) PnL from any source."""
+        if pnl_pct < self.trough_pnl_pct:
+            self.trough_pnl_pct = pnl_pct
 
     @property
     def tp_level_count(self) -> int:
@@ -213,6 +223,52 @@ class MomentumStrategy:
     def is_on_cooldown(self, mint: str) -> bool:
         return mint in self.traded_mints_cooldown
 
+    def mint_block_status(
+        self, mint: str, *, symbol: str = "", name: str = ""
+    ) -> Dict[str, Any]:
+        """Return active session-level blocks for a mint."""
+        from stock_token_filter import is_stock_related_token
+
+        blocks: List[str] = []
+        if is_stock_related_token(mint=mint, symbol=symbol, name=name):
+            blocks.append("stock_filter")
+        if mint in self.traded_mints_cooldown:
+            blocks.append("trade_cooldown")
+        if Config.LOSS_ONE_STRIKE_PER_SESSION and mint in self._one_strike_blocked:
+            blocks.append("one_strike")
+        until = self._loss_reentry_until.get(mint, 0.0)
+        if until > time.time():
+            blocks.append("loss_reentry_cooldown")
+        if self.is_holding_mint(mint):
+            blocks.append("holding")
+        return {
+            "mint": mint,
+            "blocked": bool(blocks),
+            "blocks": blocks,
+            "trade_cooldown_cycles": self.traded_mints_cooldown.get(mint),
+            "loss_reentry_until": until if until > time.time() else None,
+            "loss_session_count": self._loss_session_count.get(mint, 0),
+        }
+
+    def clear_mint_blocks(self, mint: str) -> Dict[str, Any]:
+        """Clear session cooldowns and loss blocks for a mint."""
+        cleared: List[str] = []
+        if mint in self.traded_mints_cooldown:
+            del self.traded_mints_cooldown[mint]
+            cleared.append("trade_cooldown")
+        if mint in self._loss_reentry_until:
+            del self._loss_reentry_until[mint]
+            cleared.append("loss_reentry_cooldown")
+        if mint in self._one_strike_blocked:
+            self._one_strike_blocked.discard(mint)
+            cleared.append("one_strike")
+        if mint in self._loss_session_count:
+            del self._loss_session_count[mint]
+            cleared.append("loss_session_count")
+        if cleared:
+            logger.info("Cleared mint blocks for %s: %s", mint[:8], ", ".join(cleared))
+        return {"mint": mint, "cleared": cleared}
+
     def has_open_position(self) -> bool:
         return len(self.positions) > 0
 
@@ -240,6 +296,7 @@ class MomentumStrategy:
         usd_gain: Optional[float] = None,
         *,
         sol_trend_snapshot: Optional[dict] = None,
+        setup_learner=None,
     ) -> SignalType:
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
         from stock_token_filter import is_stock_related_token, log_skipped_stock_token
@@ -292,7 +349,9 @@ class MomentumStrategy:
         if not is_pinned_watchlist_mint(candidate.mint) and not is_memecoin_standard_special_mint(
             candidate.mint
         ):
-            allowed, _reason = memecoin_entry_allowed_by_sol_trend(sol_trend_snapshot)
+            allowed, _reason = memecoin_entry_allowed_by_sol_trend(
+                sol_trend_snapshot, candidate=candidate
+            )
             if not allowed:
                 logger.info(
                     "Entry blocked (SOL macro): %s — %s",
@@ -335,6 +394,18 @@ class MomentumStrategy:
         if momentum is None:
             return SignalType.NONE
         if momentum >= Config.effective_entry_momentum_pct():
+            # Route/asset sanity: SOL/JitoSOL/WETH proxies must only enter via
+            # their dedicated enabled paths, never as random momentum picks.
+            if is_non_memecoin_proxy_mint(candidate.mint):
+                logger.info(
+                    "Entry blocked (asset sanity): %s is a non-memecoin proxy",
+                    candidate.symbol,
+                )
+                return SignalType.NONE
+            reason = entry_winrate_skip_reason(candidate, setup_learner)
+            if reason:
+                logger.info("Entry blocked (win-rate filter): %s", reason)
+                return SignalType.NONE
             logger.info(
                 "Buy signal (mover): %s momentum=%.4f price=%.8f",
                 candidate.symbol,
@@ -351,6 +422,7 @@ class MomentumStrategy:
         usd_gain: Optional[float] = None,
         *,
         sol_trend_snapshot: Optional[dict] = None,
+        setup_learner=None,
     ) -> Optional[str]:
         """Human-readable reason when evaluate_entry would not buy."""
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
@@ -393,7 +465,9 @@ class MomentumStrategy:
         if not is_pinned_watchlist_mint(candidate.mint) and not is_memecoin_standard_special_mint(
             candidate.mint
         ):
-            allowed, sol_reason = memecoin_entry_allowed_by_sol_trend(sol_trend_snapshot)
+            allowed, sol_reason = memecoin_entry_allowed_by_sol_trend(
+                sol_trend_snapshot, candidate=candidate
+            )
             if not allowed and sol_reason:
                 return sol_reason
         if is_pinned_watchlist_mint(candidate.mint):
@@ -421,7 +495,11 @@ class MomentumStrategy:
                 f"entry momentum {momentum * 100:.2f}% < "
                 f"{Config.effective_entry_momentum_pct() * 100:.2f}%: {candidate.symbol}"
             )
-        return None
+        if is_non_memecoin_proxy_mint(candidate.mint):
+            return (
+                f"non-memecoin proxy excluded from momentum entry: {candidate.symbol}"
+            )
+        return entry_winrate_skip_reason(candidate, setup_learner)
 
     def dip_reentry_skip_reason(
         self,
@@ -430,6 +508,7 @@ class MomentumStrategy:
         momentum: Optional[float] = None,
         *,
         sol_trend_snapshot: Optional[dict] = None,
+        setup_learner=None,
     ) -> Optional[str]:
         """Human-readable reason when evaluate_dip_reentry would not buy."""
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
@@ -456,7 +535,9 @@ class MomentumStrategy:
             ):
                 return f"one-strike loss block: {candidate.symbol}"
             return f"loss re-entry cooldown: {candidate.symbol}"
-        allowed, sol_reason = memecoin_entry_allowed_by_sol_trend(sol_trend_snapshot)
+        allowed, sol_reason = memecoin_entry_allowed_by_sol_trend(
+            sol_trend_snapshot, candidate=candidate
+        )
         if not allowed and sol_reason:
             return sol_reason
         min_reentry_momentum = Config.REENTRY_MIN_MOMENTUM_PCT
@@ -472,7 +553,7 @@ class MomentumStrategy:
             return f"already holding {candidate.symbol}"
         if not self.can_open_more(candidate.mint):
             return "max open positions reached"
-        return None
+        return entry_winrate_skip_reason(candidate, setup_learner)
 
     def evaluate_dip_reentry(
         self,
@@ -482,6 +563,7 @@ class MomentumStrategy:
         momentum: Optional[float] = None,
         *,
         sol_trend_snapshot: Optional[dict] = None,
+        setup_learner=None,
     ) -> SignalType:
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
         from stock_token_filter import is_stock_related_token, log_skipped_stock_token
@@ -507,7 +589,9 @@ class MomentumStrategy:
                 candidate.symbol,
             )
             return SignalType.NONE
-        allowed, _reason = memecoin_entry_allowed_by_sol_trend(sol_trend_snapshot)
+        allowed, _reason = memecoin_entry_allowed_by_sol_trend(
+            sol_trend_snapshot, candidate=candidate
+        )
         if not allowed:
             logger.info(
                 "Dip re-entry blocked (SOL macro): %s — %s",
@@ -528,6 +612,10 @@ class MomentumStrategy:
         if self.is_holding_mint(candidate.mint):
             return SignalType.NONE
         if not self.can_open_more(candidate.mint):
+            return SignalType.NONE
+        reason = entry_winrate_skip_reason(candidate, setup_learner)
+        if reason:
+            logger.info("Dip re-entry blocked (win-rate filter): %s", reason)
             return SignalType.NONE
         logger.info(
             "Dip re-entry signal: %s price=%.8f (-%.0f%% from last exit)",
@@ -845,49 +933,128 @@ class MomentumStrategy:
             "; ".join(reasons) if reasons else "no exit rule matched",
         )
 
+    def _position_is_green_at_max_hold(
+        self,
+        pnl: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
+        peak_pnl: float = 0.0,
+    ) -> bool:
+        """True when mark, quote, or peak PnL is positive at max-hold evaluation."""
+        if pnl > 0:
+            return True
+        if executable_pnl_pct is not None and executable_pnl_pct > 0:
+            return True
+        if peak_pnl > 0:
+            return True
+        return False
+
+    def _evaluate_max_hold_exit(
+        self,
+        position: Position,
+        pnl: float,
+        hold_sec: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
+        trough_pnl: Optional[float] = None,
+    ) -> Optional[ExitSignal]:
+        """Force exit non-WBTC positions after MAX_HOLD_MINUTES_NON_WBTC.
+
+        At the time cap: honor stop loss first (worst of mark/quote/trough), then
+        sell regardless of green/red when above stop — not a stop-loss exit.
+        """
+        if not Config.MAX_HOLD_ENABLED:
+            return None
+        if is_wbtc_watchlist_mint(position.mint):
+            return None
+        max_hold_sec = Config.MAX_HOLD_MINUTES_NON_WBTC * 60
+        if hold_sec < max_hold_sec:
+            return None
+
+        stop_signal = self._evaluate_stop_loss(
+            position,
+            pnl,
+            executable_pnl_pct=executable_pnl_pct,
+            trough_pnl=trough_pnl,
+        )
+        if stop_signal is not None:
+            return stop_signal
+
+        if self._position_is_green_at_max_hold(
+            pnl,
+            executable_pnl_pct=executable_pnl_pct,
+            peak_pnl=position.peak_pnl_pct,
+        ):
+            logger.info(
+                "Max hold time exit (profit): %s held=%.0fs mark=%.4f peak=%.4f quote=%s",
+                position.symbol,
+                hold_sec,
+                pnl,
+                position.peak_pnl_pct,
+                f"{executable_pnl_pct:.4f}" if executable_pnl_pct is not None else "n/a",
+            )
+            return ExitSignal(SignalType.SELL_MAX_HOLD_PROFIT)
+
+        logger.info(
+            "Max hold time exit: %s held=%.0fs pnl=%.4f",
+            position.symbol,
+            hold_sec,
+            pnl,
+        )
+        return ExitSignal(SignalType.SELL_TIME)
+
     def _evaluate_stop_loss(
         self,
         position: Position,
         mark_pnl: float,
         *,
         executable_pnl_pct: Optional[float] = None,
+        trough_pnl: Optional[float] = None,
     ) -> Optional[ExitSignal]:
-        """Stop on mark price and/or Jupiter sell-quote net PnL (catches stale feeds)."""
+        """Stop on worst of mark, quote, and trough PnL (catches stale feeds)."""
         stop = effective_stop_loss_pct(position.mint)
-        emergency = max(stop * 2, Config.EMERGENCY_STOP_LOSS_PCT)
+        emergency = Config.EMERGENCY_STOP_LOSS_PCT
+        catastrophic = Config.CATASTROPHIC_STOP_LOSS_PCT
 
-        if mark_pnl <= -stop:
-            logger.info(
-                "Stop loss (mark): %s mark=%.4f stop=%.2f%%",
+        sources: List[float] = [mark_pnl]
+        if executable_pnl_pct is not None:
+            sources.append(executable_pnl_pct)
+        if trough_pnl is not None:
+            sources.append(trough_pnl)
+        worst = min(sources)
+
+        def _fmt_sources() -> str:
+            parts = [f"mark={mark_pnl:.4f}"]
+            if executable_pnl_pct is not None:
+                parts.append(f"quote={executable_pnl_pct:.4f}")
+            if trough_pnl is not None:
+                parts.append(f"trough={trough_pnl:.4f}")
+            return " ".join(parts)
+
+        if worst <= -catastrophic:
+            logger.critical(
+                "CATASTROPHIC stop loss: %s %s catastrophic=%.2f%% — force sell",
                 position.symbol,
-                mark_pnl,
-                stop * 100,
+                _fmt_sources(),
+                catastrophic * 100,
             )
             return ExitSignal(SignalType.SELL_SL)
 
-        if (
-            Config.STOP_LOSS_QUOTE_CHECK
-            and executable_pnl_pct is not None
-            and executable_pnl_pct <= -stop
-        ):
-            logger.info(
-                "Stop loss (quote): %s mark=%.4f executable=%.4f stop=%.2f%%",
-                position.symbol,
-                mark_pnl,
-                executable_pnl_pct,
-                stop * 100,
-            )
-            return ExitSignal(SignalType.SELL_SL)
-
-        if mark_pnl <= -emergency or (
-            executable_pnl_pct is not None and executable_pnl_pct <= -emergency
-        ):
+        if worst <= -emergency:
             logger.warning(
-                "Emergency stop loss: %s mark=%.4f executable=%s emergency=%.2f%%",
+                "Emergency stop loss: %s %s emergency=%.2f%%",
                 position.symbol,
-                mark_pnl,
-                f"{executable_pnl_pct:.4f}" if executable_pnl_pct is not None else "n/a",
+                _fmt_sources(),
                 emergency * 100,
+            )
+            return ExitSignal(SignalType.SELL_SL)
+
+        if worst <= -stop:
+            logger.info(
+                "Stop loss: %s %s stop=%.2f%%",
+                position.symbol,
+                _fmt_sources(),
+                stop * 100,
             )
             return ExitSignal(SignalType.SELL_SL)
 
@@ -903,7 +1070,10 @@ class MomentumStrategy:
     ) -> Optional[ExitSignal]:
         """Custom exit: hold until sell_at_pct; stop-loss still applies."""
         stop_signal = self._evaluate_stop_loss(
-            position, pnl, executable_pnl_pct=executable_pnl_pct
+            position,
+            pnl,
+            executable_pnl_pct=executable_pnl_pct,
+            trough_pnl=position.trough_pnl_pct,
         )
         if stop_signal is not None:
             return stop_signal
@@ -937,15 +1107,12 @@ class MomentumStrategy:
         effective_pnl = max(pnl, position.peak_pnl_pct)
         if executable_pnl_pct is not None:
             position.bump_peak_pnl(executable_pnl_pct)
+            position.bump_trough_pnl(executable_pnl_pct)
             effective_pnl = max(effective_pnl, executable_pnl_pct)
         hold_sec = time.time() - position.entry_time
         ladder_missed = self._ladder_never_hit(position)
 
-        stop_signal = self._evaluate_stop_loss(
-            position, pnl, executable_pnl_pct=executable_pnl_pct
-        )
-        if stop_signal is not None:
-            return stop_signal
+        trough_pnl = position.trough_pnl_pct
         if (
             Config.ENABLE_L1_PROTECTION
             and position.l1_protection_armed
@@ -983,6 +1150,24 @@ class MomentumStrategy:
             )
             if instant_signal is not None:
                 return instant_signal
+
+        max_hold_signal = self._evaluate_max_hold_exit(
+            position,
+            pnl,
+            hold_sec,
+            executable_pnl_pct=executable_pnl_pct,
+            trough_pnl=trough_pnl,
+        )
+        if max_hold_signal is not None:
+            return max_hold_signal
+        stop_signal = self._evaluate_stop_loss(
+            position,
+            pnl,
+            executable_pnl_pct=executable_pnl_pct,
+            trough_pnl=trough_pnl,
+        )
+        if stop_signal is not None:
+            return stop_signal
 
         rule = get_watchlist_rule(position.mint)
         if rule and rule.override_ladder:
@@ -1170,6 +1355,7 @@ class MomentumStrategy:
         position.buy_count += 1
         position.entry_time = time.time()
         position.peak_pnl_pct = 0.0
+        position.trough_pnl_pct = 0.0
         position.tp_levels = compute_take_profit_levels(position.size_sol)
         position.fee_budget_sol = get_fee_budget(position.size_sol)
         logger.info(

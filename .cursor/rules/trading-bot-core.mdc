@@ -1,0 +1,37 @@
+---
+description: Trading bot exit, learning, entry, and ops mandates (always on)
+alwaysApply: true
+---
+
+# Trading Bot Core Rules (always apply)
+
+### Exits (non-negotiable)
+- Stop loss ALWAYS at configured % (1.5% memecoins, 2% WBTC) using worst of mark, quote, trough
+- Never miss stop loss — forced sell with retries, 0.5s poll in loss zone, fresh Jupiter quotes
+- Instant profit at +3.25% and +5% using mark, peak, AND quote PnL
+- Emergency 3% / catastrophic 5% hard caps
+- Non-WBTC max hold 15 min: SL if at threshold, otherwise plain time exit (not SL)
+- WBTC exempt from 15 min cap
+- Forced exits never defer for impact, never block on min-net
+
+### Learning
+- `setup_learner` records every full exit (paper + live) to `data/setup_learning.json`
+- Centroid win/loss patterns + rolling 50 raw trades
+- Do not break `_record_setup_learning` on any exit path
+
+### Entries / market
+- Assume adversarial liquidity (Pump.fun slippage, stale marks)
+- SOL trend filter can block memecoins when SOL dumps. 1h gate default `SOL_MIN_CHANGE_1H_PCT=-1.5` (mild pullbacks trade, -2%+ blocks); 4h gate `SOL_MIN_CHANGE_4H_PCT=-1.5` is a HARD block for sustained downtrends. Pop-quality override (`SOL_TREND_QUALITY_OVERRIDE_ENABLED=true`): when the 1h gate would block, still allow a proven-shape quality pop via `entry_filters.sol_trend_quality_override_passes` (Pump.fun route + liquidity ≥ `SPIKE_MIN_LIQUIDITY_USD` + fresh 5m/1h + no instant-dump signature / sell-preview exit-able + positive `pop_vs_drop_score`). Override CANNOT bypass the 4h hard block. Loosens entry selection only.
+- Regime-aware: cold regime aligns with the SOL macro gate (1h/4h < thresholds); hot regime (SOL positive) naturally passes the -1.5 gate. Hot Market Mode only loosens entry momentum/volume floors via `market_regime.get_regime_gates`; it MUST NOT weaken the spike/instant-dump gate or any exit (stops/profit/15-min hold/forced) in any regime.
+- Re-entry dip 10%, Steady Trade default preset
+- Consecutive-loss pause (`CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY=true` default): **paper** = 25min timed auto-resume after 3 losses; **live** = indefinite block until Stop/Start (no auto-expire)
+- Spike-trap / pop-vs-drop gate (`SPIKE_TRAP_FILTER_ENABLED`): momentum trading WANTS high-momentum quick pops, so do NOT blanket-block on momentum. `MAX_ENTRY_MOMENTUM_PCT`/`MAX_ENTRY_PRICE_CHANGE_5M_PCT` (default 50000 stored scale) are an absolute ceiling for absurd bonding artifacts only. Momentum ≥ `HIGH_MOMENTUM_QUALITY_PCT` (default 300) is routed through `entry_filters.instant_dump_reason`, which blocks ONLY instant-dump signatures: flat book (sell-preview round-trip impact ≥ stop when available), liquidity < `SPIKE_MIN_LIQUIDITY_USD`, stale spike (max(5m,1h) < `SPIKE_FRESH_CONTINUATION_MIN_PCT`), or reversal (6h AND 24h both negative). Quality high-mom pops are allowed and bypass the win-lean gate. Applies to memecoin momentum + dip re-entry picks only. `pop_vs_drop_score` gives a continuous runner-vs-dump score for tuning.
+- Win-lean entry gate (`SETUP_LEARNING_ENTRY_GATE_ENABLED`, `SETUP_LEARNING_MIN_WIN_LEAN` default 0.0): require candidate to lean to the learned WIN centroid over LOSS centroid to ENTER; falls back to allow when learner data < min trades so it never blocks all entries.
+- Route/asset sanity: SOL/JitoSOL/WETH proxy mints only enter via their dedicated enabled paths, never as random momentum picks (`is_non_memecoin_proxy_mint`).
+- Entry filters tighten selection ONLY (same in paper + live); never touch stop-loss, profit exits, 15-min hold, or forced exits.
+
+### Ops
+- Local-only git, no push unless asked
+- User commits when they say COMMIT
+- Restart server after config/code changes
+- Regime entry-tuning revert: old bottom line recorded in `data/regime_tuning_revert.json` + `presets/pre_regime_tuning_bookmark.json`. Roll back with `restore_regime_tuning.bat` (sets `SOL_MIN_CHANGE_1H_PCT=-1.0`, `SOL_TREND_QUALITY_OVERRIDE_ENABLED=false`) then restart Flask.

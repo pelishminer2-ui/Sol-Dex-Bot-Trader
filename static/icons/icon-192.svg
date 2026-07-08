@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Solana Mover Trading Bot">
+  <rect width="192" height="192" rx="36" fill="#0b0f14"/>
+  <circle cx="96" cy="96" r="58" fill="none" stroke="#14f195" stroke-width="10"/>
+  <path d="M72 118 L96 62 L120 118" fill="none" stroke="#14f195" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="58" y="128" width="76" height="10" rx="5" fill="#14f195" opacity="0.85"/>
+</svg>

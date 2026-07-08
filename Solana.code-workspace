@@ -1,0 +1,12 @@
+{
+  "folders": [
+    {
+      "name": "Solana Mover Trading Bot",
+      "path": "C:\\Users\\Owner\\Desktop\\Solana"
+    }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+    "python.terminal.activateEnvironment": true
+  }
+}

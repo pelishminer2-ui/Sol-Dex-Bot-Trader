@@ -48,15 +48,31 @@ def reset_market_regime_for_tests() -> None:
     }
 
 
+def _baseline_gates() -> dict[str, float]:
+    """Classic static Steady baseline gates (no regime adaptation)."""
+    return {
+        "entry_momentum_pct": Config.ENTRY_MOMENTUM_PCT,
+        "min_momentum_pct": Config.MIN_MOMENTUM_PCT,
+        "min_volume_24h_usd": Config.MIN_VOLUME_24H_USD,
+        "non_watchlist_min_volume_24h_usd": Config.NON_WATCHLIST_MIN_VOLUME_24H_USD,
+    }
+
+
 def _static_regime_gates(regime: str) -> dict[str, float]:
-    """Gate values for a regime without reading live Config effective methods."""
-    if not Config.HOT_MARKET_MODE_ENABLED:
-        return {
-            "entry_momentum_pct": Config.ENTRY_MOMENTUM_PCT,
-            "min_momentum_pct": Config.MIN_MOMENTUM_PCT,
-            "min_volume_24h_usd": Config.MIN_VOLUME_24H_USD,
-            "non_watchlist_min_volume_24h_usd": Config.NON_WATCHLIST_MIN_VOLUME_24H_USD,
-        }
+    """ENTRY-SELECTION gate values for a regime (never touches exits).
+
+    The adaptive layer is active only when Steady's hot-market mode AND the
+    self-adjust master switch are both on. When active, the Steady preset
+    self-tunes its own entry floors by regime:
+      * HOT     -> loosest  (more trades on the momentum pops)
+      * NEUTRAL -> moderately tight
+      * COLD    -> tightest / most selective (fewer, higher-quality trades)
+    These are entry momentum + volume floors ONLY. Stops, instant-profit
+    targets, the 15-min hold, forced sells, and the spike/instant-dump gate are
+    untouched in every regime.
+    """
+    if not (Config.HOT_MARKET_MODE_ENABLED and Config.STEADY_TRADE_AUTO_ADJUST):
+        return _baseline_gates()
     if regime == REGIME_HOT:
         vol = Config.HOT_MARKET_MIN_VOLUME_24H_USD
         return {
@@ -73,17 +89,18 @@ def _static_regime_gates(regime: str) -> dict[str, float]:
             "min_volume_24h_usd": vol,
             "non_watchlist_min_volume_24h_usd": vol,
         }
+    vol = Config.NEUTRAL_MARKET_MIN_VOLUME_24H_USD
     return {
-        "entry_momentum_pct": Config.ENTRY_MOMENTUM_PCT,
-        "min_momentum_pct": Config.MIN_MOMENTUM_PCT,
-        "min_volume_24h_usd": Config.MIN_VOLUME_24H_USD,
-        "non_watchlist_min_volume_24h_usd": Config.NON_WATCHLIST_MIN_VOLUME_24H_USD,
+        "entry_momentum_pct": Config.NEUTRAL_MARKET_ENTRY_MOMENTUM_PCT,
+        "min_momentum_pct": Config.NEUTRAL_MARKET_MIN_MOMENTUM_PCT,
+        "min_volume_24h_usd": vol,
+        "non_watchlist_min_volume_24h_usd": vol,
     }
 
 
 def get_regime_gates() -> dict[str, float]:
-    """Current effective entry/scanner gates (respects hot-market mode)."""
-    if not Config.HOT_MARKET_MODE_ENABLED:
+    """Current effective entry/scanner gates (respects Steady self-adjust)."""
+    if not (Config.HOT_MARKET_MODE_ENABLED and Config.STEADY_TRADE_AUTO_ADJUST):
         return _static_regime_gates(REGIME_NEUTRAL)
     gates = _snapshot.get("regime_gates")
     if gates:
@@ -187,6 +204,20 @@ def update_market_regime(
             gates["min_momentum_pct"] * 100,
             gates["min_volume_24h_usd"] / 1000,
         )
+        if Config.HOT_MARKET_MODE_ENABLED and Config.STEADY_TRADE_AUTO_ADJUST:
+            direction = {
+                REGIME_HOT: "HOT -> looser gates (more trades)",
+                REGIME_NEUTRAL: "NEUTRAL -> tighter gates (balanced)",
+                REGIME_COLD: "COLD -> tighter gates (most selective)",
+            }.get(regime, f"{regime} gates")
+            logger.info(
+                "Steady Trade auto-adjust: %s — entry=%.2f%% mom=%.1f%% vol=$%.0fk "
+                "(entry selection only; exits unchanged)",
+                direction,
+                gates["entry_momentum_pct"] * 100,
+                gates["min_momentum_pct"] * 100,
+                gates["min_volume_24h_usd"] / 1000,
+            )
     return dict(_snapshot)
 
 

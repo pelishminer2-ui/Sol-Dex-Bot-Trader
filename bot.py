@@ -5,7 +5,7 @@ import threading
 import time
 from typing import List, Optional
 
-from config import Config, SOL_MINT, instant_profit_exempt_from_min_net_win, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, sol_trading_enabled, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
+from config import Config, SOL_MINT, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, sol_trading_enabled, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
 from dexscreener_client import get_dexscreener_client
 from jupiter_client import get_jupiter_client
 from jupiter import JupiterExecutor, SwapQuote
@@ -62,6 +62,7 @@ FORCED_EXIT_TYPES = frozenset({
     SignalType.SELL_SL,
     SignalType.SELL_L1_PROTECTION,
     SignalType.SELL_TIME,
+    SignalType.SELL_MAX_HOLD_PROFIT,
     SignalType.SELL_LADDER_MISSED_30M,
     SignalType.SELL_LADDER_MISSED_10M,
     SignalType.SELL_INSTANT_PROFIT,
@@ -69,8 +70,17 @@ FORCED_EXIT_TYPES = frozenset({
     SignalType.SELL_TP_PARTIAL,
 })
 
-FORCED_SELL_QUOTE_RETRIES = 3
-FORCED_SELL_QUOTE_BACKOFF_SEC = 0.3
+FORCED_SELL_QUOTE_RETRIES = 10
+FORCED_SELL_QUOTE_BACKOFF_SEC = 0.2
+INSTANT_EXIT_NEAR_THRESHOLD_PCT = 0.02
+LOSS_MONITOR_SEC = 0.5
+INSTANT_PROFIT_MONITOR_SEC = 0.5
+INSTANT_EXIT_CYCLE_RETRIES = 5
+INSTANT_EXIT_CYCLE_BACKOFF_SEC = 0.15
+INSTANT_EXIT_CRITICAL_CYCLES = 2
+FORCED_EXIT_CRITICAL_CYCLES = 2
+FORCED_EXIT_RETRY_INTERVAL_SEC = 0.5
+STOP_APPROACHING_PCT = 0.01
 
 
 class TradingBot:
@@ -108,6 +118,9 @@ class TradingBot:
         self._dominant_gate_since: Optional[float] = None
         self._exit_impact_defer_counts: dict[str, int] = {}
         self._forced_high_impact_exits: set[str] = set()
+        self._instant_exit_pending_cycles: dict[str, int] = {}
+        self._pending_forced_exit: dict[str, int] = {}
+        self._stop_alert_state: dict[str, str] = {}
         self.price_feed = PriceFeed()
         self.strategy = MomentumStrategy()
         self.similarity = SimilarityScorer()
@@ -158,6 +171,12 @@ class TradingBot:
             return "liquidity"
         if "entry momentum" in lower or "dip re-entry momentum" in lower:
             return "entry_momentum"
+        if "spike trap" in lower or "price spike" in lower:
+            return "spike_trap"
+        if "win-lean" in lower:
+            return "win_lean"
+        if "non-memecoin proxy" in lower or "asset sanity" in lower:
+            return "asset_sanity"
         if "no momentum data" in lower:
             return "no_momentum_data"
         if "loss re-entry cooldown" in lower or "loss cooldown" in lower or "one-strike" in lower:
@@ -910,7 +929,7 @@ class TradingBot:
     ) -> None:
         if net_pnl_sol < 0:
             self.strategy.record_loss_reentry_cooldown(mint)
-        self.risk.record_trade_outcome(net_pnl_sol)
+        self.risk.record_trade_outcome(net_pnl_sol, dry_run=self.dry_run)
 
     def _fetch_position_prices(self, mints: List[str]) -> dict:
         """Fetch prices for open positions with retry (never silently skip)."""
@@ -962,6 +981,195 @@ class TradingBot:
         _, sol_out = quote_sol_flow(quote)
         return (sol_out - sol_basis - fees) / sol_basis
 
+    def _near_instant_profit_threshold(
+        self, position: Position, current_price: float
+    ) -> bool:
+        """True when mark or peak is near the instant-exit zone — skip quote cache."""
+        mark = position.pnl_pct(current_price)
+        return (
+            mark >= INSTANT_EXIT_NEAR_THRESHOLD_PCT
+            or position.peak_pnl_pct >= INSTANT_EXIT_NEAR_THRESHOLD_PCT
+        )
+
+    def _worst_position_loss_pnl(
+        self,
+        position: Position,
+        current_price: float,
+        executable_pnl_pct: Optional[float] = None,
+    ) -> float:
+        """Worst (most negative) of mark, quote, and trough PnL."""
+        mark = position.pnl_pct(current_price)
+        sources = [mark, position.trough_pnl_pct]
+        if executable_pnl_pct is not None:
+            sources.append(executable_pnl_pct)
+        return min(sources)
+
+    def _at_stop_threshold(
+        self,
+        position: Position,
+        current_price: float,
+        executable_pnl_pct: Optional[float] = None,
+    ) -> bool:
+        """True when worst PnL source is at or past configured stop-loss."""
+        stop = effective_stop_loss_pct(position.mint)
+        return self._worst_position_loss_pnl(
+            position, current_price, executable_pnl_pct
+        ) <= -stop
+
+    def _track_stop_loss_alerts(
+        self,
+        position: Position,
+        current_price: float,
+        executable_pnl_pct: Optional[float] = None,
+        *,
+        at_stop_pending: bool = False,
+    ) -> None:
+        """WARNING at -1% crossing; ERROR when at stop without sell within 2 cycles."""
+        if not Config.STOP_LOSS_NEVER_MISS:
+            return
+        mint = position.mint
+        worst = self._worst_position_loss_pnl(
+            position, current_price, executable_pnl_pct
+        )
+        stop = effective_stop_loss_pct(mint)
+        prev = self._stop_alert_state.get(mint, "ok")
+        if worst <= -stop:
+            state = "at_stop"
+        elif worst <= -STOP_APPROACHING_PCT:
+            state = "approaching"
+        else:
+            state = "ok"
+        if state == "approaching" and prev == "ok":
+            logger.warning(
+                "Approaching stop: %s mark=%.2f%% trough=%.2f%% quote=%s",
+                position.symbol,
+                position.pnl_pct(current_price) * 100,
+                position.trough_pnl_pct * 100,
+                f"{executable_pnl_pct * 100:.2f}%"
+                if executable_pnl_pct is not None
+                else "n/a",
+            )
+        if state == "at_stop" and at_stop_pending:
+            cycles = self._pending_forced_exit.get(mint, 0)
+            if cycles >= FORCED_EXIT_CRITICAL_CYCLES:
+                logger.error(
+                    "STOP LOSS NOT EXECUTED: %s still open after %d cycle(s) "
+                    "at mark=%.2f%% trough=%.2f%% quote=%s stop=%.2f%%",
+                    position.symbol,
+                    cycles,
+                    position.pnl_pct(current_price) * 100,
+                    position.trough_pnl_pct * 100,
+                    f"{executable_pnl_pct * 100:.2f}%"
+                    if executable_pnl_pct is not None
+                    else "n/a",
+                    stop * 100,
+                )
+        self._stop_alert_state[mint] = state
+
+    def _in_loss_zone(
+        self,
+        position: Position,
+        current_price: float,
+        executable_pnl_pct: Optional[float] = None,
+    ) -> bool:
+        """True when mark, quote, or trough shows loss past fresh-quote threshold."""
+        if not Config.STOP_LOSS_NEVER_MISS:
+            mark = position.pnl_pct(current_price)
+            threshold = -Config.LOSS_FRESH_QUOTE_PCT
+            if mark <= threshold or position.trough_pnl_pct <= threshold:
+                return True
+            if executable_pnl_pct is not None and executable_pnl_pct <= threshold:
+                return True
+            return False
+        threshold = -Config.LOSS_FRESH_QUOTE_PCT
+        worst = self._worst_position_loss_pnl(
+            position, current_price, executable_pnl_pct
+        )
+        return worst <= threshold
+
+    def _refresh_executable_pnl(
+        self,
+        position: Position,
+        token_raw: int,
+        *,
+        use_cache: bool,
+    ) -> tuple[Optional[SwapQuote], Optional[float]]:
+        preview_quote = self.jupiter.sell_token(
+            position.mint,
+            token_raw,
+            use_cache=use_cache,
+            allow_high_impact=True,
+        )
+        executable_pnl_pct = (
+            self._executable_pnl_pct(position, token_raw, preview_quote)
+            if preview_quote
+            else None
+        )
+        if executable_pnl_pct is not None:
+            position.bump_peak_pnl(executable_pnl_pct)
+            position.bump_trough_pnl(executable_pnl_pct)
+        return preview_quote, executable_pnl_pct
+
+    def _position_monitor_interval(self, positions: List[Position]) -> float:
+        """Poll faster when any open position is near instant-profit or in loss zone."""
+        base = (
+            Config.POSITION_MONITOR_SEC
+            if positions
+            else Config.PRICE_POLL_SEC
+        )
+        for position in positions:
+            if position.peak_pnl_pct >= INSTANT_EXIT_NEAR_THRESHOLD_PCT:
+                return min(float(base), INSTANT_PROFIT_MONITOR_SEC)
+            if Config.STOP_LOSS_NEVER_MISS:
+                if position.trough_pnl_pct <= -Config.LOSS_FRESH_QUOTE_PCT:
+                    return min(float(base), LOSS_MONITOR_SEC)
+                if self._pending_forced_exit.get(position.mint, 0) > 0:
+                    return min(float(base), LOSS_MONITOR_SEC)
+            elif position.trough_pnl_pct <= -Config.LOSS_FRESH_QUOTE_PCT:
+                return min(float(base), LOSS_MONITOR_SEC)
+        return float(base)
+
+    def _track_forced_exit_pending(
+        self, position: Position, *, executed: bool, current_price: float
+    ) -> None:
+        if executed:
+            if position.remaining_token_amount_raw <= 0:
+                self._pending_forced_exit.pop(position.mint, None)
+                self._stop_alert_state.pop(position.mint, None)
+            return
+        cycles = self._pending_forced_exit.get(position.mint, 0) + 1
+        self._pending_forced_exit[position.mint] = cycles
+        stop = effective_stop_loss_pct(position.mint)
+        if cycles >= FORCED_EXIT_CRITICAL_CYCLES and self._at_stop_threshold(
+            position, current_price
+        ):
+            logger.critical(
+                "FORCED EXIT NOT EXECUTED: %s still open after %d cycle(s) "
+                "at mark=%.2f%% trough=%.2f%% — retrying every %.1fs",
+                position.symbol,
+                cycles,
+                position.pnl_pct(current_price) * 100,
+                position.trough_pnl_pct * 100,
+                FORCED_EXIT_RETRY_INTERVAL_SEC,
+            )
+
+    def _track_instant_exit_pending(
+        self, position: Position, *, executed: bool
+    ) -> None:
+        if executed:
+            self._instant_exit_pending_cycles.pop(position.mint, None)
+            return
+        cycles = self._instant_exit_pending_cycles.get(position.mint, 0) + 1
+        self._instant_exit_pending_cycles[position.mint] = cycles
+        if cycles >= INSTANT_EXIT_CRITICAL_CYCLES:
+            logger.critical(
+                "INSTANT EXIT NOT EXECUTED: %s still open after %d monitor cycle(s) "
+                "with peak=%.2f%% — profit target missed, retrying aggressively",
+                position.symbol,
+                cycles,
+                position.peak_pnl_pct * 100,
+            )
+
     async def _monitor_open_position(
         self, position: Position, current_price: Optional[float] = None, *, allow_stopped: bool = False
     ):
@@ -983,21 +1191,58 @@ class TradingBot:
         )
         if peak_price and peak_price > 0:
             position.update_peak_pnl(peak_price)
+        trough_price = self.price_feed.get_trough_price_since(
+            position.mint, position.entry_time
+        )
+        if trough_price and trough_price > 0:
+            position.update_peak_pnl(trough_price)
         position.update_peak_pnl(current_price)
 
-        token_raw = position.remaining_token_amount_raw
-        preview_quote = self.jupiter.sell_token(
-            position.mint, token_raw, use_cache=True, allow_high_impact=True
-        )
-        executable_pnl_pct = (
-            self._executable_pnl_pct(position, token_raw, preview_quote)
-            if preview_quote
-            else None
-        )
-        if executable_pnl_pct is not None:
-            position.bump_peak_pnl(executable_pnl_pct)
+        preview_quote: Optional[SwapQuote] = None
+        executable_pnl_pct: Optional[float] = None
 
         while allow_stopped or self.should_run():
+            token_raw = position.remaining_token_amount_raw
+            if token_raw <= 0:
+                self._track_forced_exit_pending(
+                    position, executed=True, current_price=current_price
+                )
+                return
+
+            near_threshold = self._near_instant_profit_threshold(
+                position, current_price
+            )
+            pending_instant = (
+                self._instant_exit_pending_cycles.get(position.mint, 0) > 0
+            )
+            pending_forced = self._pending_forced_exit.get(position.mint, 0) > 0
+            in_loss_zone = self._in_loss_zone(
+                position, current_price, executable_pnl_pct
+            )
+            force_fresh_quote = (
+                near_threshold or pending_instant or in_loss_zone or pending_forced
+            )
+            preview_quote, executable_pnl_pct = self._refresh_executable_pnl(
+                position, token_raw, use_cache=not force_fresh_quote
+            )
+            in_loss_zone = self._in_loss_zone(
+                position, current_price, executable_pnl_pct
+            )
+            at_stop = self._at_stop_threshold(
+                position, current_price, executable_pnl_pct
+            )
+            if at_stop:
+                self._pending_forced_exit[position.mint] = max(
+                    1, self._pending_forced_exit.get(position.mint, 0)
+                )
+            self._track_stop_loss_alerts(
+                position,
+                current_price,
+                executable_pnl_pct,
+                at_stop_pending=at_stop
+                or self._pending_forced_exit.get(position.mint, 0) > 0,
+            )
+
             can_afford_dca, jupiter_route_ok = await self._ladder_dca_gates(
                 position, current_price
             )
@@ -1021,13 +1266,20 @@ class TradingBot:
                 sol_trend_snapshot=self.sol_trend_snapshot,
                 executable_pnl_pct=executable_pnl_pct,
             )
+            if exit_signal is None and (
+                at_stop or self._pending_forced_exit.get(position.mint, 0) > 0
+            ):
+                exit_signal = ExitSignal(SignalType.SELL_SL)
+            elif exit_signal is None and pending_forced:
+                exit_signal = ExitSignal(SignalType.SELL_SL)
             if exit_signal is None:
                 pnl = position.pnl_pct(current_price)
                 logger.debug(
-                    "Holding %s pnl=%.4f peak=%.4f quote=%s levels=%d/%d",
+                    "Holding %s pnl=%.4f peak=%.4f trough=%.4f quote=%s levels=%d/%d",
                     position.symbol,
                     pnl,
                     position.peak_pnl_pct,
+                    position.trough_pnl_pct,
                     f"{executable_pnl_pct:.4f}"
                     if executable_pnl_pct is not None
                     else "n/a",
@@ -1059,14 +1311,70 @@ class TradingBot:
 
             token_raw = self._sell_amount_for_exit(position, exit_signal)
             forced = self._is_forced_exit(exit_signal)
-            quote = await self._fetch_sell_quote(
-                position,
-                token_raw,
-                exit_signal,
-                preview_quote=preview_quote,
+            is_instant = exit_signal.signal_type == SignalType.SELL_INSTANT_PROFIT
+            quote_attempts = (
+                INSTANT_EXIT_CYCLE_RETRIES
+                if is_instant
+                else (FORCED_SELL_QUOTE_RETRIES if forced else 1)
             )
-            preview_quote = None
+            quote_backoff = (
+                INSTANT_EXIT_CYCLE_BACKOFF_SEC
+                if is_instant
+                else FORCED_SELL_QUOTE_BACKOFF_SEC
+            )
+            quote = None
+            for quote_attempt in range(1, quote_attempts + 1):
+                quote = await self._fetch_sell_quote(
+                    position,
+                    token_raw,
+                    exit_signal,
+                    preview_quote=preview_quote if not forced else None,
+                    use_cache=False if forced else not force_fresh_quote,
+                )
+                preview_quote = None
+                if quote:
+                    break
+                if quote_attempt < quote_attempts:
+                    logger.warning(
+                        "Sell quote failed for %s %s (cycle attempt %d/%d) — retrying in %.0fms",
+                        position.symbol,
+                        exit_signal.signal_type.value,
+                        quote_attempt,
+                        quote_attempts,
+                        quote_backoff * 1000,
+                    )
+                    prices = self._fetch_position_prices([position.mint])
+                    refreshed = prices.get(position.mint)
+                    if refreshed:
+                        current_price = refreshed
+                        position.update_peak_pnl(current_price)
+                    await asyncio.sleep(quote_backoff)
             if not quote:
+                if is_instant:
+                    self._track_instant_exit_pending(position, executed=False)
+                if forced:
+                    self._track_forced_exit_pending(
+                        position, executed=False, current_price=current_price
+                    )
+                    logger.error(
+                        "Sell stalled: no Jupiter quote for %s %s after %d attempt(s) — retrying",
+                        position.symbol,
+                        exit_signal.signal_type.value,
+                        quote_attempts,
+                    )
+                    await asyncio.sleep(FORCED_EXIT_RETRY_INTERVAL_SEC)
+                    prices = self._fetch_position_prices([position.mint])
+                    refreshed = prices.get(position.mint)
+                    if refreshed:
+                        current_price = refreshed
+                        position.update_peak_pnl(current_price)
+                    continue
+                logger.error(
+                    "Sell stalled: no Jupiter quote for %s %s after %d cycle attempt(s)",
+                    position.symbol,
+                    exit_signal.signal_type.value,
+                    quote_attempts,
+                )
                 return
 
             if not self._quote_meets_min_net(position, token_raw, quote, exit_signal):
@@ -1074,6 +1382,12 @@ class TradingBot:
                     logger.warning(
                         "Instant exit min-net gate bypass failed for %s — forcing sell",
                         position.symbol,
+                    )
+                elif forced:
+                    logger.warning(
+                        "Forced exit min-net gate bypass for %s %s",
+                        position.symbol,
+                        exit_signal.signal_type.value,
                     )
                 else:
                     logger.info(
@@ -1084,15 +1398,25 @@ class TradingBot:
                     return
 
             if self._should_defer_exit_for_impact(position, quote, exit_signal):
-                logger.warning(
-                    "Exit skipped (impact defer — unexpected): %s %s impact=%.2f%%",
-                    position.symbol,
-                    exit_signal.signal_type.value,
-                    quote.price_impact_pct,
-                )
-                return
+                if is_instant or forced:
+                    logger.warning(
+                        "Exit impact defer rejected for %s — forcing sell",
+                        position.symbol,
+                    )
+                else:
+                    logger.warning(
+                        "Exit skipped (impact defer — unexpected): %s %s impact=%.2f%%",
+                        position.symbol,
+                        exit_signal.signal_type.value,
+                        quote.price_impact_pct,
+                    )
+                    return
 
-            exec_attempts = FORCED_SELL_QUOTE_RETRIES if forced else 1
+            exec_attempts = (
+                INSTANT_EXIT_CYCLE_RETRIES
+                if is_instant
+                else (FORCED_SELL_QUOTE_RETRIES if forced else 1)
+            )
             signature = None
             for attempt in range(1, exec_attempts + 1):
                 signature = await self._execute_sell(
@@ -1102,6 +1426,12 @@ class TradingBot:
                     forced_exit=forced,
                 )
                 if signature:
+                    if is_instant:
+                        self._track_instant_exit_pending(position, executed=True)
+                    if forced:
+                        self._track_forced_exit_pending(
+                            position, executed=True, current_price=current_price
+                        )
                     break
                 if attempt < exec_attempts:
                     logger.warning(
@@ -1116,8 +1446,32 @@ class TradingBot:
                     )
                     if not quote:
                         break
-                    await asyncio.sleep(FORCED_SELL_QUOTE_BACKOFF_SEC)
+                    backoff = (
+                        INSTANT_EXIT_CYCLE_BACKOFF_SEC
+                        if is_instant
+                        else FORCED_SELL_QUOTE_BACKOFF_SEC
+                    )
+                    await asyncio.sleep(backoff)
             if not signature:
+                if is_instant:
+                    self._track_instant_exit_pending(position, executed=False)
+                if forced:
+                    self._track_forced_exit_pending(
+                        position, executed=False, current_price=current_price
+                    )
+                    logger.error(
+                        "Sell stalled: execution failed for %s %s after %d attempt(s) — retrying",
+                        position.symbol,
+                        exit_signal.signal_type.value,
+                        exec_attempts,
+                    )
+                    await asyncio.sleep(FORCED_EXIT_RETRY_INTERVAL_SEC)
+                    prices = self._fetch_position_prices([position.mint])
+                    refreshed = prices.get(position.mint)
+                    if refreshed:
+                        current_price = refreshed
+                        position.update_peak_pnl(current_price)
+                    continue
                 logger.error(
                     "Sell stalled: execution failed for %s %s after %d attempt(s)",
                     position.symbol,
@@ -1447,7 +1801,9 @@ class TradingBot:
                 net_pnl_sol=position.realized_net_pnl_sol,
                 exit_reason=sell_journal.get("reason"),
             )
-            self.risk.record_trade_outcome(position.realized_net_pnl_sol)
+            self._record_completed_trade_outcome(
+                position.mint, position.symbol, position.realized_net_pnl_sol
+            )
 
     async def _stop_for_paper_balance_depletion(self) -> None:
         """End paper session and stop when simulated SOL is exhausted."""
@@ -1538,6 +1894,23 @@ class TradingBot:
                 self._record_action(f"Entry skipped: {reason}")
                 logger.warning("Buy blocked: %s", reason)
                 return False
+            stop = effective_stop_loss_pct(candidate.mint)
+            sol_in, _ = quote_sol_flow(quote)
+            _, sol_out = quote_sol_flow(full_sell_preview)
+            if sol_in > 0:
+                flat_fees = estimate_round_trip_fees_sol(
+                    trade_size, quote.raw, full_sell_preview.raw
+                )
+                flat_pnl_pct = (sol_out - sol_in - flat_fees) / sol_in
+                if flat_pnl_pct <= -stop:
+                    reason = (
+                        f"flat-book full sell preview loss {flat_pnl_pct * 100:.2f}% "
+                        f"> stop {stop * 100:.2f}% for {candidate.symbol}"
+                    )
+                    self._note_entry_skip(reason)
+                    self._record_action(f"Entry skipped: {reason}")
+                    logger.warning("Buy blocked: %s", reason)
+                    return False
 
         fee_budget, fee_breakdown = self._entry_fee_estimate(
             trade_size, quote, sell_preview
@@ -1840,11 +2213,13 @@ class TradingBot:
             signal = self.strategy.evaluate_dip_reentry(
                 candidate, current_price, True, momentum=momentum,
                 sol_trend_snapshot=self.sol_trend_snapshot,
+                setup_learner=self.setup_learner,
             )
             if signal != SignalType.BUY:
                 skip_reason = self.strategy.dip_reentry_skip_reason(
                     candidate, True, momentum=momentum,
                     sol_trend_snapshot=self.sol_trend_snapshot,
+                    setup_learner=self.setup_learner,
                 )
                 if skip_reason:
                     self._note_entry_skip(skip_reason)
@@ -1883,6 +2258,7 @@ class TradingBot:
                 momentum,
                 usd_gain=candidate.day_usd_gain if is_pinned_watchlist_mint(candidate.mint) else None,
                 sol_trend_snapshot=self.sol_trend_snapshot,
+                setup_learner=self.setup_learner,
             )
             if signal != SignalType.BUY:
                 skip_reason = self.strategy.entry_skip_reason(
@@ -1890,6 +2266,7 @@ class TradingBot:
                     momentum,
                     usd_gain=candidate.day_usd_gain if is_pinned_watchlist_mint(candidate.mint) else None,
                     sol_trend_snapshot=self.sol_trend_snapshot,
+                    setup_learner=self.setup_learner,
                 )
                 if skip_reason:
                     self._note_entry_skip(skip_reason)
@@ -1966,10 +2343,8 @@ class TradingBot:
                     elif Config.watchlist_mint_enabled():
                         self._poll_pinned_watchlist_mint()
 
-                    sleep_sec = (
-                        Config.POSITION_MONITOR_SEC
-                        if open_count > 0
-                        else Config.PRICE_POLL_SEC
+                    sleep_sec = self._position_monitor_interval(
+                        self.strategy.positions
                     )
                     sleep_sec += get_jupiter_client().get_poll_interval_boost()
                     await self._interruptible_sleep(sleep_sec)

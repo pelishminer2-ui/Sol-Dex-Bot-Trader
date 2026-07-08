@@ -1,0 +1,24 @@
+{
+  "label": "pre-best-win",
+  "created_at": "2026-07-08T17:41:44.726103+00:00",
+  "description": "Snapshot before Best Win preset \u2014 use Revert to bookmark",
+  "values": {
+    "trade_size_sol": 0.1,
+    "entry_momentum_pct": 0.0075,
+    "stop_loss_pct": 0.015,
+    "min_liquidity_usd": 15000.0,
+    "min_volume_24h_usd": 45000.0,
+    "min_momentum_pct": 0.015,
+    "min_expected_net_profit_sol": 0.0004,
+    "min_net_win_sol": 0.002,
+    "loss_reentry_cooldown_minutes": 120,
+    "loss_reentry_repeat_cooldown_minutes": 240,
+    "non_watchlist_min_volume_24h_usd": 45000.0,
+    "weaken_exit_min_profit_pct": 0.01,
+    "take_profit_levels": [],
+    "take_profit_portions": [],
+    "reentry_dip_pct": 0.1,
+    "max_potential_mode": false,
+    "block_stock_related_tokens": true
+  }
+}

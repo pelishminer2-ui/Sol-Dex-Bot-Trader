@@ -560,6 +560,11 @@ class BotManager:
             open_mints = (
                 [p.mint for p in bot.strategy.get_open_positions()] if bot else []
             )
+            consecutive_loss_pause = (
+                bot.risk.consecutive_loss_pause_status(dry_run=bot.dry_run)
+                if bot
+                else None
+            )
             from config import max_allowed_open_positions, wbtc_companion_slot_open
 
             effective_max_open_positions = max_allowed_open_positions(open_mints)
@@ -684,6 +689,7 @@ class BotManager:
             "error": error,
             "config": Config.to_dict(),
             "open_positions_count": open_positions_count,
+            "consecutive_loss_pause": consecutive_loss_pause,
             "max_open_positions": effective_max_open_positions,
             "max_open_positions_base": Config.MAX_OPEN_POSITIONS,
             "max_open_positions_wbtc": Config.MAX_OPEN_POSITIONS_WBTC,
@@ -924,6 +930,7 @@ class BotManager:
             else None,
             "pnl_pct": pnl_pct,
             "peak_pnl_pct": position.peak_pnl_pct,
+            "trough_pnl_pct": position.trough_pnl_pct,
             "entry_time": position.entry_time,
             "hold_sec": time.time() - position.entry_time,
             "tp_levels": tp_levels,
@@ -961,6 +968,11 @@ class BotManager:
             )
             if peak_price and peak_price > 0:
                 position.update_peak_pnl(peak_price)
+            trough_price = bot.price_feed.get_trough_price_since(
+                position.mint, position.entry_time
+            )
+            if trough_price and trough_price > 0:
+                position.update_peak_pnl(trough_price)
             position.update_peak_pnl(current_price)
             result.append(self._position_to_dict(position, current_price))
         return result
@@ -1333,6 +1345,51 @@ class BotManager:
             new_lines.append(f"SOLANA_PRIVATE_KEY={key}")
 
         path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    def unblock_mint(
+        self, mint: str, *, symbol: str = "", name: str = ""
+    ) -> Dict[str, Any]:
+        from stock_token_filter import add_stock_allowlist_mint, is_stock_related_token
+
+        mint = (mint or "").strip()
+        if not mint:
+            raise ValueError("mint is required")
+
+        before = self._mint_block_snapshot(mint, symbol=symbol, name=name)
+        add_stock_allowlist_mint(mint)
+
+        session_cleared: List[str] = []
+        with self._lock:
+            bot = self._bot
+            if bot:
+                session_cleared = bot.strategy.clear_mint_blocks(mint).get("cleared", [])
+
+        after = self._mint_block_snapshot(mint, symbol=symbol, name=name)
+        return {
+            "mint": mint,
+            "symbol": symbol or None,
+            "before_blocks": before["blocks"],
+            "session_cleared": session_cleared,
+            "after_blocks": after["blocks"],
+            "unblocked": not after["blocked"],
+        }
+
+    def _mint_block_snapshot(
+        self, mint: str, *, symbol: str = "", name: str = ""
+    ) -> Dict[str, Any]:
+        from stock_token_filter import is_stock_related_token
+
+        blocks: List[str] = []
+        if is_stock_related_token(mint=mint, symbol=symbol, name=name):
+            blocks.append("stock_filter")
+        with self._lock:
+            bot = self._bot
+            if bot:
+                status = bot.strategy.mint_block_status(mint, symbol=symbol, name=name)
+                for block in status["blocks"]:
+                    if block not in blocks:
+                        blocks.append(block)
+        return {"mint": mint, "blocked": bool(blocks), "blocks": blocks}
 
 
 bot_manager = BotManager()

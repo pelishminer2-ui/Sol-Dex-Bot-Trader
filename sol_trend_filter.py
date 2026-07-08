@@ -168,10 +168,20 @@ def get_sol_trend_snapshot(*, force_refresh: bool = False) -> dict:
 
 def memecoin_entry_allowed_by_sol_trend(
     snapshot: Optional[dict] = None,
+    *,
+    candidate=None,
+    sell_preview_impact_pct: Optional[float] = None,
 ) -> tuple[bool, Optional[str]]:
     """
     Return (allowed, skip_reason) for non-watchlist memecoin entries.
     WBTC / pinned watchlist mints are exempt — call only for memecoins.
+
+    Pop-quality override: when the 1h macro gate would block but a ``candidate`` is
+    supplied that passes the quality bar (``entry_filters.sol_trend_quality_override
+    _passes`` — Pump.fun route, liquid, fresh, exit-able, leans runner), the entry
+    is allowed. The 4h sustained-downtrend block is a HARD block and can never be
+    bypassed by the override. This only loosens entry selection; it never touches
+    stop-loss, profit exits, the 15-minute hold, forced exits, or learning.
     """
     if not Config.SOL_TREND_FILTER_ENABLED:
         return True, None
@@ -185,14 +195,27 @@ def memecoin_entry_allowed_by_sol_trend(
     if h1 is None and h4 is None:
         return True, None
 
-    if h1 is not None and h1 < Config.SOL_MIN_CHANGE_1H_PCT:
-        return (
-            False,
-            f"SOL macro gate: 1h {h1:+.2f}% < {Config.SOL_MIN_CHANGE_1H_PCT:+.2f}%",
-        )
+    # 4h sustained downtrend is a hard block — the quality override cannot bypass it.
     if h4 is not None and h4 < Config.SOL_MIN_CHANGE_4H_PCT:
         return (
             False,
             f"SOL macro gate: 4h {h4:+.2f}% < {Config.SOL_MIN_CHANGE_4H_PCT:+.2f}%",
+        )
+
+    if h1 is not None and h1 < Config.SOL_MIN_CHANGE_1H_PCT:
+        if candidate is not None:
+            from entry_filters import sol_trend_quality_override_passes
+
+            if sol_trend_quality_override_passes(candidate, sell_preview_impact_pct):
+                logger.info(
+                    "SOL macro gate 1h %+.2f%% < %+.2f%% overridden by quality pop: %s",
+                    h1,
+                    Config.SOL_MIN_CHANGE_1H_PCT,
+                    getattr(candidate, "symbol", "?"),
+                )
+                return True, None
+        return (
+            False,
+            f"SOL macro gate: 1h {h1:+.2f}% < {Config.SOL_MIN_CHANGE_1H_PCT:+.2f}%",
         )
     return True, None

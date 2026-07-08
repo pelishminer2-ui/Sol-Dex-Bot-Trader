@@ -472,6 +472,21 @@ def bot_force_reset():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/mint/unblock", methods=["POST"])
+def mint_unblock():
+    data = request.get_json(silent=True) or {}
+    mint = (data.get("mint") or data.get("token_mint") or "").strip()
+    symbol = (data.get("symbol") or "").strip()
+    name = (data.get("name") or "").strip()
+    if not mint:
+        return jsonify({"ok": False, "error": "mint is required"}), 400
+    try:
+        result = bot_manager.unblock_mint(mint, symbol=symbol, name=name)
+        return jsonify({"ok": True, **result})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.route("/api/bot/status")
 def bot_status():
     status = bot_manager.get_status()

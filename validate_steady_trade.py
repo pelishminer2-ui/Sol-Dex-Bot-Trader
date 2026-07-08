@@ -14,9 +14,9 @@ from strategy import MomentumStrategy
 
 
 def test_steady_trade_preset_values():
-    assert STEADY_TRADE_PRESET["entry_momentum_pct"] == 0.005
+    assert STEADY_TRADE_PRESET["entry_momentum_pct"] == 0.004
     assert STEADY_TRADE_PRESET["min_momentum_pct"] == 0.015
-    assert STEADY_TRADE_PRESET["non_watchlist_min_volume_24h_usd"] == 50000.0
+    assert STEADY_TRADE_PRESET["non_watchlist_min_volume_24h_usd"] == 45000.0
     assert STEADY_TRADE_PRESET["max_entry_price_impact_pct"] == 1.0
     assert STEADY_TRADE_PRESET["min_net_win_sol"] == 0.002
     assert STEADY_TRADE_PRESET["loss_reentry_cooldown_minutes"] == 120
@@ -26,7 +26,7 @@ def test_steady_trade_preset_values():
 
 
 def test_steady_between_balanced_and_best_win():
-    assert STEADY_TRADE_PRESET["entry_momentum_pct"] == 0.005
+    assert STEADY_TRADE_PRESET["entry_momentum_pct"] == 0.004
     assert BEST_WIN_PRESET["entry_momentum_pct"] > STEADY_TRADE_PRESET["entry_momentum_pct"]
     assert BEST_WIN_PRESET["min_momentum_pct"] > STEADY_TRADE_PRESET["min_momentum_pct"]
     assert (
@@ -51,9 +51,9 @@ def test_apply_steady_trade_strategy():
         result = apply_steady_trade_strategy(save_bookmark=False)
     assert result["preset"] == "steady_trade_strategy"
     applied = mock_update.call_args.kwargs
-    assert applied["ENTRY_MOMENTUM_PCT"] == 0.005
+    assert applied["ENTRY_MOMENTUM_PCT"] == 0.004
     assert applied["MIN_MOMENTUM_PCT"] == 0.015
-    assert applied["NON_WATCHLIST_MIN_VOLUME_24H_USD"] == 50000.0
+    assert applied["NON_WATCHLIST_MIN_VOLUME_24H_USD"] == 45000.0
     assert applied["HOT_MARKET_MODE_ENABLED"] is True
     print("PASS: apply_steady_trade_strategy runtime updates")
 

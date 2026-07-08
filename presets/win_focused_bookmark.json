@@ -1,0 +1,31 @@
+{
+  "label": "pre-fee-aware",
+  "created_at": "2026-07-06T19:46:00+00:00",
+  "description": "Snapshot before fee-aware economics — use Revert to bookmark for pre-fee-aware win preset",
+  "values": {
+    "trade_size_sol": 0.10,
+    "entry_momentum_pct": 0.005,
+    "stop_loss_pct": 0.03,
+    "min_liquidity_usd": 15000.0,
+    "min_momentum_pct": 0.015,
+    "min_expected_net_profit_sol": 0.001,
+    "min_net_win_sol": 0.0,
+    "loss_reentry_cooldown_minutes": 0,
+    "weaken_exit_min_profit_pct": 0.02,
+    "take_profit_levels": [0.03, 0.04],
+    "take_profit_portions": [0.5, 0.5]
+  },
+  "legacy_pre_win_preset": {
+    "label": "pre-win-preset",
+    "values": {
+      "trade_size_sol": 0.05,
+      "entry_momentum_pct": 0.0025,
+      "stop_loss_pct": 0.015,
+      "min_liquidity_usd": 12000.0,
+      "min_momentum_pct": 0.01,
+      "min_expected_net_profit_sol": 0.001,
+      "take_profit_levels": [0.015, 0.03, 0.07, 0.10],
+      "take_profit_portions": [0.25, 0.25, 0.25, 0.25]
+    }
+  }
+}

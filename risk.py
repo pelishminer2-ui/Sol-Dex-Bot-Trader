@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,7 @@ class RiskState:
     day_start: float = field(default_factory=time.time)
     trades_today: int = 0
     consecutive_losses: int = 0
+    consecutive_loss_pause_until: float = 0.0
 
 
 class RiskManager:
@@ -55,6 +57,75 @@ class RiskManager:
         now = time.time()
         if now - self.state.day_start >= 86400:
             self.state = RiskState(day_start=now)
+
+    @staticmethod
+    def _uses_timed_consecutive_loss_pause(dry_run: bool) -> bool:
+        if Config.MAX_CONSECUTIVE_LOSSES <= 0 or Config.CONSECUTIVE_LOSS_PAUSE_MINUTES <= 0:
+            return False
+        if Config.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY:
+            return dry_run
+        return True
+
+    @staticmethod
+    def _uses_indefinite_consecutive_loss_pause(dry_run: bool) -> bool:
+        if Config.MAX_CONSECUTIVE_LOSSES <= 0:
+            return False
+        return Config.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY and not dry_run
+
+    def _expire_consecutive_loss_pause_if_needed(self, dry_run: bool = True) -> None:
+        if not self._uses_timed_consecutive_loss_pause(dry_run):
+            return
+        until = self.state.consecutive_loss_pause_until
+        if until > 0 and time.time() >= until:
+            self.state.consecutive_loss_pause_until = 0.0
+            self.state.consecutive_losses = 0
+            logger.info("Consecutive loss pause expired; counter reset")
+
+    def _is_consecutive_loss_pause_active(self, dry_run: bool = True) -> bool:
+        if Config.MAX_CONSECUTIVE_LOSSES <= 0:
+            return False
+        if self._uses_timed_consecutive_loss_pause(dry_run):
+            return self.state.consecutive_loss_pause_until > time.time()
+        if self._uses_indefinite_consecutive_loss_pause(dry_run):
+            return self.state.consecutive_losses >= Config.MAX_CONSECUTIVE_LOSSES
+        return False
+
+    def _consecutive_loss_pause_reason(self, dry_run: bool = True) -> str:
+        losses = self.state.consecutive_losses
+        if self._uses_timed_consecutive_loss_pause(dry_run):
+            minutes = self._pause_remaining_minutes(
+                self.state.consecutive_loss_pause_until
+            )
+            return (
+                f"paused after {losses} consecutive losses ({minutes}m remaining)"
+            )
+        return f"paused after {losses} consecutive losses (Stop/Start required)"
+
+    @staticmethod
+    def _pause_remaining_minutes(pause_until: float) -> int:
+        remaining_sec = max(0.0, pause_until - time.time())
+        return max(1, math.ceil(remaining_sec / 60.0))
+
+    def consecutive_loss_pause_status(self, dry_run: bool = True) -> dict:
+        """Expose pause state for GUI / status API."""
+        self._expire_consecutive_loss_pause_if_needed(dry_run)
+        until = self.state.consecutive_loss_pause_until
+        active = self._is_consecutive_loss_pause_active(dry_run)
+        timed = self._uses_timed_consecutive_loss_pause(dry_run)
+        remaining_sec = max(0.0, until - time.time()) if active and timed else 0.0
+        status = {
+            "active": active,
+            "remaining_sec": remaining_sec,
+            "pause_until": until if active and timed else None,
+            "consecutive_losses": self.state.consecutive_losses,
+            "max_consecutive_losses": Config.MAX_CONSECUTIVE_LOSSES,
+            "pause_minutes": Config.CONSECUTIVE_LOSS_PAUSE_MINUTES,
+            "paper_only_timed_pause": Config.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY,
+            "timed_pause": timed,
+        }
+        if active:
+            status["message"] = self._consecutive_loss_pause_reason(dry_run)
+        return status
 
     @staticmethod
     def effective_wallet_balance(
@@ -184,14 +255,9 @@ class RiskManager:
             return False, "max open positions reached"
         if self.state.daily_loss_sol >= Config.MAX_DAILY_LOSS_SOL:
             return False, "daily loss cap reached"
-        if (
-            Config.MAX_CONSECUTIVE_LOSSES > 0
-            and self.state.consecutive_losses >= Config.MAX_CONSECUTIVE_LOSSES
-        ):
-            return (
-                False,
-                f"paused after {self.state.consecutive_losses} consecutive losses",
-            )
+        blocked, pause_reason = self._consecutive_loss_entry_gate(dry_run)
+        if blocked:
+            return False, pause_reason
         effective = self.effective_wallet_balance(wallet_balance_sol, dry_run)
         trade_size = self.compute_trade_size(wallet_balance_sol, dry_run=dry_run)
         if trade_size <= 0:
@@ -201,6 +267,33 @@ class RiskManager:
         if dry_run and effective < Config.MIN_SOL_RESERVE + trade_size:
             return False, "insufficient SOL balance"
         return True, "ok"
+
+    def _consecutive_loss_entry_gate(
+        self, dry_run: bool = True
+    ) -> tuple[bool, str]:
+        """Return (blocked, reason) for consecutive-loss entry pause."""
+        self._expire_consecutive_loss_pause_if_needed(dry_run)
+        if self._is_consecutive_loss_pause_active(dry_run):
+            return True, self._consecutive_loss_pause_reason(dry_run)
+        return False, ""
+
+    def can_enter(
+        self,
+        open_positions: int,
+        wallet_balance_sol: float,
+        dry_run: bool = False,
+        *,
+        open_mints: Optional[list[str]] = None,
+        candidate_mint: Optional[str] = None,
+    ) -> tuple[bool, str]:
+        """Gate new entries including consecutive-loss pause (dry_run-aware)."""
+        return self.can_open_position(
+            open_positions,
+            wallet_balance_sol,
+            dry_run=dry_run,
+            open_mints=open_mints,
+            candidate_mint=candidate_mint,
+        )
 
     def compute_trade_size(self, wallet_balance_sol: float, dry_run: bool = False) -> float:
         """Paper mode sizes from simulated balance; live uses min(wallet, tradeable cap)."""
@@ -214,7 +307,7 @@ class RiskManager:
         if loss_sol > 0:
             self.state.daily_loss_sol += loss_sol
 
-    def record_trade_outcome(self, net_pnl_sol: float):
+    def record_trade_outcome(self, net_pnl_sol: float, dry_run: bool = False):
         """Track consecutive losing completed trades for entry pause."""
         self._reset_daily_if_needed()
         self.state.trades_today += 1
@@ -226,8 +319,23 @@ class RiskManager:
                     self.state.consecutive_losses,
                     Config.MAX_CONSECUTIVE_LOSSES,
                 )
+                if self.state.consecutive_losses >= Config.MAX_CONSECUTIVE_LOSSES:
+                    if self._uses_timed_consecutive_loss_pause(dry_run):
+                        self.state.consecutive_loss_pause_until = (
+                            time.time()
+                            + Config.CONSECUTIVE_LOSS_PAUSE_MINUTES * 60
+                        )
+                        logger.info(
+                            "Consecutive loss pause for %d minutes (paper)",
+                            Config.CONSECUTIVE_LOSS_PAUSE_MINUTES,
+                        )
+                    elif self._uses_indefinite_consecutive_loss_pause(dry_run):
+                        logger.info(
+                            "Consecutive loss entry block — Stop/Start required (live)"
+                        )
         else:
             self.state.consecutive_losses = 0
+            self.state.consecutive_loss_pause_until = 0.0
 
     def should_auto_stop_daily_loss(self) -> bool:
         self._reset_daily_if_needed()

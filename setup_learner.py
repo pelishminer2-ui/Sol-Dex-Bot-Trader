@@ -446,6 +446,42 @@ class SetupLearner:
 
         return similarity + base_momentum * 0.4
 
+    def win_lean_score(self, candidate: MoverCandidate) -> Optional[float]:
+        """
+        Lean of a candidate toward learned WINS vs LOSSES.
+
+        Returns similarity(win) - similarity(loss) in [-1, 1]. Positive means the
+        setup looks more like past winners than losers. Returns ``None`` when the
+        learner has insufficient data (learning inactive) so callers can fall back
+        to allowing the entry instead of blocking everything.
+        """
+        if not Config.SETUP_LEARNING_ENABLED:
+            return None
+        if not self.learning_active:
+            return None
+        candidate_vec = _candidate_vector(candidate)
+        if self.has_patterns:
+            win_centroid = self.patterns.get("win_centroid") or {}
+            loss_centroid = self.patterns.get("loss_centroid") or {}
+            win = (
+                _cosine_similarity(candidate_vec, win_centroid)
+                if win_centroid
+                else 0.0
+            )
+            loss = (
+                _cosine_similarity(candidate_vec, loss_centroid)
+                if loss_centroid
+                else 0.0
+            )
+        else:
+            wins = self._wins()
+            losses = self._losses()
+            if not wins and not losses:
+                return None
+            win = self._avg_similarity(candidate_vec, wins)
+            loss = self._avg_similarity(candidate_vec, losses)
+        return win - loss
+
     def rank(self, candidates: List[MoverCandidate]) -> List[MoverCandidate]:
         if not candidates:
             return []

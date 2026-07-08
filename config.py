@@ -81,6 +81,8 @@ DEFAULT_GMGN_TIMEFRAME = "1h"
 DEFAULT_PUMPFUN_API_LIMIT = 50
 MAX_POTENTIAL_PUMPFUN_API_LIMIT = 100
 DEFAULT_MAX_CONSECUTIVE_LOSSES = 3
+DEFAULT_CONSECUTIVE_LOSS_PAUSE_MINUTES = 25
+DEFAULT_CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY = True
 DEFAULT_MAX_REALISTIC_TP_PCT = 1.0
 DEFAULT_TAKE_PROFIT_LEVELS: list[float] = []
 DEFAULT_TAKE_PROFIT_PORTIONS: list[float] = []
@@ -106,6 +108,9 @@ DEFAULT_STOP_LOSS_PCT = 0.015
 DEFAULT_WBTC_STOP_LOSS_PCT = 0.02
 DEFAULT_STOP_LOSS_QUOTE_CHECK = True
 DEFAULT_EMERGENCY_STOP_LOSS_PCT = 0.03
+DEFAULT_CATASTROPHIC_STOP_LOSS_PCT = 0.05
+DEFAULT_LOSS_FRESH_QUOTE_PCT = 0.01
+DEFAULT_STOP_LOSS_NEVER_MISS = True
 DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = 4.0
 DEFAULT_WBTC_PROFIT_ONLY_EXITS = True
 DEFAULT_GMGN_MIN_LIQUIDITY_USD = 25000
@@ -117,6 +122,8 @@ DEFAULT_LADDER_MISSED_POSITIVE_EXIT_MINUTES = 10
 DEFAULT_LADDER_MISSED_NEGATIVE_DCA_MINUTES = 30
 DEFAULT_MAX_BUYS_PER_MINT = 3
 DEFAULT_ENABLE_LADDER_TIME_EXITS = True
+DEFAULT_MAX_HOLD_MINUTES_NON_WBTC = 15
+DEFAULT_MAX_HOLD_ENABLED = True
 ALLOWED_STOP_LOSS_PCT = (0.015, 0.02, 0.03, 0.05)
 DEFAULT_TRADE_SIZE_SOL = 0.10
 ALLOWED_TRADE_SIZE_SOL = (0.05, 0.07, 0.10, 0.20, 0.30, 0.50, 1.0)
@@ -138,10 +145,17 @@ DEFAULT_MAX_OPEN_POSITIONS = 1
 DEFAULT_MAX_OPEN_POSITIONS_WBTC = 2
 DEFAULT_REENTRY_DIP_PCT = 0.10
 DEFAULT_SOL_TREND_FILTER_ENABLED = True
-# DexScreener percent points (e.g. -0.5 = allow up to -0.5% on 1h).
-DEFAULT_SOL_MIN_CHANGE_1H_PCT = -0.5
+# DexScreener percent points (e.g. -1.5 = allow down to -1.5% on 1h). Loosened so
+# memecoins can still trade in mild SOL pullbacks; -2%+ 1h dumps still block. The
+# 4h floor stays tighter so sustained downtrends keep blocking.
+DEFAULT_SOL_MIN_CHANGE_1H_PCT = -1.5
 DEFAULT_SOL_MIN_CHANGE_4H_PCT = -1.5
 DEFAULT_SOL_TREND_CACHE_TTL_SEC = 60
+# Pop-quality override: when the SOL 1h macro gate would block a memecoin, allow a
+# proven-shape "quality pop" through anyway (acceptable route + liquid + fresh +
+# exit-able / no instant-dump signature). The 4h sustained-downtrend block still
+# cannot be bypassed. Tightens nothing; only lets good pops trade in cold-ish tape.
+DEFAULT_SOL_TREND_QUALITY_OVERRIDE_ENABLED = True
 DEFAULT_LOSS_ONE_STRIKE_PER_SESSION = True
 # SOL self-trading via JitoSOL (default) or WSOL / other liquid-staking proxy on Jupiter.
 DEFAULT_ENABLE_SOL_TRADING = False
@@ -158,12 +172,25 @@ DEFAULT_HOT_MARKET_SOL_MIN_1H_PCT = 0.5
 DEFAULT_HOT_MARKET_SOL_MIN_4H_PCT = 0.0
 DEFAULT_HOT_MARKET_MIN_SCANNER_CANDIDATES = 5
 DEFAULT_HOT_MARKET_MIN_GMGN_VOLUME_USD = 0.0
+# Steady Trade self-adjust: when enabled, the Steady preset re-derives its own
+# ENTRY-SELECTION gates from the live market regime every scan (hot = looser to
+# take more trades; neutral/cold = tighter for fewer, higher-quality trades).
+# This ONLY loosens/tightens entry momentum + volume floors — it never touches
+# any exit (stop loss, instant profit, 15-min hold, forced sell) or the
+# spike/instant-dump gate. Master switch layered on Steady's hot-market mode.
+DEFAULT_STEADY_TRADE_AUTO_ADJUST = True
+# HOT regime = loosest entry gates (take more of the momentum pops).
 DEFAULT_HOT_MARKET_ENTRY_MOMENTUM_PCT = 0.004
 DEFAULT_HOT_MARKET_MIN_MOMENTUM_PCT = 0.015
 DEFAULT_HOT_MARKET_MIN_VOLUME_24H_USD = 45000.0
-DEFAULT_COLD_MARKET_ENTRY_MOMENTUM_PCT = 0.004
-DEFAULT_COLD_MARKET_MIN_MOMENTUM_PCT = 0.015
-DEFAULT_COLD_MARKET_MIN_VOLUME_24H_USD = 45000.0
+# NEUTRAL regime = moderately tight (between hot-loose and cold-tight).
+DEFAULT_NEUTRAL_MARKET_ENTRY_MOMENTUM_PCT = 0.006
+DEFAULT_NEUTRAL_MARKET_MIN_MOMENTUM_PCT = 0.018
+DEFAULT_NEUTRAL_MARKET_MIN_VOLUME_24H_USD = 60000.0
+# COLD regime = tightest / most selective (Best-Win-ish quality bar).
+DEFAULT_COLD_MARKET_ENTRY_MOMENTUM_PCT = 0.0075
+DEFAULT_COLD_MARKET_MIN_MOMENTUM_PCT = 0.020
+DEFAULT_COLD_MARKET_MIN_VOLUME_24H_USD = 75000.0
 DEFAULT_HOT_MARKET_TARGET_WIN_RATE = 0.55
 DEFAULT_NEUTRAL_MARKET_TARGET_WIN_RATE = 0.50
 DEFAULT_COLD_MARKET_TARGET_WIN_RATE = 0.45
@@ -176,6 +203,47 @@ DEFAULT_SETUP_LEARNING_MAX_AGE_DAYS = 10
 DEFAULT_SETUP_LEARNING_CENTROID_WEIGHT = 0.7
 DEFAULT_SETUP_LEARNING_WIN_WEIGHT = 0.6
 DEFAULT_SETUP_LEARNING_LOSS_WEIGHT = 0.4
+# Entry win-rate filters (learned-pattern driven; do NOT weaken exits).
+# Spike-trap gate: momentum trading WANTS high-momentum "quick pops" — so we no
+# longer blanket-block on momentum alone. Instead we only hard-cap truly absurd
+# bonding-curve artifacts, and for genuinely high momentum we run a "pop vs drop"
+# discriminator (see entry_filters.pop_vs_drop_score / instant_dump_reason) that
+# blocks ONLY the flat-book / stale-spike / already-reversed signatures and lets
+# quality pops through. Values are on the stored feature scale (raw DexScreener/
+# pump.fun percent), same units as MoverCandidate.momentum_pct / price_change_*.
+#
+# Journal evidence (data/setup_learning.json, 50 round-trips): momentum_pct 0-50
+# is the profitable zone (48% win, net +0.052 SOL); every entry >=500 (n=10) lost
+# but with TINY net losses (stop-outs, not catastrophes). 9/10 of those losers
+# carried the whole move in ONE stale window (max(5m,1h) ~ 0) OR had 6h AND 24h
+# both negative (already reversing), and 8/10 were non-Pump.fun. That is the
+# instant-dump signature we now target instead of momentum magnitude alone.
+DEFAULT_SPIKE_TRAP_FILTER_ENABLED = True
+# Absolute ceiling: block only clearly-absurd values (data artifacts). Raised far
+# above real winners so it almost never triggers; the discriminator does the work.
+DEFAULT_MAX_ENTRY_MOMENTUM_PCT = 50000.0
+DEFAULT_MAX_ENTRY_PRICE_CHANGE_5M_PCT = 50000.0
+# Momentum at/above this (stored scale) is treated as a "high-momentum pop" and
+# routed through the pop-vs-drop discriminator instead of being allowed freely.
+# Set comfortably above the learned winner range (~90) so normal movers are
+# unaffected and only real spikes get scrutinized.
+DEFAULT_HIGH_MOMENTUM_QUALITY_PCT = 300.0
+# High-momentum flat-book floor: a high-momentum candidate with less than this
+# much pool liquidity (USD) is treated as an instant-dump trap.
+DEFAULT_SPIKE_MIN_LIQUIDITY_USD = 8000.0
+# High-momentum freshness: require at least this much recent movement (max of 5m
+# and 1h, stored percent) so we only chase pops that are happening NOW, not stale
+# 6h/24h spikes that already ran and reversed.
+DEFAULT_SPIKE_FRESH_CONTINUATION_MIN_PCT = 5.0
+# Optional sell-preview round-trip impact ceiling: when a sell preview is supplied
+# and the round-trip price impact meets/exceeds this fraction, the book is too thin
+# to exit above stop -> instant-dump trap. 0 => fall back to STOP_LOSS_PCT.
+DEFAULT_SPIKE_MAX_ROUNDTRIP_IMPACT_PCT = 0.0
+# Win-similarity entry gate: require a candidate to lean toward the learned win
+# centroid over the loss centroid before entering (not just ranking). Falls back
+# to "allow" when the learner has insufficient data.
+DEFAULT_SETUP_LEARNING_ENTRY_GATE_ENABLED = True
+DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN = 0.0
 
 
 def is_wbtc_watchlist_mint(mint: str) -> bool:
@@ -232,6 +300,26 @@ def is_weth_trade_mint(mint: str) -> bool:
 def is_memecoin_standard_special_mint(mint: str) -> bool:
     """WSOL/WETH — momentum entry, standard exits; exempt from SOL dump filter."""
     return is_wsol_trade_mint(mint) or is_weth_trade_mint(mint)
+
+
+def is_non_memecoin_proxy_mint(mint: str) -> bool:
+    """
+    True for SOL / JitoSOL / WETH proxy mints (and any configured SOL/WETH trade
+    mint). These must only ever be entered through their dedicated enabled paths
+    (SOL trade / WETH trade branches), never as a random momentum pick. Prevents
+    wrong-asset entries slipping through the memecoin scanner.
+    """
+    if not mint:
+        return False
+    m = mint.strip()
+    proxies = {SOL_MINT, JITOSOL_MINT, WETH_MINT}
+    trade_mint = (Config.SOL_TRADE_MINT or "").strip()
+    if trade_mint:
+        proxies.add(trade_mint)
+    weth_mint = (Config.WETH_MINT or "").strip()
+    if weth_mint:
+        proxies.add(weth_mint)
+    return m in proxies
 
 
 # Voluntary WBTC exits that require quote-verified net >= MIN_NET_WIN_SOL.
@@ -437,7 +525,9 @@ STEADY_TRADE_STRATEGY_PRESET = {
     "gmgn_min_liquidity_usd": 15000.0,
     "hot_market_mode_enabled": True,
     # Steady Trade tolerates mild SOL pullbacks; cold regime still blocks deep dumps via 4h gate.
-    "sol_min_change_1h_pct": -1.0,
+    # Regime-aware entry tuning: 1h gate loosened -1.0 -> -1.5 (pop-quality override bypasses
+    # the 1h gate only, never the 4h hard block). Revert ref: data/regime_tuning_revert.json.
+    "sol_min_change_1h_pct": -1.5,
 }
 
 CONFIG_BOOKMARK_PATH = resolve_data_path("presets/win_focused_bookmark.json")
@@ -882,6 +972,15 @@ class Config:
     ENABLE_LADDER_TIME_EXITS = (
         os.getenv("ENABLE_LADDER_TIME_EXITS", "true").lower() == "true"
     )
+    MAX_HOLD_MINUTES_NON_WBTC = int(
+        os.getenv(
+            "MAX_HOLD_MINUTES_NON_WBTC",
+            str(DEFAULT_MAX_HOLD_MINUTES_NON_WBTC),
+        )
+    )
+    MAX_HOLD_ENABLED = (
+        os.getenv("MAX_HOLD_ENABLED", "true").lower() == "true"
+    )
 
     MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", str(DEFAULT_MIN_LIQUIDITY_USD)))
     MIN_EXPECTED_NET_PROFIT_SOL = float(
@@ -963,6 +1062,19 @@ class Config:
     )
     MAX_CONSECUTIVE_LOSSES = int(
         os.getenv("MAX_CONSECUTIVE_LOSSES", str(DEFAULT_MAX_CONSECUTIVE_LOSSES))
+    )
+    CONSECUTIVE_LOSS_PAUSE_MINUTES = int(
+        os.getenv(
+            "CONSECUTIVE_LOSS_PAUSE_MINUTES",
+            str(DEFAULT_CONSECUTIVE_LOSS_PAUSE_MINUTES),
+        )
+    )
+    CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY = (
+        os.getenv(
+            "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY",
+            "true" if DEFAULT_CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY else "false",
+        ).lower()
+        == "true"
     )
     AUTO_STOP_ON_MAX_DAILY_LOSS = (
         os.getenv("AUTO_STOP_ON_MAX_DAILY_LOSS", "false").lower() == "true"
@@ -1117,6 +1229,22 @@ class Config:
     EMERGENCY_STOP_LOSS_PCT = float(
         os.getenv("EMERGENCY_STOP_LOSS_PCT", str(DEFAULT_EMERGENCY_STOP_LOSS_PCT))
     )
+    CATASTROPHIC_STOP_LOSS_PCT = float(
+        os.getenv(
+            "CATASTROPHIC_STOP_LOSS_PCT",
+            str(DEFAULT_CATASTROPHIC_STOP_LOSS_PCT),
+        )
+    )
+    LOSS_FRESH_QUOTE_PCT = float(
+        os.getenv("LOSS_FRESH_QUOTE_PCT", str(DEFAULT_LOSS_FRESH_QUOTE_PCT))
+    )
+    STOP_LOSS_NEVER_MISS = (
+        os.getenv(
+            "STOP_LOSS_NEVER_MISS",
+            "true" if DEFAULT_STOP_LOSS_NEVER_MISS else "false",
+        ).lower()
+        == "true"
+    )
     MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = float(
         os.getenv(
             "MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT",
@@ -1183,6 +1311,13 @@ class Config:
             "SOL_TREND_CACHE_TTL_SEC",
             str(DEFAULT_SOL_TREND_CACHE_TTL_SEC),
         )
+    )
+    SOL_TREND_QUALITY_OVERRIDE_ENABLED = (
+        os.getenv(
+            "SOL_TREND_QUALITY_OVERRIDE_ENABLED",
+            "true" if DEFAULT_SOL_TREND_QUALITY_OVERRIDE_ENABLED else "false",
+        ).lower()
+        == "true"
     )
     LOSS_ONE_STRIKE_PER_SESSION = (
         os.getenv(
@@ -1279,6 +1414,31 @@ class Config:
         os.getenv(
             "HOT_MARKET_MIN_VOLUME_24H_USD",
             str(DEFAULT_HOT_MARKET_MIN_VOLUME_24H_USD),
+        )
+    )
+    STEADY_TRADE_AUTO_ADJUST = (
+        os.getenv(
+            "STEADY_TRADE_AUTO_ADJUST",
+            "true" if DEFAULT_STEADY_TRADE_AUTO_ADJUST else "false",
+        ).lower()
+        == "true"
+    )
+    NEUTRAL_MARKET_ENTRY_MOMENTUM_PCT = float(
+        os.getenv(
+            "NEUTRAL_MARKET_ENTRY_MOMENTUM_PCT",
+            str(DEFAULT_NEUTRAL_MARKET_ENTRY_MOMENTUM_PCT),
+        )
+    )
+    NEUTRAL_MARKET_MIN_MOMENTUM_PCT = float(
+        os.getenv(
+            "NEUTRAL_MARKET_MIN_MOMENTUM_PCT",
+            str(DEFAULT_NEUTRAL_MARKET_MIN_MOMENTUM_PCT),
+        )
+    )
+    NEUTRAL_MARKET_MIN_VOLUME_24H_USD = float(
+        os.getenv(
+            "NEUTRAL_MARKET_MIN_VOLUME_24H_USD",
+            str(DEFAULT_NEUTRAL_MARKET_MIN_VOLUME_24H_USD),
         )
     )
     COLD_MARKET_ENTRY_MOMENTUM_PCT = float(
@@ -1468,6 +1628,69 @@ class Config:
         os.getenv(
             "SETUP_LEARNING_LOSS_WEIGHT",
             str(DEFAULT_SETUP_LEARNING_LOSS_WEIGHT),
+        )
+    )
+    SPIKE_TRAP_FILTER_ENABLED = (
+        os.getenv(
+            "SPIKE_TRAP_FILTER_ENABLED",
+            "true" if DEFAULT_SPIKE_TRAP_FILTER_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    MAX_ENTRY_MOMENTUM_PCT = float(
+        os.getenv("MAX_ENTRY_MOMENTUM_PCT", str(DEFAULT_MAX_ENTRY_MOMENTUM_PCT))
+    )
+    MAX_ENTRY_PRICE_CHANGE_5M_PCT = float(
+        os.getenv(
+            "MAX_ENTRY_PRICE_CHANGE_5M_PCT",
+            str(DEFAULT_MAX_ENTRY_PRICE_CHANGE_5M_PCT),
+        )
+    )
+    HIGH_MOMENTUM_QUALITY_PCT = float(
+        os.getenv(
+            "HIGH_MOMENTUM_QUALITY_PCT",
+            str(DEFAULT_HIGH_MOMENTUM_QUALITY_PCT),
+        )
+    )
+    SPIKE_MIN_LIQUIDITY_USD = float(
+        os.getenv("SPIKE_MIN_LIQUIDITY_USD", str(DEFAULT_SPIKE_MIN_LIQUIDITY_USD))
+    )
+    SPIKE_FRESH_CONTINUATION_MIN_PCT = float(
+        os.getenv(
+            "SPIKE_FRESH_CONTINUATION_MIN_PCT",
+            str(DEFAULT_SPIKE_FRESH_CONTINUATION_MIN_PCT),
+        )
+    )
+    SPIKE_MAX_ROUNDTRIP_IMPACT_PCT = float(
+        os.getenv(
+            "SPIKE_MAX_ROUNDTRIP_IMPACT_PCT",
+            str(DEFAULT_SPIKE_MAX_ROUNDTRIP_IMPACT_PCT),
+        )
+    )
+
+    @classmethod
+    def effective_spike_roundtrip_impact_pct(cls) -> float:
+        """Round-trip impact ceiling for the high-momentum flat-book guard.
+
+        Falls back to the memecoin stop-loss so a candidate that cannot even
+        round-trip out above its stop is treated as an instant-dump trap.
+        """
+        configured = cls.SPIKE_MAX_ROUNDTRIP_IMPACT_PCT
+        if configured and configured > 0:
+            return configured
+        return cls.STOP_LOSS_PCT
+
+    SETUP_LEARNING_ENTRY_GATE_ENABLED = (
+        os.getenv(
+            "SETUP_LEARNING_ENTRY_GATE_ENABLED",
+            "true" if DEFAULT_SETUP_LEARNING_ENTRY_GATE_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    SETUP_LEARNING_MIN_WIN_LEAN = float(
+        os.getenv(
+            "SETUP_LEARNING_MIN_WIN_LEAN",
+            str(DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN),
         )
     )
 
@@ -1813,6 +2036,16 @@ class Config:
         "HOT_MARKET_MODE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "SOL_MIN_CHANGE_1H_PCT": float,
         "SOL_MIN_CHANGE_4H_PCT": float,
+        "SOL_TREND_QUALITY_OVERRIDE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "SPIKE_TRAP_FILTER_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "MAX_ENTRY_MOMENTUM_PCT": float,
+        "MAX_ENTRY_PRICE_CHANGE_5M_PCT": float,
+        "HIGH_MOMENTUM_QUALITY_PCT": float,
+        "SPIKE_MIN_LIQUIDITY_USD": float,
+        "SPIKE_FRESH_CONTINUATION_MIN_PCT": float,
+        "SPIKE_MAX_ROUNDTRIP_IMPACT_PCT": float,
+        "SETUP_LEARNING_ENTRY_GATE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "SETUP_LEARNING_MIN_WIN_LEAN": float,
     }
 
     @classmethod
@@ -1920,6 +2153,8 @@ class Config:
             "ladder_missed_negative_dca_minutes": DEFAULT_LADDER_MISSED_NEGATIVE_DCA_MINUTES,
             "max_buys_per_mint": DEFAULT_MAX_BUYS_PER_MINT,
             "enable_ladder_time_exits": DEFAULT_ENABLE_LADDER_TIME_EXITS,
+            "max_hold_minutes_non_wbtc": DEFAULT_MAX_HOLD_MINUTES_NON_WBTC,
+            "max_hold_enabled": DEFAULT_MAX_HOLD_ENABLED,
         }
 
     @classmethod
@@ -1995,11 +2230,14 @@ class Config:
             "take_profit_levels": list(cls.TAKE_PROFIT_LEVELS),
             "take_profit_portions": list(cls.TAKE_PROFIT_PORTIONS),
             "stop_loss_pct": cls.STOP_LOSS_PCT,
+            "stop_loss_never_miss": cls.STOP_LOSS_NEVER_MISS,
             "time_stop_minutes": cls.TIME_STOP_MINUTES,
             "ladder_missed_positive_exit_minutes": cls.LADDER_MISSED_POSITIVE_EXIT_MINUTES,
             "ladder_missed_negative_dca_minutes": cls.LADDER_MISSED_NEGATIVE_DCA_MINUTES,
             "max_buys_per_mint": cls.MAX_BUYS_PER_MINT,
             "enable_ladder_time_exits": cls.ENABLE_LADDER_TIME_EXITS,
+            "max_hold_minutes_non_wbtc": cls.MAX_HOLD_MINUTES_NON_WBTC,
+            "max_hold_enabled": cls.MAX_HOLD_ENABLED,
             "target_net_profit_sol": cls.TARGET_NET_PROFIT_SOL,
             "estimated_fees_sol": summary["estimated_fees_sol"],
             "expected_ladder_gross_sol": summary["expected_ladder_gross_sol"],
@@ -2110,6 +2348,8 @@ class Config:
             "instant_profit_exit_pct": cls.INSTANT_PROFIT_EXIT_PCT,
             "instant_exit_3pct": cls.INSTANT_EXIT_3PCT,
             "max_consecutive_losses": cls.MAX_CONSECUTIVE_LOSSES,
+            "consecutive_loss_pause_minutes": cls.CONSECUTIVE_LOSS_PAUSE_MINUTES,
+            "consecutive_loss_pause_paper_only": cls.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY,
             "max_daily_loss_sol": cls.MAX_DAILY_LOSS_SOL,
             "auto_stop_on_max_daily_loss": cls.AUTO_STOP_ON_MAX_DAILY_LOSS,
             "profit_first_mode": True,
@@ -2123,6 +2363,7 @@ class Config:
             "sol_min_change_1h_pct": cls.SOL_MIN_CHANGE_1H_PCT,
             "sol_min_change_4h_pct": cls.SOL_MIN_CHANGE_4H_PCT,
             "sol_trend_cache_ttl_sec": cls.SOL_TREND_CACHE_TTL_SEC,
+            "sol_trend_quality_override_enabled": cls.SOL_TREND_QUALITY_OVERRIDE_ENABLED,
             "loss_one_strike_per_session": cls.LOSS_ONE_STRIKE_PER_SESSION,
             "enable_sol_trading": cls.ENABLE_SOL_TRADING,
             "sol_trading_active": sol_trading_enabled(),
@@ -2157,6 +2398,15 @@ class Config:
             "setup_learning_centroid_weight": cls.SETUP_LEARNING_CENTROID_WEIGHT,
             "setup_learning_win_weight": cls.SETUP_LEARNING_WIN_WEIGHT,
             "setup_learning_loss_weight": cls.SETUP_LEARNING_LOSS_WEIGHT,
+            "spike_trap_filter_enabled": cls.SPIKE_TRAP_FILTER_ENABLED,
+            "max_entry_momentum_pct": cls.MAX_ENTRY_MOMENTUM_PCT,
+            "max_entry_price_change_5m_pct": cls.MAX_ENTRY_PRICE_CHANGE_5M_PCT,
+            "high_momentum_quality_pct": cls.HIGH_MOMENTUM_QUALITY_PCT,
+            "spike_min_liquidity_usd": cls.SPIKE_MIN_LIQUIDITY_USD,
+            "spike_fresh_continuation_min_pct": cls.SPIKE_FRESH_CONTINUATION_MIN_PCT,
+            "spike_max_roundtrip_impact_pct": cls.SPIKE_MAX_ROUNDTRIP_IMPACT_PCT,
+            "setup_learning_entry_gate_enabled": cls.SETUP_LEARNING_ENTRY_GATE_ENABLED,
+            "setup_learning_min_win_lean": cls.SETUP_LEARNING_MIN_WIN_LEAN,
         }
 
 
