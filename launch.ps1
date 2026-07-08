@@ -3,7 +3,8 @@
 
 param(
     [switch]$NoPause,
-    [switch]$Detach
+    [switch]$Detach,
+    [switch]$SelfTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,14 +15,16 @@ $SessionMode = -not $Detach
 $script:SessionMode = $SessionMode
 
 $InstallScript = Join-Path $ProjectRoot "install.ps1"
-if (-not (Test-Path $InstallScript)) {
-    Write-Host "[ERROR] Missing install.ps1 in $ProjectRoot"
-    exit 1
-}
-& $InstallScript
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Environment setup failed. Run install.bat manually."
-    exit 1
+if (-not $SelfTest) {
+    if (-not (Test-Path $InstallScript)) {
+        Write-Host "[ERROR] Missing install.ps1 in $ProjectRoot"
+        exit 1
+    }
+    & $InstallScript
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Environment setup failed. Run install.bat manually."
+        exit 1
+    }
 }
 
 $Port = if ($env:GUI_PORT) { [int]$env:GUI_PORT } else { 5000 }
@@ -34,8 +37,11 @@ $BrowserStampFile = Join-Path $ProjectRoot ".flask.browser"
 $StopScript = Join-Path $ProjectRoot "stop.ps1"
 $BrowserCooldownSec = 15
 $ServerWaitSec = 90
+# If a launch lock is owned by a still-alive launcher but no server is serving and the
+# lock is older than this, treat it as an orphaned launcher window and reclaim it.
+$LockStaleGraceSec = 120
 
-$script:LockStream = $null
+$script:HeldLock = $false
 $script:ServerStopped = $false
 $script:WeStartedServer = $false
 $script:SessionCleanupRegistered = $false
@@ -52,68 +58,161 @@ public static class ConsoleCtrl {
 '@
 }
 
-function Get-StaleLockPid {
+# Process names that legitimately own the launch lock: a launcher (PowerShell) or the
+# server itself (Python). Anything else owning the recorded PID means the PID was reused
+# by an unrelated program, so the lock is stale.
+$script:LaunchLockOwnerNames = @(
+    'powershell', 'pwsh', 'powershell_ise',
+    'python', 'pythonw', 'python3', 'python3.13', 'python3.12', 'python3.11'
+)
+
+function Read-LaunchLockInfo {
+    # Returns $null when no lock file exists. Otherwise a hashtable with:
+    #   Pid (int?), Time (datetime?), Name (string?), Unreadable (bool)
     if (-not (Test-Path $LockFile)) { return $null }
+    $lines = $null
     try {
-        $raw = (Get-Content $LockFile -Raw -ErrorAction Stop).Trim()
-        if ($raw -match '^\d+$') { return [int]$raw }
-    } catch { }
-    return $null
+        $lines = @(Get-Content $LockFile -ErrorAction Stop)
+    } catch {
+        # File exists but is held with an exclusive share (legacy launcher still running).
+        return @{ Pid = $null; Time = $null; Name = $null; Unreadable = $true }
+    }
+    $lockPid = $null; $lockTime = $null; $lockName = $null
+    if ($lines.Count -ge 1 -and $lines[0].Trim() -match '^\d+$') { $lockPid = [int]$lines[0].Trim() }
+    if ($lines.Count -ge 2) { try { $lockTime = [datetime]::Parse($lines[1].Trim()) } catch { } }
+    if ($lines.Count -ge 3) { $lockName = $lines[2].Trim() }
+    return @{ Pid = $lockPid; Time = $lockTime; Name = $lockName; Unreadable = $false }
 }
 
-function Clear-StaleLaunchLock {
-    $staleLockPid = Get-StaleLockPid
-    if ($null -ne $staleLockPid) {
-        if (Get-Process -Id $staleLockPid -ErrorAction SilentlyContinue) { return $false }
+function Test-LaunchLockActive {
+    # $true  => an existing lock represents a genuine, in-progress launch/server we must respect.
+    # $false => no lock, or the lock is stale and may be reclaimed.
+    $info = Read-LaunchLockInfo
+    if ($null -eq $info) { return $false }
+
+    if ($info.Unreadable) {
+        # Held exclusively by another process (legacy launcher). Only treat as active if a
+        # server is actually serving; otherwise it is an orphan we cannot read but should not
+        # block indefinitely on.
+        if (Test-BotServerReady -StatusUrl $StatusUrl) { return $true }
+        Write-Host '[..] Launch lock is held but unreadable and no server is serving - treating as stale.'
+        return $false
     }
-    Release-LaunchLock
-    return $true
+
+    $lockPid = $info.Pid
+    if ($null -eq $lockPid) {
+        Write-Host '[..] Stale launch lock (missing/invalid owner PID) - clearing.'
+        return $false
+    }
+
+    $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        Write-Host "[..] Stale launch lock (owner PID $lockPid is not running) - clearing."
+        return $false
+    }
+
+    if ($proc.ProcessName -notin $script:LaunchLockOwnerNames) {
+        Write-Host "[..] Stale launch lock (PID $lockPid is '$($proc.ProcessName)', not a launcher/server - PID reused) - clearing."
+        return $false
+    }
+
+    # Owner is alive and a plausible launcher/server. If the server is up, this is an active
+    # session -> respect it (caller will connect instead of starting a duplicate).
+    if (Test-BotServerReady -StatusUrl $StatusUrl) { return $true }
+
+    # Owner alive but no server responding: distinguish "just starting" from "orphaned window".
+    if ($info.Time) {
+        $ageSec = ((Get-Date) - $info.Time).TotalSeconds
+        if ($ageSec -gt $LockStaleGraceSec) {
+            Write-Host ("[..] Stale launch lock (owner PID {0} alive but no server; lock age {1:N0}s > {2}s grace) - clearing." -f $lockPid, $ageSec, $LockStaleGraceSec)
+            return $false
+        }
+        return $true
+    }
+
+    # No timestamp (legacy lock) and no server -> assume orphaned rather than block forever.
+    Write-Host "[..] Stale launch lock (owner PID $lockPid alive, no server, no timestamp) - clearing."
+    return $false
+}
+
+function Remove-StaleLaunchLock {
+    # Force-remove the lock file. Only call after Test-LaunchLockActive returned $false.
+    if (-not (Test-Path $LockFile)) { return $true }
+    try {
+        Remove-Item $LockFile -Force -ErrorAction Stop
+        return $true
+    } catch {
+        return (-not (Test-Path $LockFile))
+    }
 }
 
 function Release-LaunchLock {
-    if ($script:LockStream) {
-        try { $script:LockStream.Close() } catch { }
-        $script:LockStream = $null
-    }
-    if (Test-Path $LockFile) {
+    # Only delete the lock if it currently records OUR PID, so we never stomp a lock that
+    # another launcher has since reclaimed.
+    $script:HeldLock = $false
+    if (-not (Test-Path $LockFile)) { return }
+    $info = Read-LaunchLockInfo
+    if ($null -ne $info -and $info.Pid -eq $PID) {
         try { Remove-Item $LockFile -Force -ErrorAction SilentlyContinue } catch { }
     }
+}
+
+function Write-LaunchLock {
+    param([System.IO.FileStream]$Stream)
+    # Line 1: owning PID, Line 2: ISO-8601 timestamp, Line 3: process name.
+    $payload = "{0}`n{1}`n{2}" -f $PID, ((Get-Date).ToString("o")), 'powershell'
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes($payload)
+    $Stream.Write($bytes, 0, $bytes.Length)
+    $Stream.Flush()
 }
 
 function Acquire-LaunchLock {
     $dir = Split-Path $LockFile -Parent
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
-    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
         try {
-            $script:LockStream = [System.IO.File]::Open(
+            # CreateNew is atomic: exactly one racing launcher wins. FileShare.Read lets others
+            # READ the PID/timestamp for staleness checks. We close the handle immediately so a
+            # lingering launcher can never keep the file un-deletable.
+            $stream = [System.IO.File]::Open(
                 $LockFile,
-                [System.IO.FileMode]::OpenOrCreate,
-                [System.IO.FileAccess]::ReadWrite,
-                [System.IO.FileShare]::None
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::Read
             )
-            $script:LockStream.SetLength(0)
-            $writer = New-Object System.IO.StreamWriter($script:LockStream, [System.Text.Encoding]::ASCII, 32, $true)
-            $launchLockPid = $PID
-            $writer.Write([string]$launchLockPid)
-            $writer.Flush()
+            try {
+                Write-LaunchLock -Stream $stream
+            } finally {
+                $stream.Close()
+            }
+            $script:HeldLock = $true
             return $true
-        } catch {
-            if ($attempt -eq 0 -and (Clear-StaleLaunchLock)) { continue }
-
-            Write-Host '[..] Another launch is in progress - waiting for it to finish...'
-            $deadline = (Get-Date).AddSeconds($ServerWaitSec)
-            while ((Get-Date) -lt $deadline) {
-                Start-Sleep -Milliseconds 400
+        } catch [System.IO.IOException] {
+            if (Test-LaunchLockActive) {
                 if (Test-BotServerReady -StatusUrl $StatusUrl) {
-                    Write-Host '[OK] Server ready (started by another launch).'
+                    Write-Host '[OK] Server already running (started by another launch) - connecting.'
                     return $false
                 }
+                Write-Host '[..] Another launch is in progress - waiting for it to finish...'
+                $deadline = (Get-Date).AddSeconds($ServerWaitSec)
+                while ((Get-Date) -lt $deadline) {
+                    Start-Sleep -Milliseconds 400
+                    if (Test-BotServerReady -StatusUrl $StatusUrl) {
+                        Write-Host '[OK] Server ready (started by another launch).'
+                        return $false
+                    }
+                    if (-not (Test-LaunchLockActive)) { break }
+                }
+                if (Test-BotServerReady -StatusUrl $StatusUrl) { return $false }
+                Write-Host '[..] Concurrent launch produced no server in time - reclaiming lock.'
             }
-            throw 'Could not acquire launch lock (.flask.lock). Close other launch windows and retry.'
+            if (-not (Remove-StaleLaunchLock)) {
+                throw 'Could not remove stale launch lock (.flask.lock). It may be held by a live process - close other launch windows and retry.'
+            }
         }
     }
-    throw 'Could not acquire launch lock (.flask.lock).'
+    throw 'Could not acquire launch lock (.flask.lock) after retries.'
 }
 
 function Test-PortListening {
@@ -373,6 +472,80 @@ function Show-SessionBanner {
     }
     Write-Host '============================================================'
     Write-Host ''
+}
+
+if ($SelfTest) {
+    # Safe verification of stale-lock recovery. Uses a temp lock file so the real .flask.lock
+    # and the running server are never touched.
+    $realLockFile = $LockFile
+    $LockFile = Join-Path ([System.IO.Path]::GetTempPath()) (".flask.selftest.{0}.lock" -f $PID)
+    if (Test-Path $LockFile) { Remove-Item $LockFile -Force -ErrorAction SilentlyContinue }
+
+    $pass = 0; $fail = 0
+    function Assert-Test {
+        param([string]$Name, [bool]$Condition)
+        if ($Condition) { Write-Host "  [PASS] $Name"; $script:pass++ }
+        else { Write-Host "  [FAIL] $Name"; $script:fail++ }
+    }
+
+    Write-Host 'Running launch-lock self-test (temp lock, real .flask.lock untouched)...'
+    Write-Host "  Temp lock: $LockFile"
+
+    # Find a definitely-dead PID.
+    $deadPid = 999999
+    while (Get-Process -Id $deadPid -ErrorAction SilentlyContinue) { $deadPid++ }
+
+    # Scenario 1: dead owner PID -> stale -> reclaimable.
+    "{0}`n{1}`n{2}" -f $deadPid, ((Get-Date).AddDays(-2).ToString("o")), 'powershell' | Set-Content $LockFile -NoNewline
+    Assert-Test 'Dead owner PID is detected as stale (not active)' (-not (Test-LaunchLockActive))
+    Assert-Test 'Stale lock is removable' (Remove-StaleLaunchLock)
+    Assert-Test 'Lock file gone after reclaim' (-not (Test-Path $LockFile))
+
+    # Scenario 2: alive but non-launcher PID (reused) -> stale.
+    $alienProc = Get-Process | Where-Object { $script:LaunchLockOwnerNames -notcontains $_.ProcessName } | Select-Object -First 1
+    if ($alienProc) {
+        "{0}`n{1}`n{2}" -f $alienProc.Id, ((Get-Date).ToString("o")), $alienProc.ProcessName | Set-Content $LockFile -NoNewline
+        Assert-Test "Alive non-launcher PID ($($alienProc.ProcessName)) is stale (PID reuse)" (-not (Test-LaunchLockActive))
+        Remove-StaleLaunchLock | Out-Null
+    } else {
+        Write-Host '  [SKIP] No non-launcher process available for PID-reuse test'
+    }
+
+    # Scenario 3: garbage / no PID -> stale.
+    'not-a-pid' | Set-Content $LockFile -NoNewline
+    Assert-Test 'Non-numeric lock content is stale' (-not (Test-LaunchLockActive))
+    Remove-StaleLaunchLock | Out-Null
+
+    # Scenario 4: alive launcher owner (this process) with OLD timestamp and no server on the
+    # temp status URL -> orphaned launcher -> stale.
+    $savedStatusUrl = $StatusUrl
+    $StatusUrl = 'http://127.0.0.1:1/api/bot/status'  # nothing serves here
+    "{0}`n{1}`n{2}" -f $PID, ((Get-Date).AddHours(-3).ToString("o")), 'powershell' | Set-Content $LockFile -NoNewline
+    Assert-Test 'Alive launcher owner + old lock + no server is stale (orphaned window)' (-not (Test-LaunchLockActive))
+
+    # Scenario 5: alive launcher owner with RECENT timestamp and no server -> genuine startup -> active (must NOT reclaim).
+    "{0}`n{1}`n{2}" -f $PID, ((Get-Date).ToString("o")), 'powershell' | Set-Content $LockFile -NoNewline
+    Assert-Test 'Alive launcher owner + recent lock is treated as active (double-launch guard)' (Test-LaunchLockActive)
+    $StatusUrl = $savedStatusUrl
+
+    # Scenario 6: full acquire on a stale (dead-PID) lock should SUCCEED and rewrite ownership.
+    "{0}`n{1}`n{2}" -f $deadPid, ((Get-Date).AddDays(-2).ToString("o")), 'powershell' | Set-Content $LockFile -NoNewline
+    $StatusUrl = 'http://127.0.0.1:1/api/bot/status'
+    $acquired = Acquire-LaunchLock
+    $StatusUrl = $savedStatusUrl
+    Assert-Test 'Acquire-LaunchLock reclaims a stale lock and returns $true' ($acquired -eq $true)
+    $after = Read-LaunchLockInfo
+    Assert-Test 'Reclaimed lock now records our PID' ($null -ne $after -and $after.Pid -eq $PID)
+    Release-LaunchLock
+    Assert-Test 'Release-LaunchLock removes our own lock' (-not (Test-Path $LockFile))
+
+    if (Test-Path $LockFile) { Remove-Item $LockFile -Force -ErrorAction SilentlyContinue }
+    $LockFile = $realLockFile
+
+    Write-Host ''
+    Write-Host ("Self-test complete: {0} passed, {1} failed." -f $pass, $fail)
+    if ($fail -gt 0) { exit 1 }
+    exit 0
 }
 
 try {

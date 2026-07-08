@@ -1113,6 +1113,22 @@ class MomentumStrategy:
         ladder_missed = self._ladder_never_hit(position)
 
         trough_pnl = position.trough_pnl_pct
+
+        # Stop loss ALWAYS wins. Evaluate it FIRST — before L1 protection,
+        # instant-profit, max-hold, and every other profit/time/peak exit —
+        # on the worst of mark/quote/trough PnL. A position that previously
+        # peaked green but has since reversed to/through the stop must exit as
+        # SELL_SL and can never be diverted into an instant-profit (peak-based)
+        # or other voluntary exit. Never miss a stop.
+        stop_signal = self._evaluate_stop_loss(
+            position,
+            pnl,
+            executable_pnl_pct=executable_pnl_pct,
+            trough_pnl=trough_pnl,
+        )
+        if stop_signal is not None:
+            return stop_signal
+
         if (
             Config.ENABLE_L1_PROTECTION
             and position.l1_protection_armed
@@ -1160,14 +1176,6 @@ class MomentumStrategy:
         )
         if max_hold_signal is not None:
             return max_hold_signal
-        stop_signal = self._evaluate_stop_loss(
-            position,
-            pnl,
-            executable_pnl_pct=executable_pnl_pct,
-            trough_pnl=trough_pnl,
-        )
-        if stop_signal is not None:
-            return stop_signal
 
         rule = get_watchlist_rule(position.mint)
         if rule and rule.override_ladder:

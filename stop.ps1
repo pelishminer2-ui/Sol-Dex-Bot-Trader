@@ -34,10 +34,21 @@ function Get-LockPid {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $null }
     try {
-        $raw = (Get-Content $Path -Raw -ErrorAction Stop).Trim()
-        if ($raw -match '^\d+$') { return [int]$raw }
+        # Locks may be single-line (server lock: "<pid>") or multi-line
+        # (launch lock: "<pid>\n<iso-timestamp>\n<name>"). Use the first line.
+        $lines = @(Get-Content $Path -ErrorAction Stop)
+        if ($lines.Count -ge 1 -and $lines[0].Trim() -match '^\d+$') { return [int]$lines[0].Trim() }
     } catch { }
     return $null
+}
+
+function Remove-LockFiles {
+    foreach ($lock in @($ServerLock, $LaunchLock)) {
+        if (Test-Path $lock) {
+            try { Remove-Item $lock -Force -ErrorAction Stop }
+            catch { Write-Host "     Could not remove $(Split-Path $lock -Leaf): $_" }
+        }
+    }
 }
 
 Write-Host ""
@@ -55,8 +66,7 @@ if ($lockPid) { [void]$targets.Add($lockPid) }
 
 if ($targets.Count -eq 0) {
     Write-Host "[OK] No server process found on port $Port."
-    if (Test-Path $ServerLock) { Remove-Item $ServerLock -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $LaunchLock) { Remove-Item $LaunchLock -Force -ErrorAction SilentlyContinue }
+    Remove-LockFiles
     exit 0
 }
 
@@ -82,11 +92,13 @@ Start-Sleep -Milliseconds 500
 
 if (Test-BotServerReady -Url $StatusUrl) {
     Write-Host "[ERROR] Server still responding on port $Port."
+    # Server is still alive, so leave the server lock; but the launch lock is only a
+    # launcher mutex and should never survive a stop attempt.
+    if (Test-Path $LaunchLock) { Remove-Item $LaunchLock -Force -ErrorAction SilentlyContinue }
     exit 1
 }
 
-if (Test-Path $ServerLock) { Remove-Item $ServerLock -Force -ErrorAction SilentlyContinue }
-if (Test-Path $LaunchLock) { Remove-Item $LaunchLock -Force -ErrorAction SilentlyContinue }
+Remove-LockFiles
 
 Write-Host ""
 Write-Host "[OK] Server stopped ($stopped process(es))."

@@ -1,10 +1,10 @@
 {
   "label": "pre-best-win",
-  "created_at": "2026-07-08T17:41:44.726103+00:00",
+  "created_at": "2026-07-08T18:34:33.140927+00:00",
   "description": "Snapshot before Best Win preset \u2014 use Revert to bookmark",
   "values": {
     "trade_size_sol": 0.1,
-    "entry_momentum_pct": 0.0075,
+    "entry_momentum_pct": 0.004,
     "stop_loss_pct": 0.015,
     "min_liquidity_usd": 15000.0,
     "min_volume_24h_usd": 45000.0,
