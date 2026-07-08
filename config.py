@@ -497,7 +497,7 @@ STEADY_TRADE_PRESET = {
     "trade_size_sol": 0.10,
     "entry_momentum_pct": 0.004,
     "stop_loss_pct": 0.015,
-    "min_liquidity_usd": 15000.0,
+    "min_liquidity_usd": 25000.0,
     "min_momentum_pct": 0.015,
     "min_volume_24h_usd": 45000.0,
     "non_watchlist_min_volume_24h_usd": 45000.0,

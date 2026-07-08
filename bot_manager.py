@@ -1287,6 +1287,8 @@ class BotManager:
             "min_momentum_pct": "MIN_MOMENTUM_PCT",
             "reentry_dip_pct": "REENTRY_DIP_PCT",
             "max_potential_mode": "MAX_POTENTIAL_MODE",
+            "setup_learning_min_win_lean": "SETUP_LEARNING_MIN_WIN_LEAN",
+            "spike_min_liquidity_usd": "SPIKE_MIN_LIQUIDITY_USD",
         }
         updates = {}
         for api_key, config_key in mapping.items():
