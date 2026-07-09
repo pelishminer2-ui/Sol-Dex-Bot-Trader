@@ -70,6 +70,7 @@ FORCED_EXIT_TYPES = frozenset({
     SignalType.SELL_L1_PROTECTION,
     SignalType.SELL_TIME,
     SignalType.SELL_MAX_HOLD_PROFIT,
+    SignalType.SELL_PROXY_GREEN_HOLD,
     SignalType.SELL_LADDER_MISSED_30M,
     SignalType.SELL_LADDER_MISSED_10M,
     SignalType.SELL_INSTANT_PROFIT,
@@ -947,6 +948,18 @@ class TradingBot:
             route_labels=entry_route_labels,
             scanner_source=position.profile.get("scanner_source"),
         )
+        profile_data = position.profile or {}
+        features["h24_usd_gain"] = profile_data.get("day_usd_gain")
+        features["dollar_gain_at_entry"] = profile_data.get("day_usd_gain")
+        buy_impact = profile_data.get("entry_price_impact_pct")
+        sell_impact = profile_data.get("exit_price_impact_pct")
+        try:
+            if buy_impact is not None and sell_impact is not None:
+                features["round_trip_slippage_pct"] = float(buy_impact) + float(sell_impact)
+            elif buy_impact is not None:
+                features["round_trip_slippage_pct"] = float(buy_impact) * 2.0
+        except (TypeError, ValueError):
+            pass
         pnl_pct = profile.pnl_pct if profile is not None else position.pnl_pct(
             position.entry_price
         )

@@ -13,6 +13,7 @@ from config import (
     is_memecoin_standard_special_mint,
     is_non_memecoin_proxy_mint,
     is_jitosol_trade_mint,
+    is_proxy_mainstream_mint,
     is_sol_trade_mint,
     is_weth_trade_mint,
     is_wsol_trade_mint,
@@ -49,6 +50,7 @@ class SignalType(Enum):
     SELL_WEAKEN = "sell_trend_weaken_2pct"
     SELL_INSTANT_PROFIT = "sell_instant_5pct"
     SELL_MAX_HOLD_PROFIT = "sell_max_hold_profit"
+    SELL_PROXY_GREEN_HOLD = "sell_proxy_green_hold"
     SELL_LADDER_MISSED_10M = "sell_ladder_missed_10m_positive"
     SELL_LADDER_MISSED_30M = "sell_ladder_missed_30m_negative"
     SELL_WATCHLIST_TARGET = "sell_watchlist_target"
@@ -332,19 +334,35 @@ class MomentumStrategy:
                 candidate.symbol,
             )
             return SignalType.NONE
-        if is_wsol_trade_mint(candidate.mint) or is_weth_trade_mint(candidate.mint):
+        if is_wsol_trade_mint(candidate.mint):
             if momentum is None:
                 return SignalType.NONE
             if momentum >= Config.effective_entry_momentum_pct():
-                label = "WSOL" if is_wsol_trade_mint(candidate.mint) else "WETH"
                 logger.info(
-                    "Buy signal (%s): momentum=%.4f price=%.8f",
-                    label,
+                    "Buy signal (WSOL): momentum=%.4f price=%.8f",
                     momentum,
                     current_price,
                 )
                 return SignalType.BUY
             return SignalType.NONE
+        if is_weth_trade_mint(candidate.mint):
+            from proxy_entry_gate import weth_entry_skip_reason
+
+            day_gain = getattr(candidate, "day_usd_gain", None)
+            day_pct = getattr(candidate, "day_pct_gain", None)
+            weth_reason = weth_entry_skip_reason(
+                candidate, day_usd_gain=day_gain, day_pct_gain=day_pct
+            )
+            if weth_reason:
+                logger.info("Entry blocked (WETH gate): %s", weth_reason)
+                return SignalType.NONE
+            logger.info(
+                "Buy signal (WETH): day_usd_gain=$%.2f day_pct=%.3f%% price=%.8f",
+                day_gain if day_gain is not None else 0.0,
+                (day_pct or 0.0) * 100,
+                current_price,
+            )
+            return SignalType.BUY
         if is_sol_trade_mint(candidate.mint):
             from sol_trading import sol_entry_qualifies
 
@@ -491,16 +509,23 @@ class MomentumStrategy:
             ):
                 return f"one-strike loss block: {candidate.symbol}"
             return f"loss re-entry cooldown: {candidate.symbol}"
-        if is_wsol_trade_mint(candidate.mint) or is_weth_trade_mint(candidate.mint):
+        if is_wsol_trade_mint(candidate.mint):
             if momentum is None:
                 return f"no momentum data: {candidate.symbol}"
             if momentum < Config.effective_entry_momentum_pct():
-                label = "WSOL" if is_wsol_trade_mint(candidate.mint) else "WETH"
                 return (
                     f"entry momentum {momentum * 100:.2f}% < "
-                    f"{Config.effective_entry_momentum_pct() * 100:.2f}%: {label}"
+                    f"{Config.effective_entry_momentum_pct() * 100:.2f}%: WSOL"
                 )
             return None
+        if is_weth_trade_mint(candidate.mint):
+            from proxy_entry_gate import weth_entry_skip_reason
+
+            return weth_entry_skip_reason(
+                candidate,
+                day_usd_gain=getattr(candidate, "day_usd_gain", None),
+                day_pct_gain=getattr(candidate, "day_pct_gain", None),
+            )
         if is_sol_trade_mint(candidate.mint):
             from sol_trading import sol_entry_skip_reason
 
@@ -984,6 +1009,19 @@ class MomentumStrategy:
             "; ".join(reasons) if reasons else "no exit rule matched",
         )
 
+    def _position_is_green_on_mark_quote(
+        self,
+        pnl: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
+    ) -> bool:
+        """True when mark or quote PnL is positive (proxy green-hold gate)."""
+        if pnl > 0:
+            return True
+        if executable_pnl_pct is not None and executable_pnl_pct > 0:
+            return True
+        return False
+
     def _position_is_green_at_max_hold(
         self,
         pnl: float,
@@ -1053,6 +1091,52 @@ class MomentumStrategy:
             pnl,
         )
         return ExitSignal(SignalType.SELL_TIME)
+
+    def _evaluate_proxy_time_exit_green(
+        self,
+        position: Position,
+        pnl: float,
+        hold_sec: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
+        trough_pnl: Optional[float] = None,
+    ) -> Optional[ExitSignal]:
+        """
+        Proxy mainstream assets (WBTC/JitoSOL/WETH): after 15 min, take profit when
+        still green on mark/quote. Red positions are not forced out (SL still applies).
+        """
+        if not Config.MAX_HOLD_ENABLED:
+            return None
+        if not is_proxy_mainstream_mint(position.mint):
+            return None
+        max_hold_sec = Config.MAX_HOLD_MINUTES_NON_WBTC * 60
+        if hold_sec < max_hold_sec:
+            return None
+
+        stop_signal = self._evaluate_stop_loss(
+            position,
+            pnl,
+            executable_pnl_pct=executable_pnl_pct,
+            trough_pnl=trough_pnl,
+        )
+        if stop_signal is not None:
+            return stop_signal
+
+        if not self._position_is_green_on_mark_quote(
+            pnl, executable_pnl_pct=executable_pnl_pct
+        ):
+            return None
+
+        logger.info(
+            "Proxy green time exit: %s held=%.0fs mark=%.4f quote=%s — "
+            "profit-taking at %d min (not instant-profit threshold)",
+            position.symbol,
+            hold_sec,
+            pnl,
+            f"{executable_pnl_pct:.4f}" if executable_pnl_pct is not None else "n/a",
+            Config.MAX_HOLD_MINUTES_NON_WBTC,
+        )
+        return ExitSignal(SignalType.SELL_PROXY_GREEN_HOLD)
 
     def _evaluate_stop_loss(
         self,
@@ -1218,15 +1302,26 @@ class MomentumStrategy:
             if instant_signal is not None:
                 return instant_signal
 
-        max_hold_signal = self._evaluate_max_hold_exit(
-            position,
-            pnl,
-            hold_sec,
-            executable_pnl_pct=executable_pnl_pct,
-            trough_pnl=trough_pnl,
-        )
-        if max_hold_signal is not None:
-            return max_hold_signal
+        if is_proxy_mainstream_mint(position.mint):
+            proxy_green_signal = self._evaluate_proxy_time_exit_green(
+                position,
+                pnl,
+                hold_sec,
+                executable_pnl_pct=executable_pnl_pct,
+                trough_pnl=trough_pnl,
+            )
+            if proxy_green_signal is not None:
+                return proxy_green_signal
+        else:
+            max_hold_signal = self._evaluate_max_hold_exit(
+                position,
+                pnl,
+                hold_sec,
+                executable_pnl_pct=executable_pnl_pct,
+                trough_pnl=trough_pnl,
+            )
+            if max_hold_signal is not None:
+                return max_hold_signal
 
         rule = get_watchlist_rule(position.mint)
         if rule and rule.override_ladder:

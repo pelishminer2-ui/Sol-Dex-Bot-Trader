@@ -121,8 +121,10 @@ DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = 4.0
 DEFAULT_WBTC_PROFIT_ONLY_EXITS = True
 DEFAULT_WBTC_MIN_DAILY_GAIN_USD = 300.0
 DEFAULT_WBTC_REQUIRE_POSITIVE_DAY = True
-DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD = 30.0
+DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD = 20.0
 DEFAULT_JITOSOL_REQUIRE_POSITIVE_DAY = True
+DEFAULT_WETH_MIN_DAILY_GAIN_USD = 150.0
+DEFAULT_WETH_REQUIRE_POSITIVE_DAY = True
 DEFAULT_GMGN_MIN_LIQUIDITY_USD = 30000
 DEFAULT_MIN_VOLUME_24H_USD = 75000
 DEFAULT_NON_WATCHLIST_MIN_VOLUME_24H_USD = 75000
@@ -396,6 +398,31 @@ def jitosol_min_expected_gain_pct() -> float:
     if override is not None:
         return float(override)
     return Config.INSTANT_EXIT_3PCT
+
+
+def weth_min_expected_gain_pct() -> float:
+    """WETH entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.0325)."""
+    override = getattr(Config, "WETH_MIN_EXPECTED_GAIN_PCT", None)
+    if override is not None:
+        return float(override)
+    return Config.INSTANT_EXIT_3PCT
+
+
+def is_proxy_mainstream_mint(mint: str) -> bool:
+    """
+    True for WBTC, enabled JitoSOL, and enabled WETH — wrapped mainstream assets
+    with dollar-based entry gates and 15-min green profit-taking time exits.
+    WSOL is excluded (momentum entry, memecoin-style exits).
+    """
+    if not mint:
+        return False
+    if is_wbtc_watchlist_mint(mint):
+        return True
+    if is_sol_proxy_trade_mint(mint):
+        return True
+    if is_weth_trade_mint(mint):
+        return True
+    return False
 
 
 def companion_trade_enabled() -> bool:
@@ -1180,6 +1207,16 @@ class Config:
     _jitosol_min_expected_gain = os.getenv("JITOSOL_MIN_EXPECTED_GAIN_PCT", "").strip()
     JITOSOL_MIN_EXPECTED_GAIN_PCT = (
         float(_jitosol_min_expected_gain) if _jitosol_min_expected_gain else None
+    )
+    WETH_MIN_DAILY_GAIN_USD = float(
+        os.getenv("WETH_MIN_DAILY_GAIN_USD", str(DEFAULT_WETH_MIN_DAILY_GAIN_USD))
+    )
+    WETH_REQUIRE_POSITIVE_DAY = (
+        os.getenv("WETH_REQUIRE_POSITIVE_DAY", "true").lower() == "true"
+    )
+    _weth_min_expected_gain = os.getenv("WETH_MIN_EXPECTED_GAIN_PCT", "").strip()
+    WETH_MIN_EXPECTED_GAIN_PCT = (
+        float(_weth_min_expected_gain) if _weth_min_expected_gain else None
     )
     MAX_LOSS_PER_TRADE_SOL = float(
         os.getenv("MAX_LOSS_PER_TRADE_SOL", str(DEFAULT_MAX_LOSS_PER_TRADE_SOL))
@@ -2561,6 +2598,9 @@ class Config:
             "jitosol_min_daily_gain_usd": cls.JITOSOL_MIN_DAILY_GAIN_USD,
             "jitosol_require_positive_day": cls.JITOSOL_REQUIRE_POSITIVE_DAY,
             "jitosol_min_expected_gain_pct": jitosol_min_expected_gain_pct(),
+            "weth_min_daily_gain_usd": cls.WETH_MIN_DAILY_GAIN_USD,
+            "weth_require_positive_day": cls.WETH_REQUIRE_POSITIVE_DAY,
+            "weth_min_expected_gain_pct": weth_min_expected_gain_pct(),
             "companion_trade_enabled": cls.COMPANION_TRADE_ENABLED,
             "companion_trade_max": cls.COMPANION_TRADE_MAX,
             "max_loss_per_trade_sol": cls.MAX_LOSS_PER_TRADE_SOL,

@@ -125,18 +125,18 @@ def test_positive_quote_max_hold_profit_exit():
     print("PASS: positive quote at 15m -> max hold profit exit")
 
 
-def test_wbtc_exempt_at_20m():
+def test_wbtc_green_proxy_exit_at_20m():
     strategy = MomentumStrategy()
     pos = _make_position(mint=DEFAULT_WATCHLIST_MINT)
     pos.symbol = "WBTC"
     pos.entry_time = 0
     t = 20 * 60 + 1
     with _without_instant_exit():
-        with patch.object(Config, "MIN_NET_WIN_SOL", 0.0):
-            with patch("strategy.time.time", return_value=t):
-                signal = strategy.evaluate_exit(pos, current_price=1.005)
-    assert signal is None
-    print("PASS: WBTC at 20m -> no max hold exit")
+        with patch("strategy.time.time", return_value=t):
+            signal = strategy.evaluate_exit(pos, current_price=1.005)
+    assert signal is not None
+    assert signal.signal_type == SignalType.SELL_PROXY_GREEN_HOLD
+    print("PASS: WBTC at 20m green -> proxy green hold exit")
 
 
 def test_disabled_max_hold():
@@ -162,7 +162,7 @@ def main():
     test_non_wbtc_deep_loss_still_stop_loss()
     test_positive_mark_bad_trough_triggers_stop_at_max_hold()
     test_positive_quote_max_hold_profit_exit()
-    test_wbtc_exempt_at_20m()
+    test_wbtc_green_proxy_exit_at_20m()
     test_disabled_max_hold()
     print("\nAll max hold tests passed.")
 

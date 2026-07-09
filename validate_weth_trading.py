@@ -1,4 +1,4 @@
-"""Validate WETH trading at memecoin standards."""
+"""Validate WETH trading with $150 proxy day-gain entry gate."""
 
 from __future__ import annotations
 
@@ -34,36 +34,48 @@ def test_weth_enabled():
     print("PASS: WETH mint recognized when enabled")
 
 
-def test_entry_qualifies_on_momentum():
+def test_entry_qualifies_on_day_gain():
     feed = MagicMock()
-    feed.get_momentum.return_value = 0.008
+    pair = {
+        "chainId": "solana",
+        "baseToken": {"symbol": "WETH", "name": "Wrapped Ether"},
+        "liquidity": {"usd": 8000000},
+        "volume": {"h24": 2000000},
+        "priceChange": {"h24": 10.0, "h1": 0.8},
+        "pairAddress": "pair",
+        "dexId": "orca",
+    }
+    feed.update.return_value = {WETH_MINT: 3600.0}
     with patch.object(__import__("config").Config, "ENABLE_WETH_TRADING", True), patch.object(
         __import__("config").Config, "WETH_MINT", WETH_MINT
-    ), patch.object(
-        __import__("config").Config, "ENTRY_MOMENTUM_PCT", 0.005
-    ), patch.object(
-        __import__("config").Config, "HOT_MARKET_MODE_ENABLED", False
-    ):
-        assert weth_entry_qualifies(feed, 3500.0) is True
-        feed.get_momentum.return_value = 0.002
-        assert weth_entry_qualifies(feed, 3500.0) is False
-    print("PASS: WETH entry uses memecoin momentum gate")
+    ), patch("weth_trading._best_pair_for_mint", return_value=pair):
+        assert weth_entry_qualifies(feed, 3600.0) is True
+        pair["priceChange"]["h24"] = 0.1
+        assert weth_entry_qualifies(feed, 3600.0) is False
+    print("PASS: WETH entry uses $150 day gate")
 
 
 def test_entry_skip_reason():
     feed = MagicMock()
-    feed.get_momentum.return_value = 0.001
+    pair = {
+        "chainId": "solana",
+        "baseToken": {"symbol": "WETH", "name": "Wrapped Ether"},
+        "liquidity": {"usd": 8000000},
+        "volume": {"h24": 2000000},
+        "priceChange": {"h24": 0.1},
+        "pairAddress": "pair",
+        "dexId": "orca",
+    }
+    feed.update.return_value = {WETH_MINT: 3600.0}
     with patch.object(__import__("config").Config, "ENABLE_WETH_TRADING", True), patch.object(
         __import__("config").Config, "WETH_MINT", WETH_MINT
-    ), patch.object(
-        __import__("config").Config, "ENTRY_MOMENTUM_PCT", 0.005
-    ):
-        reason = weth_entry_skip_reason(feed, 3500.0)
-        assert reason and "WETH" in reason and "momentum" in reason
+    ), patch("weth_trading._best_pair_for_mint", return_value=pair):
+        reason = weth_entry_skip_reason(feed, 3600.0)
+        assert reason and "WETH" in reason
     print("PASS: WETH entry skip reason")
 
 
-def test_strategy_buy_on_momentum():
+def test_strategy_buy_on_day_gain():
     candidate = MoverCandidate(
         mint=WETH_MINT,
         symbol="WETH",
@@ -79,18 +91,16 @@ def test_strategy_buy_on_momentum():
         pool_created_at=None,
         scanned_at=0.0,
         source="weth_trade",
+        day_usd_gain=200.0,
+        day_pct_gain=0.01,
     )
     strategy = MomentumStrategy()
     with patch.object(__import__("config").Config, "ENABLE_WETH_TRADING", True), patch.object(
         __import__("config").Config, "WETH_MINT", WETH_MINT
-    ), patch.object(
-        __import__("config").Config, "ENTRY_MOMENTUM_PCT", 0.005
-    ), patch.object(
-        __import__("config").Config, "HOT_MARKET_MODE_ENABLED", False
     ):
         signal = strategy.evaluate_entry(candidate, 3500.0, 0.008)
     assert signal == SignalType.BUY
-    print("PASS: strategy buys WETH on momentum")
+    print("PASS: strategy buys WETH on $150+ day gain")
 
 
 def test_fetch_and_merge_mocked():
@@ -102,7 +112,7 @@ def test_fetch_and_merge_mocked():
         "baseToken": {"symbol": "WETH", "name": "Wrapped Ether"},
         "liquidity": {"usd": 8000000},
         "volume": {"h24": 2000000},
-        "priceChange": {"h1": 0.8},
+        "priceChange": {"h24": 10.0, "h1": 0.8},
         "pairAddress": "pair",
         "dexId": "orca",
     }
@@ -113,9 +123,11 @@ def test_fetch_and_merge_mocked():
         assert status["enabled"] is True
         assert status["mint"] == WETH_MINT
         assert status["symbol"] == "WETH"
+        assert status.get("day_usd_gain") is not None
         candidate = fetch_weth_trade_candidate(feed, status=status)
         assert candidate is not None
         assert candidate.source == "weth_trade"
+        assert candidate.day_usd_gain is not None
         merged = merge_weth_trade_watchlist([], feed)
         assert merged and merged[0].mint == WETH_MINT
     print("PASS: fetch/merge WETH candidate")
@@ -124,9 +136,9 @@ def test_fetch_and_merge_mocked():
 def main() -> int:
     test_weth_disabled_by_default_env()
     test_weth_enabled()
-    test_entry_qualifies_on_momentum()
+    test_entry_qualifies_on_day_gain()
     test_entry_skip_reason()
-    test_strategy_buy_on_momentum()
+    test_strategy_buy_on_day_gain()
     test_fetch_and_merge_mocked()
     print("\nAll WETH trading tests passed.")
     return 0

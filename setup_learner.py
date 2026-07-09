@@ -7,13 +7,13 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from config import Config, resolve_data_path
+from config import Config, is_proxy_mainstream_mint, resolve_data_path
 from scanner import MoverCandidate
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE_PATH = resolve_data_path("data/setup_learning.json")
-STORE_VERSION = 2
+STORE_VERSION = 3
 
 FEATURE_KEYS = [
     "momentum_pct",
@@ -27,6 +27,14 @@ FEATURE_KEYS = [
     "is_pumpfun_route",
     "hold_time_sec",
     "scanner_source",
+]
+
+PROXY_FEATURE_KEYS = [
+    "h24_usd_gain",
+    "dollar_gain_at_entry",
+    "round_trip_slippage_pct",
+    "hold_minutes",
+    "liquidity_usd",
 ]
 
 _SOURCE_ENCODING = {
@@ -82,6 +90,25 @@ def normalize_setup_features(features: dict) -> Dict[str, float]:
     }
 
 
+def normalize_proxy_features(features: dict) -> Dict[str, float]:
+    """Normalize proxy-trade features (dollar drift, liquidity, slippage)."""
+    hold_sec = _float(features.get("hold_time_sec"))
+    return {
+        "h24_usd_gain": _float(features.get("h24_usd_gain")) / 100.0,
+        "dollar_gain_at_entry": _float(features.get("dollar_gain_at_entry")) / 100.0,
+        "round_trip_slippage_pct": _float(features.get("round_trip_slippage_pct")),
+        "hold_minutes": min(hold_sec / 60.0, 120.0) if hold_sec > 0 else 0.0,
+        "liquidity_usd": math.log10(max(_float(features.get("liquidity_usd"), 1.0), 1.0)),
+    }
+
+
+def _trade_is_proxy(*, mint: Optional[str], scanner_source: Optional[str]) -> bool:
+    if mint and is_proxy_mainstream_mint(mint):
+        return True
+    source = (scanner_source or "").strip().lower()
+    return source in {"watchlist_mint", "sol_trade", "weth_trade"}
+
+
 def _candidate_vector(candidate: MoverCandidate) -> Dict[str, float]:
     return normalize_setup_features(
         {
@@ -116,6 +143,31 @@ def _mean_centroid(rows: List[dict]) -> Optional[Dict[str, float]]:
     return {
         key: sum(vec.get(key, 0.0) for vec in vecs) / len(vecs)
         for key in FEATURE_KEYS
+    }
+
+
+def _mean_centroid_proxy(rows: List[dict]) -> Optional[Dict[str, float]]:
+    if not rows:
+        return None
+    vecs = [row.get("proxy_features", {}) for row in rows]
+    return {
+        key: sum(vec.get(key, 0.0) for vec in vecs) / len(vecs)
+        for key in PROXY_FEATURE_KEYS
+    }
+
+
+def _merge_proxy_centroids(
+    old: Dict[str, float],
+    old_count: int,
+    new: Dict[str, float],
+    new_count: int,
+) -> Dict[str, float]:
+    total = old_count + new_count
+    if total <= 0:
+        return dict(new)
+    return {
+        key: (old.get(key, 0.0) * old_count + new.get(key, 0.0) * new_count) / total
+        for key in PROXY_FEATURE_KEYS
     }
 
 
@@ -165,6 +217,8 @@ def features_from_position_profile(
 
 def _exit_reason_category(reason: str) -> str:
     lower = (reason or "").lower()
+    if "proxy_green" in lower:
+        return "proxy_time_exit"
     if "stop_loss" in lower or lower.startswith("sell_sl"):
         return "stop_loss"
     if "take_profit" in lower or "instant" in lower:
@@ -233,12 +287,21 @@ class SetupLearner:
         )
 
     def _update_patterns_from_history(self, source_history: List[dict]) -> None:
-        wins = [row for row in source_history if row.get("win")]
-        losses = [row for row in source_history if not row.get("win")]
+        memecoin_rows = [row for row in source_history if not row.get("is_proxy")]
+        proxy_rows = [row for row in source_history if row.get("is_proxy")]
+        wins = [row for row in memecoin_rows if row.get("win")]
+        losses = [row for row in memecoin_rows if not row.get("win")]
         win_centroid = _mean_centroid(wins)
         loss_centroid = _mean_centroid(losses)
         win_count = len(wins)
         loss_count = len(losses)
+
+        proxy_wins = [row for row in proxy_rows if row.get("win")]
+        proxy_losses = [row for row in proxy_rows if not row.get("win")]
+        proxy_win_centroid = _mean_centroid_proxy(proxy_wins)
+        proxy_loss_centroid = _mean_centroid_proxy(proxy_losses)
+        proxy_win_count = len(proxy_wins)
+        proxy_loss_count = len(proxy_losses)
 
         if self.patterns:
             if win_centroid and self.patterns.get("win_centroid"):
@@ -267,11 +330,41 @@ class SetupLearner:
                 loss_centroid = self.patterns["loss_centroid"]
                 loss_count = int(self.patterns.get("loss_count", 0))
 
+            if proxy_win_centroid and self.patterns.get("proxy_win_centroid"):
+                prev_count = int(self.patterns.get("proxy_win_count", 0))
+                proxy_win_centroid = _merge_proxy_centroids(
+                    self.patterns["proxy_win_centroid"],
+                    prev_count,
+                    proxy_win_centroid,
+                    proxy_win_count,
+                )
+                proxy_win_count += prev_count
+            elif self.patterns.get("proxy_win_centroid"):
+                proxy_win_centroid = self.patterns["proxy_win_centroid"]
+                proxy_win_count = int(self.patterns.get("proxy_win_count", 0))
+
+            if proxy_loss_centroid and self.patterns.get("proxy_loss_centroid"):
+                prev_count = int(self.patterns.get("proxy_loss_count", 0))
+                proxy_loss_centroid = _merge_proxy_centroids(
+                    self.patterns["proxy_loss_centroid"],
+                    prev_count,
+                    proxy_loss_centroid,
+                    proxy_loss_count,
+                )
+                proxy_loss_count += prev_count
+            elif self.patterns.get("proxy_loss_centroid"):
+                proxy_loss_centroid = self.patterns["proxy_loss_centroid"]
+                proxy_loss_count = int(self.patterns.get("proxy_loss_count", 0))
+
         self.patterns = {
             "win_centroid": win_centroid,
             "loss_centroid": loss_centroid,
             "win_count": win_count,
             "loss_count": loss_count,
+            "proxy_win_centroid": proxy_win_centroid,
+            "proxy_loss_centroid": proxy_loss_centroid,
+            "proxy_win_count": proxy_win_count,
+            "proxy_loss_count": proxy_loss_count,
             "condensed_at": time.time(),
             "condensed_from_trades": len(source_history),
         }
@@ -371,11 +464,15 @@ class SetupLearner:
         if not Config.SETUP_LEARNING_ENABLED:
             return
         win = net_pnl_sol > 0
+        scanner_source = features.get("scanner_source")
+        is_proxy = _trade_is_proxy(mint=mint, scanner_source=scanner_source)
         row = {
             "recorded_at": time.time(),
             "mint": mint,
             "symbol": symbol,
             "features": normalize_setup_features(features),
+            "proxy_features": normalize_proxy_features(features),
+            "is_proxy": is_proxy,
             "net_pnl_sol": float(net_pnl_sol),
             "pnl_pct": float(pnl_pct if pnl_pct is not None else 0.0),
             "win": win,
@@ -388,13 +485,15 @@ class SetupLearner:
             self._condense()
         else:
             self.save()
+        bucket = "PROXY" if is_proxy else "MEME"
         logger.info(
-            "Setup learning recorded %s %s net=%.4f SOL (history=%d, patterns=%s)",
+            "Setup learning recorded %s %s %s net=%.4f SOL reason=%s (history=%d)",
             "WIN" if win else "LOSS",
+            bucket,
             symbol or mint or "?",
             net_pnl_sol,
+            exit_reason or "?",
             len(self.history),
-            "yes" if self.has_patterns else "no",
         )
 
     def _avg_similarity(self, candidate_vec: Dict[str, float], rows: List[dict]) -> float:
@@ -487,7 +586,26 @@ class SetupLearner:
             return []
         if not Config.SETUP_LEARNING_ENABLED or not self.learning_active:
             return sorted(candidates, key=_discovery_score, reverse=True)
-        return sorted(candidates, key=self.score_candidate, reverse=True)
+        proxy_candidates = [
+            c for c in candidates
+            if _trade_is_proxy(mint=c.mint, scanner_source=c.source)
+        ]
+        memecoin_candidates = [
+            c for c in candidates
+            if not _trade_is_proxy(mint=c.mint, scanner_source=c.source)
+        ]
+        if proxy_candidates:
+            from proxy_entry_gate import proxy_entry_rank_score
+
+            proxy_sorted = sorted(
+                proxy_candidates, key=proxy_entry_rank_score, reverse=True
+            )
+        else:
+            proxy_sorted = []
+        memecoin_sorted = sorted(
+            memecoin_candidates, key=self.score_candidate, reverse=True
+        )
+        return proxy_sorted + memecoin_sorted
 
     def get_stats(self) -> dict:
         wins = self._wins()
@@ -530,6 +648,8 @@ class SetupLearner:
             "has_patterns": self.has_patterns,
             "win_centroid_trades": int(patterns.get("win_count", 0)),
             "loss_centroid_trades": int(patterns.get("loss_count", 0)),
+            "proxy_win_centroid_trades": int(patterns.get("proxy_win_count", 0)),
+            "proxy_loss_centroid_trades": int(patterns.get("proxy_loss_count", 0)),
             "last_condensed_at": patterns.get("condensed_at"),
             "raw_history_count": len(self.history),
             "trades_since_condense": self.trades_since_condense,

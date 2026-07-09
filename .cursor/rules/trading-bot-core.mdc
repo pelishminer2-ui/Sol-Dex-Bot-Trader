@@ -10,8 +10,9 @@ alwaysApply: true
 - Never miss stop loss — forced sell with retries, 0.5s poll in loss zone, fresh Jupiter quotes
 - Instant profit at +3.25% and +5% using mark, peak, AND quote PnL
 - Emergency 3% / catastrophic 5% hard caps
-- Non-WBTC max hold 15 min: SL if at threshold, otherwise plain time exit (not SL)
-- WBTC exempt from 15 min cap
+- Non-memecoin max hold 15 min: SL if at threshold, otherwise plain time exit (not SL)
+- Proxy assets (WBTC/JitoSOL/WETH): after 15 min, sell when green on mark/quote (profit-taking); red positions not forced out (SL still applies)
+- WBTC keeps 2% stop loss; JitoSOL/WETH use configured SL (default 1.5%)
 - Forced exits never defer for impact, never block on min-net
 
 ### Learning

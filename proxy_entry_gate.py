@@ -1,4 +1,4 @@
-"""Proxy entry gates — WBTC and JitoSOL daily USD gain + +3.25% feasibility."""
+"""Proxy entry gates — WBTC, JitoSOL, and WETH daily USD gain + +3.25% feasibility."""
 
 from __future__ import annotations
 
@@ -8,8 +8,10 @@ from config import (
     Config,
     is_jitosol_trade_mint,
     is_wbtc_watchlist_mint,
+    is_weth_trade_mint,
     jitosol_min_expected_gain_pct,
     wbtc_min_expected_gain_pct,
+    weth_min_expected_gain_pct,
 )
 
 _EPS = 1e-6
@@ -279,3 +281,101 @@ def jitosol_entry_qualifies(
     return jitosol_entry_skip_reason(
         candidate, day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
     ) is None
+
+
+# --- WETH ---
+
+
+def weth_entry_rule_summary() -> str:
+    return _entry_rule_summary(
+        label="WETH",
+        min_usd=Config.WETH_MIN_DAILY_GAIN_USD,
+        require_positive_day=Config.WETH_REQUIRE_POSITIVE_DAY,
+        target_pct=weth_min_expected_gain_pct(),
+    )
+
+
+def weth_day_gate_passes(
+    *,
+    day_usd_gain: Optional[float] = None,
+    day_pct_gain: Optional[float] = None,
+) -> bool:
+    return _day_gate_passes(
+        min_usd=Config.WETH_MIN_DAILY_GAIN_USD,
+        require_positive_day=Config.WETH_REQUIRE_POSITIVE_DAY,
+        day_usd_gain=day_usd_gain,
+        day_pct_gain=day_pct_gain,
+    )
+
+
+def weth_day_gate_skip_reason(
+    *,
+    day_usd_gain: Optional[float] = None,
+    day_pct_gain: Optional[float] = None,
+) -> Optional[str]:
+    return _day_gate_skip_reason(
+        label="WETH",
+        min_usd=Config.WETH_MIN_DAILY_GAIN_USD,
+        require_positive_day=Config.WETH_REQUIRE_POSITIVE_DAY,
+        day_usd_gain=day_usd_gain,
+        day_pct_gain=day_pct_gain,
+    )
+
+
+def weth_instant_gain_feasible_from_quotes(
+    trade_size_sol: float,
+    fee_budget_sol: float,
+    *,
+    buy_impact_pct: float = 0.0,
+    sell_preview_impact_pct: Optional[float] = None,
+) -> Tuple[bool, Optional[str]]:
+    return proxy_instant_gain_feasible_from_quotes(
+        trade_size_sol,
+        fee_budget_sol,
+        label="WETH",
+        target_pct=weth_min_expected_gain_pct(),
+        buy_impact_pct=buy_impact_pct,
+        sell_preview_impact_pct=sell_preview_impact_pct,
+    )
+
+
+def weth_entry_skip_reason(
+    candidate,
+    *,
+    day_usd_gain: Optional[float] = None,
+    day_pct_gain: Optional[float] = None,
+) -> Optional[str]:
+    if not is_weth_trade_mint(candidate.mint):
+        return None
+    gain, pct = _resolve_day_fields(
+        candidate, day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
+    )
+    return weth_day_gate_skip_reason(day_usd_gain=gain, day_pct_gain=pct)
+
+
+def weth_entry_qualifies(
+    candidate,
+    *,
+    day_usd_gain: Optional[float] = None,
+    day_pct_gain: Optional[float] = None,
+) -> bool:
+    return weth_entry_skip_reason(
+        candidate, day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
+    ) is None
+
+
+def proxy_entry_rank_score(candidate) -> float:
+    """
+    Rank proxy candidates: favor positive 24h USD drift, deep liquidity, low impact.
+  """
+    score = 0.0
+    day_gain = getattr(candidate, "day_usd_gain", None)
+    if day_gain is not None and day_gain > 0:
+        score += min(day_gain / 100.0, 5.0)
+    liq = getattr(candidate, "liquidity_usd", None) or 0.0
+    if liq > 0:
+        score += min(liq / 100000.0, 3.0)
+    impact = getattr(candidate, "entry_price_impact_pct", None)
+    if impact is not None:
+        score -= max(impact, 0.0) * 0.1
+    return score

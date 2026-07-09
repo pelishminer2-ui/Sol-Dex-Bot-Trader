@@ -82,7 +82,9 @@ def _proxy_entry_rule_summary() -> str:
 def _proxy_exit_rule_summary() -> str:
     pct3 = Config.INSTANT_EXIT_3PCT * 100
     pct5 = Config.INSTANT_PROFIT_EXIT_PCT * 100
+    hold = Config.MAX_HOLD_MINUTES_NON_WBTC
     parts = [f"instant +{pct3:.2f}% / +{pct5:.0f}% full exit"]
+    parts.append(f"{hold}m green profit-taking")
     if Config.SOL_TRADE_EXIT_ON_TREND_COLD:
         cold = Config.SOL_TRADE_EXIT_COLD_1H_PCT
         parts.append(f"exit when SOL 1h < +{cold:.1f}%")
