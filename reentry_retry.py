@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 SIMILARITY_THRESHOLD = 0.85
 _lock = threading.Lock()
+_session_retry_loss_mints: set[str] = set()
 
 
 class ReentryRetryManager:
@@ -50,6 +51,12 @@ class ReentryRetryManager:
 
     def is_active(self) -> bool:
         return Config.reentry_retry_is_active()
+
+    def reset_session(self) -> None:
+        """Clear per-bot-session retry-loss blocks (call on bot start)."""
+        global _session_retry_loss_mints
+        with _lock:
+            _session_retry_loss_mints = set()
 
     def _mint_record(self, mint: str, symbol: str = "") -> dict:
         rec = self.mints.get(mint)
@@ -128,6 +135,9 @@ class ReentryRetryManager:
     def can_open_retry_window(self, mint: str) -> bool:
         if not self.is_active():
             return False
+        with _lock:
+            if mint in _session_retry_loss_mints:
+                return False
         now = self._now()
         rec = self.mints.get(mint, {})
         if rec.get("pending_user_action") and not rec.get("user_decision"):
@@ -188,6 +198,8 @@ class ReentryRetryManager:
             return True
         rec["failed_attempts"] = rec.get("failed_attempts", 0) + 1
         rec["block_until"] = self._now() + Config.REENTRY_RETRY_BLOCK_HOURS * 3600
+        with _lock:
+            _session_retry_loss_mints.add(mint)
         if loss_signature:
             rec["signature"] = loss_signature
         if rec["failed_attempts"] >= Config.REENTRY_RETRY_MAX_ATTEMPTS:

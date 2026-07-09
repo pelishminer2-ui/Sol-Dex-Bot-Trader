@@ -58,6 +58,16 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
+def effective_setup_learning_min_win_lean() -> float:
+    """Win-lean floor including session auto-tighten bump (entry only)."""
+    try:
+        from session_entry_tuning import effective_setup_learning_min_win_lean as _effective
+
+        return _effective()
+    except Exception:
+        return Config.SETUP_LEARNING_MIN_WIN_LEAN
+
+
 def _f(value, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -293,7 +303,7 @@ def win_lean_reason(candidate, setup_learner) -> Optional[str]:
         # Insufficient data — never block all entries on a cold learner.
         return None
 
-    threshold = Config.SETUP_LEARNING_MIN_WIN_LEAN
+    threshold = effective_setup_learning_min_win_lean()
     if score < threshold:
         symbol = getattr(candidate, "symbol", "?")
         return f"win-lean {score:.3f} < {threshold:.3f}: {symbol}"

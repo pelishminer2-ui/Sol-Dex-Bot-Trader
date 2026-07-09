@@ -36,15 +36,15 @@ DEFAULT_TARGET_NET_PROFIT_SOL = 0.0155
 DEFAULT_MIN_EXPECTED_NET_PROFIT_SOL = 0.003
 DEFAULT_MIN_NET_WIN_SOL = 0.003
 DEFAULT_LOSS_REENTRY_COOLDOWN_MINUTES = 120
-DEFAULT_LOSS_REENTRY_REPEAT_COOLDOWN_MINUTES = 240
+DEFAULT_LOSS_REENTRY_REPEAT_COOLDOWN_MINUTES = 360
 DEFAULT_REENTRY_MIN_MOMENTUM_PCT = 0.015
 # Smart re-chase retry after loss-strike / loss-cooldown (entry-only).
 DEFAULT_REENTRY_RETRY_ENABLED = True
 DEFAULT_REENTRY_RETRY_WINDOW_MINUTES = 60
 DEFAULT_REENTRY_RETRY_BLOCK_HOURS = 2
-DEFAULT_REENTRY_RETRY_MAX_ATTEMPTS = 2
+DEFAULT_REENTRY_RETRY_MAX_ATTEMPTS = 1
 DEFAULT_MAX_LOSS_PER_TRADE_SOL = 0.012
-DEFAULT_MIN_LIQUIDITY_USD = 25000
+DEFAULT_MIN_LIQUIDITY_USD = 30000
 DEFAULT_MIN_MOMENTUM_PCT = 0.015
 # Slippage / price-impact gates (percent points, e.g. 1.0 = 1%).
 # Entry default 1.0%; optional relax to 1.5% via MAX_ENTRY_PRICE_IMPACT_PCT in .env.
@@ -119,9 +119,11 @@ DEFAULT_LOSS_FRESH_QUOTE_PCT = 0.01
 DEFAULT_STOP_LOSS_NEVER_MISS = True
 DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = 4.0
 DEFAULT_WBTC_PROFIT_ONLY_EXITS = True
-DEFAULT_WBTC_MIN_DAILY_GAIN_USD = 75.0
+DEFAULT_WBTC_MIN_DAILY_GAIN_USD = 300.0
 DEFAULT_WBTC_REQUIRE_POSITIVE_DAY = True
-DEFAULT_GMGN_MIN_LIQUIDITY_USD = 25000
+DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD = 30.0
+DEFAULT_JITOSOL_REQUIRE_POSITIVE_DAY = True
+DEFAULT_GMGN_MIN_LIQUIDITY_USD = 30000
 DEFAULT_MIN_VOLUME_24H_USD = 75000
 DEFAULT_NON_WATCHLIST_MIN_VOLUME_24H_USD = 75000
 DEFAULT_L1_PROTECTION_PCT = 0.001
@@ -151,6 +153,10 @@ MAX_LIVE_TRADEABLE_BALANCE_SOL = 10.0
 DEFAULT_WATCHLIST_MINT = "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh"
 DEFAULT_MAX_OPEN_POSITIONS = 1
 DEFAULT_MAX_OPEN_POSITIONS_WBTC = 2
+# When JitoSOL or WETH proxy is held, allow COMPANION_TRADE_MAX extra concurrent
+# positions (typically one memecoin momentum pick alongside the stable proxy leg).
+DEFAULT_COMPANION_TRADE_ENABLED = True
+DEFAULT_COMPANION_TRADE_MAX = 1
 DEFAULT_REENTRY_DIP_PCT = 0.10
 DEFAULT_SOL_TREND_FILTER_ENABLED = True
 # DexScreener percent points (e.g. -1.5 = allow down to -1.5% on 1h). Loosened so
@@ -193,15 +199,22 @@ DEFAULT_HOT_MARKET_MIN_MOMENTUM_PCT = 0.015
 DEFAULT_HOT_MARKET_MIN_VOLUME_24H_USD = 45000.0
 # NEUTRAL regime = moderately tight (between hot-loose and cold-tight).
 DEFAULT_NEUTRAL_MARKET_ENTRY_MOMENTUM_PCT = 0.006
-DEFAULT_NEUTRAL_MARKET_MIN_MOMENTUM_PCT = 0.02
+DEFAULT_NEUTRAL_MARKET_MIN_MOMENTUM_PCT = 0.025
 DEFAULT_NEUTRAL_MARKET_MIN_VOLUME_24H_USD = 65000.0
 # COLD regime = tightest / most selective (Best-Win-ish quality bar).
 DEFAULT_COLD_MARKET_ENTRY_MOMENTUM_PCT = 0.0075
 DEFAULT_COLD_MARKET_MIN_MOMENTUM_PCT = 0.020
 DEFAULT_COLD_MARKET_MIN_VOLUME_24H_USD = 75000.0
-DEFAULT_HOT_MARKET_TARGET_WIN_RATE = 0.55
-DEFAULT_NEUTRAL_MARKET_TARGET_WIN_RATE = 0.50
-DEFAULT_COLD_MARKET_TARGET_WIN_RATE = 0.45
+DEFAULT_HOT_MARKET_TARGET_WIN_RATE = 0.65
+DEFAULT_NEUTRAL_MARKET_TARGET_WIN_RATE = 0.55
+DEFAULT_COLD_MARKET_TARGET_WIN_RATE = 0.55
+# Session closed-loop entry tightening when WR trails regime target (entry only).
+DEFAULT_SESSION_AUTO_TIGHTEN_ENABLED = True
+DEFAULT_SESSION_AUTO_TIGHTEN_MIN_TRADES = 20
+DEFAULT_SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP = 0.02
+DEFAULT_SESSION_AUTO_TIGHTEN_WIN_LEAN_CAP = 0.15
+DEFAULT_SESSION_AUTO_TIGHTEN_LIQUIDITY_STEP_USD = 2500.0
+DEFAULT_SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD = 40000.0
 DEFAULT_SETUP_LEARNING_ENABLED = True
 DEFAULT_SETUP_LEARNING_MIN_TRADES = 5
 DEFAULT_SETUP_LEARNING_MAX_HISTORY = 100
@@ -238,7 +251,7 @@ DEFAULT_MAX_ENTRY_PRICE_CHANGE_5M_PCT = 50000.0
 DEFAULT_HIGH_MOMENTUM_QUALITY_PCT = 300.0
 # High-momentum flat-book floor: a high-momentum candidate with less than this
 # much pool liquidity (USD) is treated as an instant-dump trap.
-DEFAULT_SPIKE_MIN_LIQUIDITY_USD = 20000.0
+DEFAULT_SPIKE_MIN_LIQUIDITY_USD = 30000.0
 # High-momentum freshness: require at least this much recent movement (max of 5m
 # and 1h, stored percent) so we only chase pops that are happening NOW, not stale
 # 6h/24h spikes that already ran and reversed.
@@ -251,7 +264,7 @@ DEFAULT_SPIKE_MAX_ROUNDTRIP_IMPACT_PCT = 0.0
 # centroid over the loss centroid before entering (not just ranking). Falls back
 # to "allow" when the learner has insufficient data.
 DEFAULT_SETUP_LEARNING_ENTRY_GATE_ENABLED = True
-DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN = 0.05
+DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN = 0.08
 
 
 def is_wbtc_watchlist_mint(mint: str) -> bool:
@@ -288,6 +301,14 @@ def is_wsol_trade_mint(mint: str) -> bool:
 def is_sol_proxy_trade_mint(mint: str) -> bool:
     """True for legacy liquid-staking proxy (mSOL, jitoSOL, etc.) — not WSOL."""
     return is_sol_trade_mint(mint) and not is_wsol_trade_mint(mint)
+
+
+def is_jitosol_trade_mint(mint: str) -> bool:
+    """True when JitoSOL is the configured SOL trade mint and matches."""
+    if not mint or not sol_trading_enabled():
+        return False
+    trade_mint = (Config.SOL_TRADE_MINT or "").strip()
+    return trade_mint == JITOSOL_MINT and mint.strip() == JITOSOL_MINT
 
 
 def weth_trading_enabled() -> bool:
@@ -369,9 +390,45 @@ def wbtc_min_expected_gain_pct() -> float:
     return Config.INSTANT_EXIT_3PCT
 
 
+def jitosol_min_expected_gain_pct() -> float:
+    """JitoSOL entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.0325)."""
+    override = getattr(Config, "JITOSOL_MIN_EXPECTED_GAIN_PCT", None)
+    if override is not None:
+        return float(override)
+    return Config.INSTANT_EXIT_3PCT
+
+
 def wbtc_companion_slot_open(open_mints: list[str]) -> bool:
     """True when WBTC is the sole open position and a companion slot is available."""
     return len(open_mints) == 1 and is_wbtc_watchlist_mint(open_mints[0])
+
+
+def companion_trade_enabled() -> bool:
+    """True when JitoSOL/WETH proxy companion slots are allowed."""
+    return bool(Config.COMPANION_TRADE_ENABLED)
+
+
+def is_proxy_companion_anchor_mint(mint: str) -> bool:
+    """
+    True for enabled JitoSOL (liquid-staking proxy) or WETH trade mints — the
+    stable leg that unlocks a companion momentum slot when held or entered second.
+    WSOL is excluded; only the configured proxy anchors qualify.
+    """
+    if not mint or not companion_trade_enabled():
+        return False
+    return is_sol_proxy_trade_mint(mint) or is_weth_trade_mint(mint)
+
+
+def max_positions_with_companion() -> int:
+    """Base cap plus configured companion slots (default 1 + 1 = 2)."""
+    return Config.MAX_OPEN_POSITIONS + max(0, Config.COMPANION_TRADE_MAX)
+
+
+def proxy_companion_slot_open(open_mints: list[str]) -> bool:
+    """True when a sole JitoSOL/WETH proxy is open and a companion slot is free."""
+    if not companion_trade_enabled():
+        return False
+    return len(open_mints) == 1 and is_proxy_companion_anchor_mint(open_mints[0])
 
 
 def max_allowed_open_positions(
@@ -380,13 +437,24 @@ def max_allowed_open_positions(
 ) -> int:
     """
     Max concurrent positions: 1 normally; 2 when WBTC is held or is the next entry
-    while one other position is already open.
+    while one other position is already open; also +COMPANION_TRADE_MAX when a
+    JitoSOL/WETH proxy anchor is held or is the next entry (when enabled).
     """
+    limits = [Config.MAX_OPEN_POSITIONS]
     if any(is_wbtc_watchlist_mint(m) for m in open_mints):
-        return Config.MAX_OPEN_POSITIONS_WBTC
+        limits.append(Config.MAX_OPEN_POSITIONS_WBTC)
     if candidate_mint and is_wbtc_watchlist_mint(candidate_mint) and open_mints:
-        return Config.MAX_OPEN_POSITIONS_WBTC
-    return Config.MAX_OPEN_POSITIONS
+        limits.append(Config.MAX_OPEN_POSITIONS_WBTC)
+    if companion_trade_enabled():
+        if any(is_proxy_companion_anchor_mint(m) for m in open_mints):
+            limits.append(max_positions_with_companion())
+        if (
+            candidate_mint
+            and is_proxy_companion_anchor_mint(candidate_mint)
+            and open_mints
+        ):
+            limits.append(max_positions_with_companion())
+    return max(limits)
 
 
 def can_open_more_positions(
@@ -513,7 +581,7 @@ STEADY_TRADE_PRESET = {
     "trade_size_sol": 0.10,
     "entry_momentum_pct": 0.004,
     "stop_loss_pct": 0.015,
-    "min_liquidity_usd": 25000.0,
+    "min_liquidity_usd": 30000.0,
     "min_momentum_pct": 0.015,
     "min_volume_24h_usd": 45000.0,
     "non_watchlist_min_volume_24h_usd": 45000.0,
@@ -538,7 +606,7 @@ STEADY_TRADE_STRATEGY_PRESET = {
     "max_potential_mode": False,
     "block_stock_related_tokens": True,
     "watchlist_min_usd_gain": DEFAULT_WATCHLIST_MIN_USD_GAIN,
-    "gmgn_min_liquidity_usd": 15000.0,
+    "gmgn_min_liquidity_usd": 30000.0,
     "hot_market_mode_enabled": True,
     # Steady Trade tolerates mild SOL pullbacks; cold regime still blocks deep dumps via 4h gate.
     # Regime-aware entry tuning: 1h gate loosened -1.0 -> -1.5 (pop-quality override bypasses
@@ -1070,6 +1138,18 @@ class Config:
     WBTC_MIN_EXPECTED_GAIN_PCT = (
         float(_wbtc_min_expected_gain) if _wbtc_min_expected_gain else None
     )
+    JITOSOL_MIN_DAILY_GAIN_USD = float(
+        os.getenv(
+            "JITOSOL_MIN_DAILY_GAIN_USD", str(DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD)
+        )
+    )
+    JITOSOL_REQUIRE_POSITIVE_DAY = (
+        os.getenv("JITOSOL_REQUIRE_POSITIVE_DAY", "true").lower() == "true"
+    )
+    _jitosol_min_expected_gain = os.getenv("JITOSOL_MIN_EXPECTED_GAIN_PCT", "").strip()
+    JITOSOL_MIN_EXPECTED_GAIN_PCT = (
+        float(_jitosol_min_expected_gain) if _jitosol_min_expected_gain else None
+    )
     MAX_LOSS_PER_TRADE_SOL = float(
         os.getenv("MAX_LOSS_PER_TRADE_SOL", str(DEFAULT_MAX_LOSS_PER_TRADE_SOL))
     )
@@ -1341,6 +1421,16 @@ class Config:
     MAX_OPEN_POSITIONS_WBTC = int(
         os.getenv("MAX_OPEN_POSITIONS_WBTC", str(DEFAULT_MAX_OPEN_POSITIONS_WBTC))
     )
+    COMPANION_TRADE_ENABLED = (
+        os.getenv(
+            "COMPANION_TRADE_ENABLED",
+            "true" if DEFAULT_COMPANION_TRADE_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    COMPANION_TRADE_MAX = int(
+        os.getenv("COMPANION_TRADE_MAX", str(DEFAULT_COMPANION_TRADE_MAX))
+    )
     REENTRY_DIP_PCT = float(
         os.getenv("REENTRY_DIP_PCT", str(DEFAULT_REENTRY_DIP_PCT))
     )
@@ -1532,6 +1622,43 @@ class Config:
         os.getenv(
             "COLD_MARKET_TARGET_WIN_RATE",
             str(DEFAULT_COLD_MARKET_TARGET_WIN_RATE),
+        )
+    )
+    SESSION_AUTO_TIGHTEN_ENABLED = (
+        os.getenv(
+            "SESSION_AUTO_TIGHTEN_ENABLED",
+            "true" if DEFAULT_SESSION_AUTO_TIGHTEN_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    SESSION_AUTO_TIGHTEN_MIN_TRADES = int(
+        os.getenv(
+            "SESSION_AUTO_TIGHTEN_MIN_TRADES",
+            str(DEFAULT_SESSION_AUTO_TIGHTEN_MIN_TRADES),
+        )
+    )
+    SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP = float(
+        os.getenv(
+            "SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP",
+            str(DEFAULT_SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP),
+        )
+    )
+    SESSION_AUTO_TIGHTEN_WIN_LEAN_CAP = float(
+        os.getenv(
+            "SESSION_AUTO_TIGHTEN_WIN_LEAN_CAP",
+            str(DEFAULT_SESSION_AUTO_TIGHTEN_WIN_LEAN_CAP),
+        )
+    )
+    SESSION_AUTO_TIGHTEN_LIQUIDITY_STEP_USD = float(
+        os.getenv(
+            "SESSION_AUTO_TIGHTEN_LIQUIDITY_STEP_USD",
+            str(DEFAULT_SESSION_AUTO_TIGHTEN_LIQUIDITY_STEP_USD),
+        )
+    )
+    SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD = float(
+        os.getenv(
+            "SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD",
+            str(DEFAULT_SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD),
         )
     )
     MAX_DAILY_LOSS_SOL = float(os.getenv("MAX_DAILY_LOSS_SOL", "1.0"))
@@ -2099,6 +2226,7 @@ class Config:
         "MIN_NET_WIN_SOL": float,
         "LOSS_REENTRY_COOLDOWN_MINUTES": int,
         "LOSS_REENTRY_REPEAT_COOLDOWN_MINUTES": int,
+        "REENTRY_RETRY_MAX_ATTEMPTS": int,
         "NON_WATCHLIST_MIN_VOLUME_24H_USD": float,
         "MIN_VOLUME_24H_USD": float,
         "WEAKEN_EXIT_MIN_PROFIT_PCT": float,
@@ -2119,6 +2247,7 @@ class Config:
         "SPIKE_MAX_ROUNDTRIP_IMPACT_PCT": float,
         "SETUP_LEARNING_ENTRY_GATE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "SETUP_LEARNING_MIN_WIN_LEAN": float,
+        "GMGN_MIN_LIQUIDITY_USD": float,
     }
 
     @classmethod
@@ -2398,6 +2527,11 @@ class Config:
             "wbtc_min_daily_gain_usd": cls.WBTC_MIN_DAILY_GAIN_USD,
             "wbtc_require_positive_day": cls.WBTC_REQUIRE_POSITIVE_DAY,
             "wbtc_min_expected_gain_pct": wbtc_min_expected_gain_pct(),
+            "jitosol_min_daily_gain_usd": cls.JITOSOL_MIN_DAILY_GAIN_USD,
+            "jitosol_require_positive_day": cls.JITOSOL_REQUIRE_POSITIVE_DAY,
+            "jitosol_min_expected_gain_pct": jitosol_min_expected_gain_pct(),
+            "companion_trade_enabled": cls.COMPANION_TRADE_ENABLED,
+            "companion_trade_max": cls.COMPANION_TRADE_MAX,
             "max_loss_per_trade_sol": cls.MAX_LOSS_PER_TRADE_SOL,
             "max_entry_price_impact_pct": cls.MAX_ENTRY_PRICE_IMPACT_PCT,
             "max_exit_price_impact_pct": cls.MAX_EXIT_PRICE_IMPACT_PCT,
@@ -2492,6 +2626,12 @@ class Config:
             "spike_max_roundtrip_impact_pct": cls.SPIKE_MAX_ROUNDTRIP_IMPACT_PCT,
             "setup_learning_entry_gate_enabled": cls.SETUP_LEARNING_ENTRY_GATE_ENABLED,
             "setup_learning_min_win_lean": cls.SETUP_LEARNING_MIN_WIN_LEAN,
+            "session_auto_tighten_enabled": cls.SESSION_AUTO_TIGHTEN_ENABLED,
+            "session_auto_tighten_min_trades": cls.SESSION_AUTO_TIGHTEN_MIN_TRADES,
+            "session_auto_tighten_win_lean_step": cls.SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP,
+            "session_auto_tighten_win_lean_cap": cls.SESSION_AUTO_TIGHTEN_WIN_LEAN_CAP,
+            "session_auto_tighten_liquidity_step_usd": cls.SESSION_AUTO_TIGHTEN_LIQUIDITY_STEP_USD,
+            "session_auto_tighten_liquidity_cap_usd": cls.SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD,
         }
 
 

@@ -5,7 +5,7 @@ import threading
 import time
 from typing import List, Optional
 
-from config import Config, SOL_MINT, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, sol_trading_enabled, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
+from config import Config, SOL_MINT, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_jitosol_trade_mint, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, proxy_companion_slot_open, sol_trading_enabled, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
 from dexscreener_client import get_dexscreener_client
 from jupiter_client import get_jupiter_client
 from jupiter import JupiterExecutor, SwapQuote
@@ -29,6 +29,12 @@ from trade_utils import (
 from price_feed import PriceFeed
 from reentry_tracker import ReentryTracker
 from reentry_retry import reentry_retry_manager
+from session_entry_tuning import (
+    maybe_auto_tighten,
+    record_exit as record_session_exit,
+    reset_session as reset_session_entry_tuning,
+    status_snapshot as session_entry_tuning_status,
+)
 from risk import RiskManager
 from scanner import MoverCandidate, scan_unified
 from setup_learner import SetupLearner, features_from_position_profile
@@ -139,6 +145,7 @@ class TradingBot:
         self.scan_in_progress: bool = False
         self.sol_trend_snapshot: dict = {}
         self.market_regime_snapshot: dict = {}
+        self.session_entry_tuning: dict = {}
 
     def _record_action(self, message: str) -> None:
         self.last_action = message
@@ -315,6 +322,8 @@ class TradingBot:
         from market_regime import update_market_regime
 
         reset_session_baseline()
+        reset_session_entry_tuning()
+        reentry_retry_manager.reset_session()
         self.sol_trend_snapshot = get_sol_trend_snapshot(force_refresh=True)
         self.market_regime_snapshot = update_market_regime(
             self.sol_trend_snapshot, []
@@ -519,6 +528,15 @@ class TradingBot:
         self.market_regime_snapshot = update_market_regime(
             self.sol_trend_snapshot, self.watchlist
         )
+        target_wr = float(self.market_regime_snapshot.get("target_win_rate") or 0.55)
+        tighten = maybe_auto_tighten(target_wr)
+        if tighten.get("action") == "tightened":
+            self._record_action(
+                f"Session auto-tighten L{tighten.get('tighten_level')}: "
+                f"WR {tighten.get('win_rate', 0) * 100:.0f}% < {target_wr * 100:.0f}% target — "
+                f"win-lean={tighten.get('win_lean'):.2f}"
+            )
+        self.session_entry_tuning = session_entry_tuning_status(target_wr)
 
         self.last_scan_time = time.time()
         for candidate in self.watchlist:
@@ -958,6 +976,7 @@ class TradingBot:
                 self.strategy.clear_mint_blocks(mint)
                 self._record_action(f"Re-chase retry win on {symbol} — blocks cleared")
         self.risk.record_trade_outcome(net_pnl_sol, dry_run=self.dry_run)
+        record_session_exit(net_pnl_sol)
 
     def _fetch_position_prices(self, mints: List[str]) -> dict:
         """Fetch prices for open positions with retry (never silently skip)."""
@@ -2096,7 +2115,7 @@ class TradingBot:
         )
 
         if is_wbtc_watchlist_mint(candidate.mint):
-            from wbtc_entry_gate import wbtc_instant_gain_feasible_from_quotes
+            from proxy_entry_gate import wbtc_instant_gain_feasible_from_quotes
 
             wbtc_ok, wbtc_reason = wbtc_instant_gain_feasible_from_quotes(
                 trade_size,
@@ -2108,6 +2127,24 @@ class TradingBot:
             )
             if not wbtc_ok:
                 reason = wbtc_reason or "WBTC: instant target not feasible"
+                self._note_entry_skip(reason)
+                self._record_action(f"Entry skipped: {reason}")
+                logger.warning("Buy blocked: %s", reason)
+                return False
+
+        if is_jitosol_trade_mint(candidate.mint):
+            from proxy_entry_gate import jitosol_instant_gain_feasible_from_quotes
+
+            jito_ok, jito_reason = jitosol_instant_gain_feasible_from_quotes(
+                trade_size,
+                fee_budget,
+                buy_impact_pct=quote.price_impact_pct,
+                sell_preview_impact_pct=(
+                    sell_preview.price_impact_pct if sell_preview else None
+                ),
+            )
+            if not jito_ok:
+                reason = jito_reason or "JitoSOL: instant target not feasible"
                 self._note_entry_skip(reason)
                 self._record_action(f"Entry skipped: {reason}")
                 logger.warning("Buy blocked: %s", reason)
@@ -2565,6 +2602,10 @@ class TradingBot:
                     if wbtc_companion_slot_open(open_mints):
                         logger.info(
                             "WBTC companion slot open — seeking 2nd trade"
+                        )
+                    elif proxy_companion_slot_open(open_mints):
+                        logger.info(
+                            "Proxy companion slot open — seeking 2nd trade"
                         )
 
                     await self._monitor_all_open_positions()

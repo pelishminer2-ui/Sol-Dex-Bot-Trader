@@ -130,8 +130,8 @@ def test_target_win_rate_hot():
             [_candidate(f"mint{i:032d}") for i in range(6)],
         )
         assert snap["target_win_rate"] == Config.HOT_MARKET_TARGET_WIN_RATE
-        assert snap["target_win_rate"] == 0.55
-    print("PASS: hot target win rate is 55%")
+        assert snap["target_win_rate"] == 0.65
+    print("PASS: hot target win rate is 65%")
 
 
 def test_feasibility_breakeven_math():

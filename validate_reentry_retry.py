@@ -38,7 +38,7 @@ def test_config_defaults():
     assert DEFAULT_REENTRY_RETRY_ENABLED is True
     assert DEFAULT_REENTRY_RETRY_WINDOW_MINUTES == 60
     assert DEFAULT_REENTRY_RETRY_BLOCK_HOURS == 2
-    assert DEFAULT_REENTRY_RETRY_MAX_ATTEMPTS == 2
+    assert DEFAULT_REENTRY_RETRY_MAX_ATTEMPTS == 1
     assert Config.REENTRY_RETRY_ENABLED is True
     assert Config.reentry_retry_is_active() is True
     print("PASS: reentry retry config defaults active immediately")
@@ -62,23 +62,37 @@ def test_failed_retry_blocks_then_pending_user_action():
         cand = _candidate(mint="mint22222222222222222222222222222222")
         sig = store.loss_signature_from_candidate(cand)
         with patch.object(Config, "REENTRY_RETRY_ENABLED", True), patch.object(
-            Config, "REENTRY_RETRY_MAX_ATTEMPTS", 2
+            Config, "REENTRY_RETRY_MAX_ATTEMPTS", 1
         ), patch.object(Config, "REENTRY_RETRY_BLOCK_HOURS", 2):
             store.open_retry_window(cand.mint, cand.symbol, sig)
             store.mark_retry_entry(cand.mint)
             assert store.record_retry_outcome(cand.mint, symbol=cand.symbol, won=False)
             assert not store.bypasses_loss_block(cand.mint)
             assert store.can_open_retry_window(cand.mint) is False
-
-            rec = store.mints[cand.mint]
-            rec["block_until"] = 0.0
-            store.open_retry_window(cand.mint, cand.symbol, sig)
-            store.mark_retry_entry(cand.mint)
-            assert store.record_retry_outcome(cand.mint, symbol=cand.symbol, won=False)
             pending = store.get_pending_actions()
             assert len(pending) == 1
             assert pending[0]["mint"] == cand.mint
-    print("PASS: two failed retries require user action")
+    print("PASS: one failed retry requires user action")
+
+
+def test_session_retry_loss_blocks_reopen():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ReentryRetryManager(Path(tmp) / "state2b.json")
+        store.reset_session()
+        cand = _candidate(mint="mint2b2222222222222222222222222222222")
+        sig = store.loss_signature_from_candidate(cand)
+        with patch.object(Config, "REENTRY_RETRY_ENABLED", True), patch.object(
+            Config, "REENTRY_RETRY_MAX_ATTEMPTS", 2
+        ), patch.object(Config, "REENTRY_RETRY_BLOCK_HOURS", 0):
+            store.open_retry_window(cand.mint, cand.symbol, sig)
+            store.mark_retry_entry(cand.mint)
+            store.record_retry_outcome(cand.mint, symbol=cand.symbol, won=False)
+            rec = store.mints[cand.mint]
+            rec["block_until"] = 0.0
+            rec["pending_user_action"] = False
+            rec["failed_attempts"] = 0
+            assert store.can_open_retry_window(cand.mint) is False
+    print("PASS: session retry loss blocks reopen")
 
 
 def test_user_allow_clears_block():
@@ -131,6 +145,7 @@ def main():
     test_config_defaults()
     test_open_window_bypasses_loss_block()
     test_failed_retry_blocks_then_pending_user_action()
+    test_session_retry_loss_blocks_reopen()
     test_user_allow_clears_block()
     test_user_deny_similar_blocks_pattern()
     test_win_clears_retry_state()

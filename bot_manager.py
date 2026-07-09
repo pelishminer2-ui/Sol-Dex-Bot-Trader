@@ -565,10 +565,11 @@ class BotManager:
                 if bot
                 else None
             )
-            from config import max_allowed_open_positions, wbtc_companion_slot_open
+            from config import max_allowed_open_positions, proxy_companion_slot_open, wbtc_companion_slot_open
 
             effective_max_open_positions = max_allowed_open_positions(open_mints)
             wbtc_companion = wbtc_companion_slot_open(open_mints)
+            proxy_companion = proxy_companion_slot_open(open_mints)
             public_key = self.get_public_key()
             if bot and bot.solana and not public_key:
                 public_key = str(bot.solana.public_key)
@@ -683,6 +684,7 @@ class BotManager:
             "sol_price_usd": sol_trend_snapshot.get("sol_price_usd"),
             "market_regime": market_regime_snapshot.get("market_regime", "neutral"),
             "target_win_rate": market_regime_snapshot.get("target_win_rate"),
+            "session_entry_tuning": getattr(bot, "session_entry_tuning", {}) if bot else {},
             "scanner_passing_count": market_regime_snapshot.get("scanner_passing_count"),
             "regime_gates": market_regime_snapshot.get("regime_gates", {}),
             "hot_market_mode_enabled": Config.HOT_MARKET_MODE_ENABLED,
@@ -694,7 +696,10 @@ class BotManager:
             "max_open_positions": effective_max_open_positions,
             "max_open_positions_base": Config.MAX_OPEN_POSITIONS,
             "max_open_positions_wbtc": Config.MAX_OPEN_POSITIONS_WBTC,
+            "companion_trade_enabled": Config.COMPANION_TRADE_ENABLED,
+            "companion_trade_max": Config.COMPANION_TRADE_MAX,
             "wbtc_companion_slot_open": wbtc_companion,
+            "proxy_companion_slot_open": proxy_companion,
             "balance_sol": effective_balance,
             "wallet_balance_sol": wallet_balance,
             "live_tradeable_balance_sol": tradeable_balance,
@@ -1283,6 +1288,7 @@ class BotManager:
             "min_expected_net_profit_sol": "MIN_EXPECTED_NET_PROFIT_SOL",
             "min_net_win_sol": "MIN_NET_WIN_SOL",
             "loss_reentry_cooldown_minutes": "LOSS_REENTRY_COOLDOWN_MINUTES",
+            "loss_reentry_repeat_cooldown_minutes": "LOSS_REENTRY_REPEAT_COOLDOWN_MINUTES",
             "weaken_exit_min_profit_pct": "WEAKEN_EXIT_MIN_PROFIT_PCT",
             "max_loss_per_trade_sol": "MAX_LOSS_PER_TRADE_SOL",
             "min_momentum_pct": "MIN_MOMENTUM_PCT",
@@ -1290,6 +1296,8 @@ class BotManager:
             "max_potential_mode": "MAX_POTENTIAL_MODE",
             "setup_learning_min_win_lean": "SETUP_LEARNING_MIN_WIN_LEAN",
             "spike_min_liquidity_usd": "SPIKE_MIN_LIQUIDITY_USD",
+            "gmgn_min_liquidity_usd": "GMGN_MIN_LIQUIDITY_USD",
+            "reentry_retry_max_attempts": "REENTRY_RETRY_MAX_ATTEMPTS",
         }
         updates = {}
         for api_key, config_key in mapping.items():

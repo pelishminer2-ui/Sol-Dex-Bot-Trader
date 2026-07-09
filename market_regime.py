@@ -21,7 +21,7 @@ _TARGET_WIN_RATES = {
 
 _snapshot: dict[str, Any] = {
     "market_regime": REGIME_NEUTRAL,
-    "target_win_rate": 0.50,
+    "target_win_rate": 0.55,
     "scanner_passing_count": 0,
     "gmgn_volume_usd": 0.0,
     "sol_trend_1h_pct": None,
@@ -96,6 +96,14 @@ def _static_regime_gates(regime: str) -> dict[str, float]:
         "min_volume_24h_usd": vol,
         "non_watchlist_min_volume_24h_usd": vol,
     }
+
+
+def get_regime_target_win_rate(regime: str) -> float:
+    """Regime WR target for session closed-loop entry tuning (entry only)."""
+    fn = _TARGET_WIN_RATES.get(regime)
+    if fn is None:
+        return Config.NEUTRAL_MARKET_TARGET_WIN_RATE
+    return float(fn())
 
 
 def get_regime_gates() -> dict[str, float]:
