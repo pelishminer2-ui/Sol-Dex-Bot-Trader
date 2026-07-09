@@ -202,7 +202,11 @@ def _body_has_forbidden_fields() -> Optional[str]:
         if key_lower in FORBIDDEN_BODY_FIELDS:
             return f"forbidden field: {key}"
 
-        if key_lower == "mint" and path not in ("/api/wallet", "/api/mint/unblock"):
+        if key_lower == "mint" and path not in (
+            "/api/wallet",
+            "/api/mint/unblock",
+            "/api/actions/decide",
+        ):
             if isinstance(value, str) and value:
                 return "arbitrary mint injection blocked"
             if isinstance(value, dict) and value.get("swap"):

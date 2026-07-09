@@ -165,6 +165,25 @@ def test_trading_lock_allows_dry_run_without_lock():
     print("PASS: dry-run execute_quote bypasses trading lock")
 
 
+def test_actions_decide_with_mint_allowed():
+    with _client() as client:
+        r = client.post(
+            "/api/actions/decide",
+            data=json.dumps({"mint": "So11111111111111111111111111111111111111112", "allow": False}),
+            content_type="application/json",
+            environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+        )
+    assert r.status_code != 403, f"actions/decide must not be firewall-blocked, got {r.status_code}"
+    print("PASS: actions/decide POST with mint allowed (not 403)")
+
+
+def test_actions_pending_allowed():
+    with _client() as client:
+        r = client.get("/api/actions/pending", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+    assert r.status_code == 200, f"expected 200, got {r.status_code}"
+    print("PASS: actions/pending GET allowed (200)")
+
+
 def test_status_includes_firewall():
     with _client() as client:
         r = client.get("/api/bot/status", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
@@ -186,6 +205,8 @@ def main():
     test_trading_lock_allows_paper_mode_from_any_thread()
     test_trading_lock_blocks_unauthorized_live_execute()
     test_trading_lock_allows_dry_run_without_lock()
+    test_actions_decide_with_mint_allowed()
+    test_actions_pending_allowed()
     test_status_includes_firewall()
     print("\nAll security firewall validations passed.")
 
