@@ -100,6 +100,11 @@ class ReentryRetryManager:
         if not self.is_active():
             return False, None
         rec = self.mints.get(candidate.mint, {})
+        if rec.get("pending_user_action") and not rec.get("user_decision"):
+            return (
+                True,
+                f"re-chase pending user decision: {candidate.symbol}",
+            )
         decision = rec.get("user_decision")
         if decision and not decision.get("allow"):
             return True, f"re-chase denied by user: {candidate.symbol}"
@@ -217,7 +222,7 @@ class ReentryRetryManager:
                     "is_pumpfun_route": bool(sig.get("is_pumpfun_route")),
                     "message": (
                         f"{rec.get('symbol') or rec['mint'][:8]} failed "
-                        f"{rec.get('failed_attempts', 0)} re-chase retries — allow or deny?"
+                        f"{rec.get('failed_attempts', 0)} retry entries — allow similar trades?"
                     ),
                 }
             )
@@ -247,10 +252,18 @@ class ReentryRetryManager:
         }
 
     def status_snapshot(self) -> dict:
+        effective_ts = Config.reentry_retry_effective_after_ts()
+        effective_iso = None
+        if effective_ts not in (float("inf"), float("-inf")):
+            effective_iso = datetime.fromtimestamp(
+                effective_ts, tz=timezone.utc
+            ).isoformat()
         pending = self.get_pending_actions()
         return {
             "enabled": Config.REENTRY_RETRY_ENABLED,
             "active": self.is_active(),
+            "effective_after": Config.REENTRY_RETRY_EFFECTIVE_AFTER,
+            "effective_after_iso": effective_iso,
             "window_minutes": Config.REENTRY_RETRY_WINDOW_MINUTES,
             "block_hours": Config.REENTRY_RETRY_BLOCK_HOURS,
             "max_attempts": Config.REENTRY_RETRY_MAX_ATTEMPTS,
