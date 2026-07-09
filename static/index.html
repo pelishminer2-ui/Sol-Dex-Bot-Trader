@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <!-- cache-sync: 2026-07-07T16:05:00-04:00 updateBookmarkHint-global-scope-fix -->
+  <!-- cache-sync: 2026-07-08T21:55:00-04:00 smart-reentry-actions-panel-always-visible -->
   <title>Solana Mover Trading Bot</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#14f195">
@@ -492,37 +492,63 @@
       margin-bottom: 0.35rem;
     }
     .setup-actions { margin-top: 0.65rem; }
+    #actionsCard { margin-top: 0.35rem; }
+    .actions-buttons { margin-bottom: 0.45rem !important; }
     .pending-actions-panel {
-      margin-top: 0.65rem;
+      display: block;
+      margin-top: 0.45rem;
       padding: 0.55rem 0.65rem;
-      background: rgba(255, 200, 87, 0.08);
-      border: 1px solid rgba(255, 200, 87, 0.35);
+      background: rgba(100, 116, 139, 0.06);
+      border: 1px solid var(--border);
       border-radius: 8px;
       font-size: 0.78rem;
     }
-    .pending-actions-header {
-      color: var(--warning);
-      font-weight: 600;
-      font-size: 0.72rem;
+    .pending-actions-panel.has-pending {
+      background: rgba(255, 200, 87, 0.1);
+      border-color: rgba(255, 200, 87, 0.45);
+    }
+    .smart-reentry-status-line {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.74rem;
+      margin-bottom: 0.45rem;
+      color: var(--muted);
+    }
+    .smart-reentry-label { font-weight: 600; color: var(--text); }
+    .smart-reentry-value { color: var(--success); font-weight: 600; }
+    .smart-reentry-value.disabled { color: var(--muted); font-weight: 500; }
+    .pending-actions-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.74rem;
+    }
+    .pending-actions-table th {
+      text-align: left;
+      font-size: 0.68rem;
       text-transform: uppercase;
       letter-spacing: 0.03em;
-      margin-bottom: 0.45rem;
-    }
-    .pending-action-item {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.4rem 0.65rem;
-      padding: 0.4rem 0;
+      color: var(--muted);
+      padding: 0.25rem 0.35rem 0.35rem;
       border-bottom: 1px solid var(--border);
     }
-    .pending-action-item:last-child { border-bottom: none; }
+    .pending-actions-table td {
+      padding: 0.4rem 0.35rem;
+      vertical-align: middle;
+      border-bottom: 1px solid var(--border);
+    }
+    .pending-actions-table tr:last-child td { border-bottom: none; }
+    .pending-empty-cell {
+      color: var(--muted);
+      font-style: italic;
+      padding: 0.5rem 0.35rem !important;
+    }
+    .pending-action-row-warning td { background: rgba(255, 200, 87, 0.06); }
     .pending-action-symbol {
       font-weight: 700;
       color: var(--warning);
-      min-width: 3.5rem;
     }
-    .pending-action-msg { color: var(--muted); flex: 1 1 12rem; }
+    .pending-action-msg { color: var(--muted); }
     .pending-action-controls {
       display: flex;
       flex-wrap: wrap;
@@ -536,6 +562,7 @@
       font-size: 0.72rem;
       color: var(--muted);
       margin: 0;
+      white-space: nowrap;
     }
     .pending-action-similar input { margin: 0; }
     .btn-allow {
@@ -879,19 +906,37 @@
             <tr>
               <th>Actions</th>
               <td colspan="2">
-                <div class="row" style="margin:0">
-                  <button class="btn-secondary" type="button" id="btnBestWin" title="Best Win: strict filters — fewer trades, higher quality (0.75% entry, 2% scanner, $75k volume)">Best Win</button>
-                  <button class="btn-secondary" type="button" id="btnSteadyTrade" title="Steady Trade: ~3–6 trades/hr — balanced entry with loss protections (0.50% entry, 1.5% scanner, $50k volume, 120m cooldown)">Steady Trade</button>
-                  <button class="btn-secondary" type="button" id="btnBalancedWin" title="Balanced Win: more trades, still fee-aware (0.50% entry, 1.5% scanner, $50k volume)">Balanced Win</button>
-                  <button class="btn-secondary" type="button" id="btnWinPreset" title="Alias for Best Win" style="display:none" aria-hidden="true">Apply win preset</button>
-                  <button class="btn-secondary" type="button" id="btnTightLosses" title="Stricter min net win and 60m loss cooldown" style="display:none" aria-hidden="true">Tight losses</button>
-                  <button class="btn-secondary" type="button" id="btnRevertBookmark" title="Restore saved pre-Best-Win bookmark">Revert to bookmark</button>
-                  <button class="btn-secondary" type="button" id="btnResetSpreads">Reset Defaults</button>
-                  <button class="btn-secondary" id="btnApplyConfig">Apply Config</button>
-                </div>
-                <div id="pendingActionsPanel" class="pending-actions-panel" style="display:none" aria-live="polite">
-                  <div class="pending-actions-header">Re-entry approval required</div>
-                  <div id="pendingActionsList"></div>
+                <div id="actionsCard">
+                  <div class="row actions-buttons" style="margin:0">
+                    <button class="btn-secondary" type="button" id="btnBestWin" title="Best Win: strict filters — fewer trades, higher quality (0.75% entry, 2% scanner, $75k volume)">Best Win</button>
+                    <button class="btn-secondary" type="button" id="btnSteadyTrade" title="Steady Trade: ~3–6 trades/hr — balanced entry with loss protections (0.50% entry, 1.5% scanner, $50k volume, 120m cooldown)">Steady Trade</button>
+                    <button class="btn-secondary" type="button" id="btnBalancedWin" title="Balanced Win: more trades, still fee-aware (0.50% entry, 1.5% scanner, $50k volume)">Balanced Win</button>
+                    <button class="btn-secondary" type="button" id="btnWinPreset" title="Alias for Best Win" style="display:none" aria-hidden="true">Apply win preset</button>
+                    <button class="btn-secondary" type="button" id="btnTightLosses" title="Stricter min net win and 60m loss cooldown" style="display:none" aria-hidden="true">Tight losses</button>
+                    <button class="btn-secondary" type="button" id="btnRevertBookmark" title="Restore saved pre-Best-Win bookmark">Revert to bookmark</button>
+                    <button class="btn-secondary" type="button" id="btnResetSpreads">Reset Defaults</button>
+                    <button class="btn-secondary" id="btnApplyConfig">Apply Config</button>
+                  </div>
+                  <div id="pendingActionsPanel" class="pending-actions-panel" aria-live="polite">
+                    <div id="smartReentryStatus" class="smart-reentry-status-line">
+                      <span class="smart-reentry-label">Smart re-entry:</span>
+                      <span id="smartReentryStatusText" class="smart-reentry-value">loading…</span>
+                    </div>
+                    <table id="pendingActionsTable" class="pending-actions-table">
+                      <thead>
+                        <tr>
+                          <th>Ticker</th>
+                          <th>Status</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody id="pendingActionsList">
+                        <tr class="pending-empty-row">
+                          <td colspan="3" class="pending-empty-cell">No pending approvals</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </td>
             </tr>
@@ -3394,55 +3439,78 @@
       }
     }
 
+    function bindPendingActionControls(root) {
+      if (!root) return;
+      root.querySelectorAll(".action-allow-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          submitReentryAction(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), true);
+        });
+      });
+      root.querySelectorAll(".action-deny-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          submitReentryAction(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), false);
+        });
+      });
+    }
+
     async function refreshActionsPanel() {
       const panel = document.getElementById("pendingActionsPanel");
       const list = document.getElementById("pendingActionsList");
+      const statusText = document.getElementById("smartReentryStatusText");
       if (!panel || !list) return;
+      panel.style.display = "block";
       try {
         const data = await api("/api/actions/pending");
         const pending = data.pending || [];
         const st = data.status || {};
-        if (!st.enabled && !pending.length) {
-          panel.style.display = "none";
-          list.innerHTML = "";
-          return;
+        const enabled = !!st.enabled;
+        if (statusText) {
+          statusText.textContent = enabled ? "active" : "disabled";
+          statusText.classList.toggle("disabled", !enabled);
         }
+        panel.classList.toggle("has-pending", pending.length > 0);
         if (!pending.length) {
-          panel.style.display = "none";
-          list.innerHTML = "";
+          list.innerHTML =
+            '<tr class="pending-empty-row">' +
+              '<td colspan="3" class="pending-empty-cell">No pending approvals</td>' +
+            '</tr>';
           return;
         }
-        panel.style.display = "block";
         list.innerHTML = pending.map(function (item) {
           const sym = def(item.symbol, (item.mint || "").slice(0, 8));
-          const msg = def(item.message, sym + " failed retry entries — allow similar trades?");
+          const attempts = def(item.attempt_count, 2);
+          const msg = def(
+            item.message,
+            sym + " failed " + attempts + " retry entries — allow similar trades?"
+          );
           const mint = item.mint || "";
           return (
-            '<div class="pending-action-item" data-mint="' + mint + '">' +
-              '<span class="pending-action-symbol">' + sym + '</span>' +
-              '<span class="pending-action-msg">' + msg + '</span>' +
-              '<div class="pending-action-controls">' +
-                '<label class="pending-action-similar" title="NARC-style pattern — apply to similar tickers">' +
-                  '<input type="checkbox" class="action-similar" data-mint="' + mint + '"> Similar tickers' +
-                '</label>' +
-                '<button type="button" class="btn-secondary btn-allow action-allow-btn" data-mint="' + mint + '" data-symbol="' + sym + '">Allow</button>' +
-                '<button type="button" class="btn-secondary btn-deny action-deny-btn" data-mint="' + mint + '" data-symbol="' + sym + '">Deny</button>' +
-              '</div>' +
-            '</div>'
+            '<tr class="pending-action-row-warning" data-mint="' + mint + '">' +
+              '<td><span class="pending-action-symbol">' + sym + '</span></td>' +
+              '<td><span class="pending-action-msg">' + msg + '</span></td>' +
+              '<td>' +
+                '<div class="pending-action-controls">' +
+                  '<label class="pending-action-similar" title="Apply decision to similar ticker patterns">' +
+                    '<input type="checkbox" class="action-similar" data-mint="' + mint + '"> Apply to similar tickers' +
+                  '</label>' +
+                  '<button type="button" class="btn-secondary btn-allow action-allow-btn" data-mint="' + mint + '" data-symbol="' + sym + '">Allow</button>' +
+                  '<button type="button" class="btn-secondary btn-deny action-deny-btn" data-mint="' + mint + '" data-symbol="' + sym + '">Deny</button>' +
+                '</div>' +
+              '</td>' +
+            '</tr>'
           );
         }).join("");
-        list.querySelectorAll(".action-allow-btn").forEach(function (btn) {
-          btn.addEventListener("click", function () {
-            submitReentryAction(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), true);
-          });
-        });
-        list.querySelectorAll(".action-deny-btn").forEach(function (btn) {
-          btn.addEventListener("click", function () {
-            submitReentryAction(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), false);
-          });
-        });
+        bindPendingActionControls(list);
       } catch (e) {
         console.warn("Actions panel refresh failed:", e);
+        if (statusText) {
+          statusText.textContent = "unavailable";
+          statusText.classList.add("disabled");
+        }
+        list.innerHTML =
+          '<tr class="pending-empty-row">' +
+            '<td colspan="3" class="pending-empty-cell">Could not load re-entry status</td>' +
+          '</tr>';
       }
     }
 

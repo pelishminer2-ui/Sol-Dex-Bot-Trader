@@ -535,6 +535,20 @@ def actions_decide():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.route("/api/actions/dev/preview", methods=["POST", "DELETE"])
+def actions_dev_preview():
+    """Localhost-only dev helper to seed/clear a fake pending re-entry action."""
+    from reentry_retry import reentry_retry_manager
+
+    if request.method == "DELETE":
+        cleared = reentry_retry_manager.clear_dev_preview()
+        return jsonify({"ok": True, "cleared": cleared})
+    data = request.get_json(silent=True) or {}
+    symbol = (data.get("symbol") or "TESTCOIN").strip() or "TESTCOIN"
+    result = reentry_retry_manager.seed_dev_preview(symbol=symbol)
+    return jsonify({"ok": True, **result, "pending": bot_manager.get_pending_actions()})
+
+
 @app.route("/api/bot/status")
 def bot_status():
     status = bot_manager.get_status()

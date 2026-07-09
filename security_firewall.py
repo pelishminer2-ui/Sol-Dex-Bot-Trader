@@ -55,6 +55,8 @@ ALLOWED_ROUTES: Set[Tuple[str, str]] = {
     ("POST", "/api/mint/unblock"),
     ("GET", "/api/actions/pending"),
     ("POST", "/api/actions/decide"),
+    ("POST", "/api/actions/dev/preview"),
+    ("DELETE", "/api/actions/dev/preview"),
     ("POST", "/api/config"),
     ("POST", "/api/config/save-bookmark"),
     ("POST", "/api/config/apply-best-win-strategy"),

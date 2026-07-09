@@ -262,6 +262,33 @@ class ReentryRetryManager:
             "pending_count": len(pending),
         }
 
+    DEV_PREVIEW_MINT = "DeVPrEvIeW11111111111111111111111111111111"
+
+    def seed_dev_preview(self, symbol: str = "TESTCOIN") -> dict:
+        """Seed a fake pending action for dashboard UI preview (localhost dev only)."""
+        rec = self._mint_record(self.DEV_PREVIEW_MINT, symbol)
+        rec["failed_attempts"] = Config.REENTRY_RETRY_MAX_ATTEMPTS
+        rec["pending_user_action"] = True
+        rec["user_decision"] = None
+        rec["signature"] = {
+            "momentum_pct": 350.0,
+            "liquidity_usd": 25000.0,
+            "is_pumpfun_route": True,
+        }
+        self._save()
+        return {
+            "mint": self.DEV_PREVIEW_MINT,
+            "symbol": symbol,
+            "preview": True,
+        }
+
+    def clear_dev_preview(self) -> bool:
+        if self.DEV_PREVIEW_MINT in self.mints:
+            del self.mints[self.DEV_PREVIEW_MINT]
+            self._save()
+            return True
+        return False
+
 
 def _store_path() -> Path:
     return resolve_data_path(Config.REENTRY_RETRY_STATE_PATH)
