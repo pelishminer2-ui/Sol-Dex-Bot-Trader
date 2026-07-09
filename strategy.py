@@ -12,6 +12,7 @@ from config import (
     effective_stop_loss_pct,
     is_memecoin_standard_special_mint,
     is_non_memecoin_proxy_mint,
+    is_jitosol_trade_mint,
     is_sol_trade_mint,
     is_weth_trade_mint,
     is_wsol_trade_mint,
@@ -347,14 +348,28 @@ class MomentumStrategy:
         if is_sol_trade_mint(candidate.mint):
             from sol_trading import sol_entry_qualifies
 
-            if sol_entry_qualifies(sol_trend_snapshot):
+            day_gain = getattr(candidate, "day_usd_gain", None)
+            day_pct = getattr(candidate, "day_pct_gain", None)
+            if sol_entry_qualifies(
+                sol_trend_snapshot,
+                day_usd_gain=day_gain,
+                day_pct_gain=day_pct,
+            ):
                 snap = sol_trend_snapshot or {}
-                logger.info(
-                    "Buy signal (SOL trade): proxy %s SOL 1h=%+.2f%% price=%.8f",
-                    candidate.mint[:8],
-                    snap.get("sol_trend_1h_pct") or 0.0,
-                    current_price,
-                )
+                if is_jitosol_trade_mint(candidate.mint):
+                    logger.info(
+                        "Buy signal (JitoSOL): day_usd_gain=$%.2f day_pct=%.3f%% price=%.8f",
+                        day_gain if day_gain is not None else 0.0,
+                        (day_pct or 0.0) * 100,
+                        current_price,
+                    )
+                else:
+                    logger.info(
+                        "Buy signal (SOL trade): proxy %s SOL 1h=%+.2f%% price=%.8f",
+                        candidate.mint[:8],
+                        snap.get("sol_trend_1h_pct") or 0.0,
+                        current_price,
+                    )
                 return SignalType.BUY
             return SignalType.NONE
         if not is_pinned_watchlist_mint(candidate.mint) and not is_memecoin_standard_special_mint(
@@ -489,8 +504,11 @@ class MomentumStrategy:
         if is_sol_trade_mint(candidate.mint):
             from sol_trading import sol_entry_skip_reason
 
-            reason = sol_entry_skip_reason(sol_trend_snapshot)
-            return reason
+            return sol_entry_skip_reason(
+                sol_trend_snapshot,
+                day_usd_gain=getattr(candidate, "day_usd_gain", None),
+                day_pct_gain=getattr(candidate, "day_pct_gain", None),
+            )
         if not is_pinned_watchlist_mint(candidate.mint) and not is_memecoin_standard_special_mint(
             candidate.mint
         ):

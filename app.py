@@ -29,6 +29,7 @@ from config import (
     maybe_apply_best_win_strategy_env,
     maybe_apply_steady_trade_strategy_env,
     save_config_bookmark,
+    proxy_companion_slot_open,
     wbtc_companion_slot_open,
 )
 from security_firewall import get_firewall_stats, init_firewall
@@ -655,7 +656,10 @@ def positions():
             "max": effective_max,
             "max_open_positions": Config.MAX_OPEN_POSITIONS,
             "max_open_positions_wbtc": Config.MAX_OPEN_POSITIONS_WBTC,
+            "companion_trade_enabled": Config.COMPANION_TRADE_ENABLED,
+            "companion_trade_max": Config.COMPANION_TRADE_MAX,
             "wbtc_companion_slot_open": wbtc_companion_slot_open(open_mints),
+            "proxy_companion_slot_open": proxy_companion_slot_open(open_mints),
         }
     )
 

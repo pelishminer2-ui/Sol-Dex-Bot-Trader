@@ -1,4 +1,4 @@
-"""Validate WBTC entry gates: positive day, $75 gain, +3.25% instant feasibility."""
+"""Validate WBTC entry gates: positive day, $300 gain, +3.25% instant feasibility."""
 
 from unittest.mock import patch
 
@@ -26,7 +26,7 @@ WBTC_MINT = DEFAULT_WATCHLIST_MINT
 
 def _wbtc_candidate(
     *,
-    day_usd_gain: float = 80.0,
+    day_usd_gain: float = 350.0,
     day_pct_gain: float = 0.001,
 ) -> MoverCandidate:
     return MoverCandidate(
@@ -48,65 +48,65 @@ def _wbtc_candidate(
 
 
 def test_config_defaults():
-    assert DEFAULT_WBTC_MIN_DAILY_GAIN_USD == 75.0
+    assert DEFAULT_WBTC_MIN_DAILY_GAIN_USD == 300.0
     assert DEFAULT_WBTC_REQUIRE_POSITIVE_DAY is True
-    assert Config.WBTC_MIN_DAILY_GAIN_USD == 75.0
+    assert Config.WBTC_MIN_DAILY_GAIN_USD == 300.0
     assert Config.WBTC_REQUIRE_POSITIVE_DAY is True
     assert wbtc_min_expected_gain_pct() == DEFAULT_INSTANT_EXIT_3PCT
-    assert Config.to_dict()["wbtc_min_daily_gain_usd"] == 75.0
+    assert Config.to_dict()["wbtc_min_daily_gain_usd"] == 300.0
     assert Config.to_dict()["wbtc_require_positive_day"] is True
     print("PASS: WBTC entry config defaults")
 
 
 def test_day_gate_requires_positive_day_and_usd_gain():
-    assert wbtc_day_gate_passes(day_usd_gain=80.0, day_pct_gain=0.001) is True
-    assert wbtc_day_gate_passes(day_usd_gain=80.0, day_pct_gain=0.0) is False
-    assert wbtc_day_gate_passes(day_usd_gain=74.0, day_pct_gain=0.002) is False
+    assert wbtc_day_gate_passes(day_usd_gain=350.0, day_pct_gain=0.001) is True
+    assert wbtc_day_gate_passes(day_usd_gain=350.0, day_pct_gain=0.0) is False
+    assert wbtc_day_gate_passes(day_usd_gain=299.0, day_pct_gain=0.002) is False
     assert wbtc_day_gate_passes(day_usd_gain=None, day_pct_gain=0.01) is False
-    print("PASS: day gate requires positive 24h and $75")
+    print("PASS: day gate requires positive 24h and $300")
 
 
 def test_day_gate_skip_reasons():
     assert "not positive" in wbtc_day_gate_skip_reason(
-        day_usd_gain=80.0, day_pct_gain=0.0
+        day_usd_gain=350.0, day_pct_gain=0.0
     )
-    assert "$74" in wbtc_day_gate_skip_reason(
-        day_usd_gain=74.0, day_pct_gain=0.01
+    assert "$299" in wbtc_day_gate_skip_reason(
+        day_usd_gain=299.0, day_pct_gain=0.01
     )
-    assert wbtc_day_gate_skip_reason(day_usd_gain=80.0, day_pct_gain=0.01) is None
+    assert wbtc_day_gate_skip_reason(day_usd_gain=350.0, day_pct_gain=0.01) is None
     print("PASS: day gate skip reasons")
 
 
 def test_positive_day_can_be_disabled():
     with patch.object(Config, "WBTC_REQUIRE_POSITIVE_DAY", False):
-        assert wbtc_day_gate_passes(day_usd_gain=80.0, day_pct_gain=-0.01) is True
+        assert wbtc_day_gate_passes(day_usd_gain=350.0, day_pct_gain=-0.01) is True
     print("PASS: positive-day requirement optional")
 
 
 def test_strategy_blocks_wbtc_below_threshold():
     strategy = MomentumStrategy()
-    below = _wbtc_candidate(day_usd_gain=50.0, day_pct_gain=0.001)
+    below = _wbtc_candidate(day_usd_gain=250.0, day_pct_gain=0.001)
     with patch.object(Config, "WATCHLIST_ENABLED", True), patch.object(
         Config, "watchlist_mints", return_value=[WBTC_MINT]
     ):
         assert (
             strategy.evaluate_entry(
-                below, 63636.0, momentum=0.0, usd_gain=50.0
+                below, 63636.0, momentum=0.0, usd_gain=250.0
             )
             == SignalType.NONE
         )
-    print("PASS: strategy blocks WBTC below $75 day gain")
+    print("PASS: strategy blocks WBTC below $300 day gain")
 
 
 def test_strategy_allows_wbtc_when_day_gate_passes():
     strategy = MomentumStrategy()
-    eligible = _wbtc_candidate(day_usd_gain=80.0, day_pct_gain=0.001)
+    eligible = _wbtc_candidate(day_usd_gain=350.0, day_pct_gain=0.001)
     with patch.object(Config, "WATCHLIST_ENABLED", True), patch.object(
         Config, "watchlist_mints", return_value=[WBTC_MINT]
     ):
         assert (
             strategy.evaluate_entry(
-                eligible, 63636.0, momentum=0.0, usd_gain=80.0
+                eligible, 63636.0, momentum=0.0, usd_gain=350.0
             )
             == SignalType.BUY
         )
@@ -115,7 +115,7 @@ def test_strategy_allows_wbtc_when_day_gate_passes():
 
 def test_entry_skip_reason_blocks_session_only_gain():
     candidate = _wbtc_candidate(day_usd_gain=None, day_pct_gain=None)
-    candidate.usd_gain_baseline = 80.0
+    candidate.usd_gain_baseline = 350.0
     reason = wbtc_entry_skip_reason(candidate)
     assert reason
     assert "WBTC:" in reason
@@ -155,7 +155,7 @@ def test_custom_expected_gain_pct():
 def test_entry_rule_summary():
     summary = wbtc_entry_rule_summary()
     assert "positive 24h day" in summary
-    assert "$75" in summary
+    assert "$300" in summary
     assert "3.25%" in summary
     print("PASS: entry rule summary")
 

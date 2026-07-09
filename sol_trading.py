@@ -20,13 +20,19 @@ from config import (
     Config,
     JITOSOL_MINT,
     SOL_MINT,
+    is_jitosol_trade_mint,
     is_wsol_trade_mint,
     sol_trading_enabled,
 )
 from market_regime import REGIME_COLD, detect_market_regime
 from price_feed import PriceFeed
 from scanner import MoverCandidate
-from watchlist_scanner import _best_pair_for_mint, _pair_metadata
+from watchlist_scanner import (
+    _best_pair_for_mint,
+    _pair_metadata,
+    day_pct_gain_from_h24,
+    day_usd_gain_from_h24,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,11 @@ def _memecoin_exit_rule_summary() -> str:
 
 
 def _proxy_entry_rule_summary() -> str:
+    mint = (Config.SOL_TRADE_MINT or "").strip()
+    if mint == JITOSOL_MINT:
+        from proxy_entry_gate import jitosol_entry_rule_summary
+
+        return jitosol_entry_rule_summary()
     min_h1 = Config.SOL_TRADE_MIN_MOMENTUM_1H_PCT
     if Config.HOT_MARKET_MODE_ENABLED:
         min_h4 = Config.HOT_MARKET_SOL_MIN_4H_PCT
@@ -104,10 +115,32 @@ def wsol_entry_skip_reason(
     )
 
 
-def sol_entry_qualifies(sol_snapshot: Optional[dict]) -> bool:
-    """True when SOL macro momentum meets the configured entry gate (proxy only)."""
+def _jitosol_day_gains_from_pair(
+    proxy_price: Optional[float], h24_pct: Optional[float]
+) -> tuple[Optional[float], Optional[float]]:
+    if proxy_price is None or proxy_price <= 0 or h24_pct is None:
+        return None, None
+    return (
+        day_usd_gain_from_h24(proxy_price, h24_pct),
+        day_pct_gain_from_h24(h24_pct),
+    )
+
+
+def sol_entry_qualifies(
+    sol_snapshot: Optional[dict],
+    *,
+    day_usd_gain: Optional[float] = None,
+    day_pct_gain: Optional[float] = None,
+) -> bool:
+    """True when the configured SOL proxy meets its entry gate."""
     if not sol_trading_enabled() or is_wsol_trade_mint(SOL_MINT):
         return False
+    if is_jitosol_trade_mint(Config.SOL_TRADE_MINT):
+        from proxy_entry_gate import jitosol_day_gate_passes
+
+        return jitosol_day_gate_passes(
+            day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
+        )
     snap = sol_snapshot or {}
     if not snap.get("data_available", True) and not snap.get("sol_trend_1h_pct"):
         return False
@@ -125,11 +158,26 @@ def sol_entry_qualifies(sol_snapshot: Optional[dict]) -> bool:
     return True
 
 
-def sol_entry_skip_reason(sol_snapshot: Optional[dict]) -> Optional[str]:
+def sol_entry_skip_reason(
+    sol_snapshot: Optional[dict],
+    *,
+    day_usd_gain: Optional[float] = None,
+    day_pct_gain: Optional[float] = None,
+) -> Optional[str]:
     if not sol_trading_enabled():
         return "SOL trading disabled"
     if is_wsol_trade_mint(SOL_MINT):
         return "WSOL uses price-feed momentum gate"
+    if is_jitosol_trade_mint(Config.SOL_TRADE_MINT):
+        from proxy_entry_gate import jitosol_day_gate_skip_reason
+
+        if sol_entry_qualifies(
+            sol_snapshot, day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
+        ):
+            return None
+        return jitosol_day_gate_skip_reason(
+            day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
+        )
     if sol_entry_qualifies(sol_snapshot):
         return None
     snap = sol_snapshot or {}
@@ -217,7 +265,14 @@ def probe_sol_trade_status(
         proxy_price = prices.get(mint)
         sol_price = snap.get("sol_price_usd")
         current_price = sol_price or proxy_price
-        qualifies = sol_entry_qualifies(snap)
+        h24_pct = meta.get("price_change_h24_pct")
+        day_usd_gain, day_pct_gain = _jitosol_day_gains_from_pair(proxy_price, h24_pct)
+        if is_jitosol_trade_mint(mint):
+            qualifies = sol_entry_qualifies(
+                snap, day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
+            )
+        else:
+            qualifies = sol_entry_qualifies(snap)
         entry_rule = _proxy_entry_rule_summary()
         exit_rule = _proxy_exit_rule_summary()
         proxy_symbol = meta["symbol"]
@@ -258,6 +313,9 @@ def probe_sol_trade_status(
     else:
         status["proxy_symbol"] = proxy_symbol
         status["proxy_price_usd"] = proxy_price
+        status["price_change_h24_pct"] = meta.get("price_change_h24_pct")
+        status["day_usd_gain"] = day_usd_gain
+        status["day_pct_gain"] = day_pct_gain
         status["sol_trade_min_momentum_1h_pct"] = Config.SOL_TRADE_MIN_MOMENTUM_1H_PCT
     return status
 
@@ -345,6 +403,9 @@ def fetch_sol_trade_candidate(
         display_symbol = "SOL"
         display_name = f"SOL ({meta['symbol']} proxy)"
 
+    h24_pct = meta.get("price_change_h24_pct")
+    day_usd_gain, day_pct_gain = _jitosol_day_gains_from_pair(current, h24_pct)
+
     return MoverCandidate(
         mint=mint,
         symbol=display_symbol,
@@ -360,6 +421,8 @@ def fetch_sol_trade_candidate(
         pool_created_at=meta["pool_created_at"],
         scanned_at=time.time(),
         source="sol_trade",
+        day_usd_gain=day_usd_gain,
+        day_pct_gain=day_pct_gain,
     )
 
 
