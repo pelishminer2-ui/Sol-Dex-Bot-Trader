@@ -5,7 +5,7 @@ import threading
 import time
 from typing import List, Optional
 
-from config import Config, SOL_MINT, companion_slot_open, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_jitosol_trade_mint, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, proxy_companion_slot_open, sol_trading_enabled, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
+from config import Config, SOL_MINT, companion_slot_open, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_jitosol_trade_mint, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, proxy_companion_slot_open, sol_trading_enabled, stop_loss_applies_for_mint, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
 from dexscreener_client import get_dexscreener_client
 from jupiter_client import get_jupiter_client
 from jupiter import JupiterExecutor, SwapQuote
@@ -860,7 +860,11 @@ class TradingBot:
         exit_signal: ExitSignal,
     ) -> bool:
         threshold = self._quote_min_net_threshold(position, exit_signal)
-        if threshold <= 0:
+        fee_positive_only = (
+            wbtc_profit_gate_applies(position.mint, exit_signal.signal_type.value)
+            and threshold <= 0
+        )
+        if threshold <= 0 and not fee_positive_only:
             return True
         level_idx = (
             exit_signal.tp_level_index if exit_signal.is_partial else None
@@ -871,7 +875,8 @@ class TradingBot:
         )
         _, sol_out = quote_sol_flow(quote)
         net = sol_out - sol_basis - fees
-        if net < threshold:
+        effective_threshold = threshold if threshold > 0 else 1e-6
+        if net < effective_threshold:
             if is_wbtc_watchlist_mint(position.mint) and Config.WBTC_PROFIT_ONLY_EXITS:
                 logger.info(
                     "WBTC hold: net %.4f SOL below min %.4f SOL after fees — skipping %s",
@@ -1083,6 +1088,8 @@ class TradingBot:
         executable_pnl_pct: Optional[float] = None,
     ) -> bool:
         """True when worst PnL source is at or past configured stop-loss."""
+        if not stop_loss_applies_for_mint(position.mint):
+            return False
         stop = effective_stop_loss_pct(position.mint)
         return self._worst_position_loss_pnl(
             position, current_price, executable_pnl_pct
@@ -1098,6 +1105,8 @@ class TradingBot:
     ) -> None:
         """WARNING at -1% crossing; ERROR when at stop without sell within 2 cycles."""
         if not Config.STOP_LOSS_NEVER_MISS:
+            return
+        if not stop_loss_applies_for_mint(position.mint):
             return
         mint = position.mint
         worst = self._worst_position_loss_pnl(
@@ -1145,6 +1154,8 @@ class TradingBot:
         executable_pnl_pct: Optional[float] = None,
     ) -> bool:
         """True when mark, quote, or trough shows loss past fresh-quote threshold."""
+        if not stop_loss_applies_for_mint(position.mint):
+            return False
         if not Config.STOP_LOSS_NEVER_MISS:
             mark = position.pnl_pct(current_price)
             threshold = -Config.LOSS_FRESH_QUOTE_PCT
@@ -1341,9 +1352,11 @@ class TradingBot:
             if exit_signal is None and (
                 at_stop or self._pending_forced_exit.get(position.mint, 0) > 0
             ):
-                exit_signal = ExitSignal(SignalType.SELL_SL)
+                if stop_loss_applies_for_mint(position.mint):
+                    exit_signal = ExitSignal(SignalType.SELL_SL)
             elif exit_signal is None and pending_forced:
-                exit_signal = ExitSignal(SignalType.SELL_SL)
+                if stop_loss_applies_for_mint(position.mint):
+                    exit_signal = ExitSignal(SignalType.SELL_SL)
             if exit_signal is None:
                 pnl = position.pnl_pct(current_price)
                 logger.debug(
@@ -1450,6 +1463,14 @@ class TradingBot:
                 return
 
             if not self._quote_meets_min_net(position, token_raw, quote, exit_signal):
+                if wbtc_profit_gate_applies(
+                    position.mint, exit_signal.signal_type.value
+                ):
+                    logger.info(
+                        "WBTC hold: quote net not fee-positive — skipping %s",
+                        exit_signal.signal_type.value,
+                    )
+                    return
                 if exit_signal.signal_type == SignalType.SELL_INSTANT_PROFIT:
                     logger.warning(
                         "Instant exit min-net gate bypass failed for %s — forcing sell",
@@ -1945,7 +1966,7 @@ class TradingBot:
             stop = effective_stop_loss_pct(candidate.mint)
             sol_in, _ = quote_sol_flow(quote)
             _, sol_out = quote_sol_flow(full_sell_preview)
-            if sol_in > 0:
+            if sol_in > 0 and stop_loss_applies_for_mint(candidate.mint):
                 flat_fees = estimate_round_trip_fees_sol(
                     trade_size, quote.raw, full_sell_preview.raw
                 )
@@ -2120,7 +2141,7 @@ class TradingBot:
             stop = effective_stop_loss_pct(candidate.mint)
             sol_in, _ = quote_sol_flow(quote)
             _, sol_out = quote_sol_flow(full_sell_preview)
-            if sol_in > 0:
+            if sol_in > 0 and stop_loss_applies_for_mint(candidate.mint):
                 flat_fees = estimate_round_trip_fees_sol(
                     trade_size, quote.raw, full_sell_preview.raw
                 )

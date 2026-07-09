@@ -58,13 +58,13 @@ def _hold_past_max() -> int:
 
 
 def test_config_per_asset_day_gate_defaults():
-    assert DEFAULT_WBTC_MIN_DAILY_GAIN_USD == 300.0
+    assert DEFAULT_WBTC_MIN_DAILY_GAIN_USD == 301.0
     assert DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD == 20.0
     assert DEFAULT_WETH_MIN_DAILY_GAIN_USD == 150.0
-    assert Config.WBTC_MIN_DAILY_GAIN_USD == 300.0
+    assert Config.WBTC_MIN_DAILY_GAIN_USD == 301.0
     assert Config.JITOSOL_MIN_DAILY_GAIN_USD == 20.0
     assert Config.WETH_MIN_DAILY_GAIN_USD == 150.0
-    print("PASS: per-asset day gate defaults (WBTC $300, JitoSOL $20, WETH $150)")
+    print("PASS: per-asset day gate defaults (WBTC $301, JitoSOL $20, WETH $150)")
 
 
 def test_proxy_mainstream_mint_recognition():
@@ -93,7 +93,7 @@ def test_jitosol_day_gate_requires_20():
     print("PASS: JitoSOL $20 day gate")
 
 
-def test_wbtc_green_proxy_exit_at_15m():
+def test_wbtc_no_proxy_green_exit_at_15m():
     strategy = MomentumStrategy()
     pos = _make_position(mint=DEFAULT_WATCHLIST_MINT)
     pos.symbol = "WBTC"
@@ -101,9 +101,8 @@ def test_wbtc_green_proxy_exit_at_15m():
     with _without_instant_exit():
         with patch("strategy.time.time", return_value=_hold_past_max()):
             signal = strategy.evaluate_exit(pos, current_price=1.002)
-    assert signal is not None
-    assert signal.signal_type == SignalType.SELL_PROXY_GREEN_HOLD
-    print("PASS: WBTC 15m green -> proxy green hold exit")
+    assert signal is None
+    print("PASS: WBTC 15m green — no forced proxy exit (hold until fee-positive)")
 
 
 def test_jitosol_green_proxy_exit_at_15m():
@@ -190,7 +189,7 @@ def main():
     test_proxy_mainstream_mint_recognition()
     test_weth_day_gate_requires_150()
     test_jitosol_day_gate_requires_20()
-    test_wbtc_green_proxy_exit_at_15m()
+    test_wbtc_no_proxy_green_exit_at_15m()
     test_jitosol_green_proxy_exit_at_15m()
     test_proxy_red_not_forced_at_15m()
     test_strategy_weth_blocks_below_150()

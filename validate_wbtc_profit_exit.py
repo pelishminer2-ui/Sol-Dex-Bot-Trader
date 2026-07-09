@@ -1,4 +1,4 @@
-"""Validate WBTC profit-only voluntary exit gates."""
+"""Validate WBTC hold-until-fee-positive exit policy (no SL, no time force)."""
 
 import time
 from unittest.mock import patch
@@ -37,17 +37,47 @@ def _wbtc_candidate() -> MoverCandidate:
 def test_config_default_wbtc_profit_only():
     assert DEFAULT_WBTC_PROFIT_ONLY_EXITS is True
     assert Config.WBTC_PROFIT_ONLY_EXITS is True
+    assert Config.WBTC_STOP_LOSS_ENABLED is False
     assert Config.to_dict()["wbtc_profit_only_exits"] is True
-    print("PASS: WBTC_PROFIT_ONLY_EXITS defaults true")
+    assert Config.to_dict()["wbtc_stop_loss_enabled"] is False
+    print("PASS: WBTC hold-until-profit defaults")
 
 
 def test_wbtc_profit_gate_signal_classification():
-    assert not wbtc_profit_gate_applies(WBTC_MINT, "sell_instant_5pct")
+    assert wbtc_profit_gate_applies(WBTC_MINT, "sell_instant_5pct")
+    assert wbtc_profit_gate_applies(WBTC_MINT, "sell_wbtc_hold_profit")
     assert wbtc_profit_gate_applies(WBTC_MINT, "sell_ladder_missed_10m_positive")
     assert not wbtc_profit_gate_applies(WBTC_MINT, "sell_stop_loss")
     assert not wbtc_profit_gate_applies(WBTC_MINT, "sell_l1_protection")
     assert not wbtc_profit_gate_applies("othermint", "sell_instant_5pct")
     print("PASS: WBTC voluntary vs risk exit classification")
+
+
+def test_wbtc_no_stop_loss_when_disabled():
+    strategy = MomentumStrategy()
+    pos = strategy.open_position(
+        _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
+    )
+    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
+        Config, "WBTC_STOP_LOSS_ENABLED", False
+    ):
+        signal = strategy.evaluate_exit(pos, 0.978)
+    assert signal is None
+    print("PASS: WBTC stop-loss disabled — holds through drawdown")
+
+
+def test_wbtc_no_proxy_green_exit_at_15m():
+    strategy = MomentumStrategy()
+    pos = strategy.open_position(
+        _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
+    )
+    pos.entry_time = time.time() - 16 * 60
+    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
+        Config, "INSTANT_PROFIT_EXIT_ENABLED", False
+    ):
+        signal = strategy.evaluate_exit(pos, 1.002)
+    assert signal is None
+    print("PASS: WBTC no 15m green proxy exit")
 
 
 def test_wbtc_ladder_10m_blocked_on_small_green():
@@ -58,95 +88,65 @@ def test_wbtc_ladder_10m_blocked_on_small_green():
     )
     pos.entry_time = time.time() - 11 * 60
     est = estimate_exit_net_sol(0.10, 1.0, 0.0006, 0.0, pos.fee_budget_sol)
-    assert est < Config.MIN_NET_WIN_SOL
+    assert est < 0
 
-    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
-        Config, "MIN_NET_WIN_SOL", 0.002
-    ):
+    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True):
         signal = strategy.evaluate_exit(pos, 1.0006)
     assert signal is None
-    print("PASS: WBTC 10m positive exit blocked when net below min")
+    print("PASS: WBTC 10m positive exit blocked when net below fee-positive")
 
 
-def test_wbtc_l1_partial_blocked_at_plus_3pct():
-    """L1 at +3% gross nets below MIN_NET_WIN_SOL on 0.10 SOL — hold."""
-    est = estimate_partial_net_win_sol(0.10, 0, 0.03)
-    assert est < 0.002
-
+def test_wbtc_hold_until_profitable_on_quote():
     strategy = MomentumStrategy()
     pos = strategy.open_position(
         _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
     )
+    pnl = 0.035
+    est = estimate_exit_net_sol(0.10, 1.0, pnl, 0.0, pos.fee_budget_sol)
+    assert est > 0
+
     with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
-        Config, "MIN_NET_WIN_SOL", 0.002
+        Config, "INSTANT_PROFIT_EXIT_ENABLED", False
     ):
-        signal = strategy.evaluate_exit(pos, 1.03)
-    assert signal is None
-    print("PASS: WBTC L1 partial blocked at +3% when net below min")
+        signal = strategy.evaluate_exit(
+            pos, 1.0 + pnl, executable_pnl_pct=pnl
+        )
+    assert signal is not None
+    assert signal.signal_type == SignalType.SELL_WBTC_HOLD_PROFIT
+    assert signal.needs_quote_check is True
+    print("PASS: WBTC hold-until-profit fires on fee-positive quote")
 
 
-def test_wbtc_stop_loss_still_fires():
+def test_wbtc_instant_exit_requires_fee_positive():
     strategy = MomentumStrategy()
     pos = strategy.open_position(
         _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
     )
     with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
-        Config, "MIN_NET_WIN_SOL", 0.002
+        Config, "INSTANT_PROFIT_EXIT_PCT", 0.05
+    ):
+        signal = strategy.evaluate_exit(pos, 1.05)
+    assert signal is not None
+    assert signal.signal_type == SignalType.SELL_INSTANT_PROFIT
+    assert signal.needs_quote_check is True
+    print("PASS: WBTC instant +5% requires quote fee-positive check")
+
+
+def test_wbtc_stop_loss_fires_when_enabled():
+    strategy = MomentumStrategy()
+    pos = strategy.open_position(
+        _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
+    )
+    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
+        Config, "WBTC_STOP_LOSS_ENABLED", True
     ):
         signal = strategy.evaluate_exit(pos, 0.978)
     assert signal is not None
     assert signal.signal_type == SignalType.SELL_SL
-    assert not signal.needs_quote_check
-    print("PASS: WBTC stop-loss fires despite profit-only mode")
+    print("PASS: WBTC stop-loss fires when WBTC_STOP_LOSS_ENABLED=true")
 
 
-def test_wbtc_l1_protection_still_fires():
-    strategy = MomentumStrategy()
-    pos = strategy.open_position(
-        _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
-    )
-    strategy.apply_partial_tp(pos, 0, 50_000, 1.05)
-    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
-        Config, "MIN_NET_WIN_SOL", 0.002
-    ):
-        signal = strategy.evaluate_exit(pos, 1.0)
-    assert signal is not None
-    assert signal.signal_type == SignalType.SELL_L1_PROTECTION
-    print("PASS: WBTC L1 protection fires despite profit-only mode")
-
-
-def test_wbtc_voluntary_exit_flags_quote_check():
-    strategy = MomentumStrategy()
-    pos = strategy.open_position(
-        _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
-    )
-    pos.entry_time = time.time() - 11 * 60
-    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
-        Config, "MIN_NET_WIN_SOL", 0.0
-    ), patch.object(Config, "INSTANT_PROFIT_EXIT_ENABLED", False):
-        signal = strategy.evaluate_exit(pos, 1.05)
-    assert signal is not None
-    assert signal.signal_type == SignalType.SELL_LADDER_MISSED_10M
-    assert signal.needs_quote_check is True
-    print("PASS: WBTC voluntary exit sets needs_quote_check")
-
-
-def test_wbtc_instant_exit_skips_quote_gate():
-    strategy = MomentumStrategy()
-    pos = strategy.open_position(
-        _wbtc_candidate(), 1.0, 0.10, 0.01, token_amount_raw=100_000
-    )
-    with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
-        Config, "MIN_NET_WIN_SOL", 0.002
-    ), patch.object(Config, "INSTANT_PROFIT_EXIT_PCT", 0.05):
-        signal = strategy.evaluate_exit(pos, 1.05)
-    assert signal is not None
-    assert signal.signal_type == SignalType.SELL_INSTANT_PROFIT
-    assert signal.needs_quote_check is False
-    print("PASS: WBTC instant +5% not gated by profit-only quote check")
-
-
-def test_non_wbtc_unaffected_when_min_net_zero():
+def test_non_wbtc_unaffected():
     strategy = MomentumStrategy()
     other = MoverCandidate(
         mint="othermint123456789",
@@ -164,23 +164,23 @@ def test_non_wbtc_unaffected_when_min_net_zero():
     )
     pos = strategy.open_position(other, 1.0, 0.10, 0.05, token_amount_raw=100_000)
     with patch.object(Config, "WBTC_PROFIT_ONLY_EXITS", True), patch.object(
-        Config, "MIN_NET_WIN_SOL", 0.0
-    ), patch.object(Config, "INSTANT_PROFIT_EXIT_PCT", 0.05):
+        Config, "INSTANT_PROFIT_EXIT_PCT", 0.05
+    ):
         signal = strategy.evaluate_exit(pos, 1.06)
     assert signal is not None
     assert signal.signal_type == SignalType.SELL_INSTANT_PROFIT
     assert signal.needs_quote_check is False
-    print("PASS: non-WBTC not gated when MIN_NET_WIN_SOL=0")
+    print("PASS: non-WBTC not gated by WBTC hold policy")
 
 
 if __name__ == "__main__":
     test_config_default_wbtc_profit_only()
     test_wbtc_profit_gate_signal_classification()
+    test_wbtc_no_stop_loss_when_disabled()
+    test_wbtc_no_proxy_green_exit_at_15m()
     test_wbtc_ladder_10m_blocked_on_small_green()
-    test_wbtc_l1_partial_blocked_at_plus_3pct()
-    test_wbtc_stop_loss_still_fires()
-    test_wbtc_l1_protection_still_fires()
-    test_wbtc_voluntary_exit_flags_quote_check()
-    test_wbtc_instant_exit_skips_quote_gate()
-    test_non_wbtc_unaffected_when_min_net_zero()
+    test_wbtc_hold_until_profitable_on_quote()
+    test_wbtc_instant_exit_requires_fee_positive()
+    test_wbtc_stop_loss_fires_when_enabled()
+    test_non_wbtc_unaffected()
     print("\nAll WBTC profit-exit tests passed.")

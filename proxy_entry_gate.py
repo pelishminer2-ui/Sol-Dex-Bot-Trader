@@ -62,11 +62,14 @@ def _entry_rule_summary(
     min_usd: float,
     require_positive_day: bool,
     target_pct: float,
+    sustain_minutes: Optional[int] = None,
 ) -> str:
     parts: list[str] = []
     if require_positive_day:
         parts.append("positive 24h day")
     parts.append(f"24h USD gain >= ${min_usd:.0f}")
+    if sustain_minutes is not None and sustain_minutes > 0:
+        parts.append(f"sustain {sustain_minutes}min at/above threshold")
     parts.append(f"+{target_pct * 100:.2f}% instant target feasible after fees/impact")
     return f"buy when " + " + ".join(parts)
 
@@ -130,6 +133,7 @@ def wbtc_entry_rule_summary() -> str:
         min_usd=Config.WBTC_MIN_DAILY_GAIN_USD,
         require_positive_day=Config.WBTC_REQUIRE_POSITIVE_DAY,
         target_pct=wbtc_min_expected_gain_pct(),
+        sustain_minutes=Config.WBTC_DAY_GAIN_SUSTAIN_MINUTES,
     )
 
 
@@ -183,12 +187,11 @@ def wbtc_entry_skip_reason(
     day_usd_gain: Optional[float] = None,
     day_pct_gain: Optional[float] = None,
 ) -> Optional[str]:
-    if not is_wbtc_watchlist_mint(candidate.mint):
-        return None
-    gain, pct = _resolve_day_fields(
+    from wbtc_entry_gate import wbtc_entry_skip_reason as _wbtc_entry_skip_reason
+
+    return _wbtc_entry_skip_reason(
         candidate, day_usd_gain=day_usd_gain, day_pct_gain=day_pct_gain
     )
-    return wbtc_day_gate_skip_reason(day_usd_gain=gain, day_pct_gain=pct)
 
 
 def wbtc_entry_qualifies(

@@ -18,6 +18,8 @@ from config import (
     is_weth_trade_mint,
     is_wsol_trade_mint,
     is_wbtc_watchlist_mint,
+    stop_loss_applies_for_mint,
+    wbtc_hold_until_profit_mode,
     wbtc_min_net_win_threshold,
     wbtc_profit_gate_applies,
 )
@@ -38,6 +40,8 @@ from watchlist_scanner import (
 
 logger = logging.getLogger(__name__)
 
+_EPS = 1e-6
+
 
 class SignalType(Enum):
     NONE = "none"
@@ -51,6 +55,7 @@ class SignalType(Enum):
     SELL_INSTANT_PROFIT = "sell_instant_5pct"
     SELL_MAX_HOLD_PROFIT = "sell_max_hold_profit"
     SELL_PROXY_GREEN_HOLD = "sell_proxy_green_hold"
+    SELL_WBTC_HOLD_PROFIT = "sell_wbtc_hold_profit"
     SELL_LADDER_MISSED_10M = "sell_ladder_missed_10m_positive"
     SELL_LADDER_MISSED_30M = "sell_ladder_missed_30m_negative"
     SELL_WATCHLIST_TARGET = "sell_watchlist_target"
@@ -745,7 +750,10 @@ class MomentumStrategy:
     ) -> bool:
         """True when estimated net profit meets the voluntary-exit threshold."""
         threshold = self._min_net_win_threshold(position)
-        if threshold <= 0:
+        fee_positive_only = (
+            wbtc_hold_until_profit_mode(position.mint) and threshold <= 0
+        )
+        if threshold <= 0 and not fee_positive_only:
             return True
         if level_index is not None and level_pct is not None:
             est_net = estimate_partial_net_win_sol(
@@ -764,7 +772,8 @@ class MomentumStrategy:
                 position.fees_allocated_sol,
                 position.fee_budget_sol,
             )
-        if est_net < threshold:
+        effective_threshold = threshold if threshold > 0 else _EPS
+        if est_net < effective_threshold:
             if is_wbtc_watchlist_mint(position.mint) and Config.WBTC_PROFIT_ONLY_EXITS:
                 logger.info(
                     "WBTC hold: est net %.4f SOL < min %.4f SOL after fees",
@@ -935,6 +944,7 @@ class MomentumStrategy:
         quote_label = (
             f"{executable_pnl_pct:.4f}" if executable_pnl_pct is not None else "n/a"
         )
+        signal: Optional[ExitSignal] = None
         if trigger_pnl >= Config.INSTANT_PROFIT_EXIT_PCT:
             logger.info(
                 "INSTANT EXIT TRIGGERED (+5%%): %s mark=%.4f peak=%.4f quote=%s >= %.2f%%",
@@ -944,8 +954,8 @@ class MomentumStrategy:
                 quote_label,
                 Config.INSTANT_PROFIT_EXIT_PCT * 100,
             )
-            return ExitSignal(SignalType.SELL_INSTANT_PROFIT)
-        if trigger_pnl >= Config.INSTANT_EXIT_3PCT:
+            signal = ExitSignal(SignalType.SELL_INSTANT_PROFIT)
+        elif trigger_pnl >= Config.INSTANT_EXIT_3PCT:
             logger.info(
                 "INSTANT EXIT TRIGGERED (+3.25%%): %s mark=%.4f peak=%.4f quote=%s >= %.2f%%",
                 position.symbol,
@@ -954,8 +964,47 @@ class MomentumStrategy:
                 quote_label,
                 Config.INSTANT_EXIT_3PCT * 100,
             )
-            return ExitSignal(SignalType.SELL_INSTANT_PROFIT)
-        return None
+            signal = ExitSignal(SignalType.SELL_INSTANT_PROFIT)
+        if signal is None:
+            return None
+        if wbtc_hold_until_profit_mode(position.mint):
+            check_pnl = max(pnl, position.peak_pnl_pct, trigger_pnl)
+            if not self._meets_min_net_win(position, check_pnl):
+                logger.info(
+                    "WBTC hold: instant target hit but est net below fee-positive — holding"
+                )
+                return None
+            return signal.with_wbtc_quote_check(position)
+        return signal
+
+    def _evaluate_wbtc_hold_until_profitable(
+        self,
+        position: Position,
+        pnl: float,
+        *,
+        executable_pnl_pct: Optional[float] = None,
+    ) -> Optional[ExitSignal]:
+        """WBTC-only: exit when Jupiter quote PnL is fee-positive (net > 0)."""
+        if not wbtc_hold_until_profit_mode(position.mint):
+            return None
+        check_pnl = pnl
+        if executable_pnl_pct is not None:
+            check_pnl = executable_pnl_pct
+        elif pnl <= 0:
+            return None
+        if check_pnl <= 0:
+            return None
+        if not self._meets_min_net_win(position, check_pnl):
+            return None
+        logger.info(
+            "WBTC hold-until-profit exit: %s mark=%.4f quote=%s — fee-positive after fees",
+            position.symbol,
+            pnl,
+            f"{executable_pnl_pct:.4f}" if executable_pnl_pct is not None else "n/a",
+        )
+        return ExitSignal(SignalType.SELL_WBTC_HOLD_PROFIT).with_wbtc_quote_check(
+            position
+        )
 
     def _log_hold_reason_if_profitable(
         self,
@@ -1102,10 +1151,12 @@ class MomentumStrategy:
         trough_pnl: Optional[float] = None,
     ) -> Optional[ExitSignal]:
         """
-        Proxy mainstream assets (WBTC/JitoSOL/WETH): after 15 min, take profit when
-        still green on mark/quote. Red positions are not forced out (SL still applies).
+        JitoSOL/WETH proxy: after 15 min, take profit when still green on mark/quote.
+        WBTC is exempt — hold until fee-positive exit instead.
         """
         if not Config.MAX_HOLD_ENABLED:
+            return None
+        if is_wbtc_watchlist_mint(position.mint):
             return None
         if not is_proxy_mainstream_mint(position.mint):
             return None
@@ -1147,6 +1198,8 @@ class MomentumStrategy:
         trough_pnl: Optional[float] = None,
     ) -> Optional[ExitSignal]:
         """Stop on worst of mark, quote, and trough PnL (catches stale feeds)."""
+        if not stop_loss_applies_for_mint(position.mint):
+            return None
         stop = effective_stop_loss_pct(position.mint)
         emergency = Config.EMERGENCY_STOP_LOSS_PCT
         catastrophic = Config.CATASTROPHIC_STOP_LOSS_PCT
@@ -1302,6 +1355,12 @@ class MomentumStrategy:
             if instant_signal is not None:
                 return instant_signal
 
+            wbtc_profit_signal = self._evaluate_wbtc_hold_until_profitable(
+                position, pnl, executable_pnl_pct=executable_pnl_pct
+            )
+            if wbtc_profit_signal is not None:
+                return wbtc_profit_signal
+
         if is_proxy_mainstream_mint(position.mint):
             proxy_green_signal = self._evaluate_proxy_time_exit_green(
                 position,
@@ -1330,50 +1389,53 @@ class MomentumStrategy:
             )
 
         if Config.ENABLE_LADDER_TIME_EXITS and ladder_missed:
-            dca_sec = Config.LADDER_MISSED_NEGATIVE_DCA_MINUTES * 60
-            pos_exit_sec = Config.LADDER_MISSED_POSITIVE_EXIT_MINUTES * 60
-            if hold_sec >= dca_sec and pnl <= 0:
-                if self._prefer_dca_on_ladder_timeout(
-                    position,
-                    current_price,
-                    price_feed=price_feed,
-                    mint=mint,
-                    current_liquidity_usd=current_liquidity_usd,
-                    can_afford_dca=can_afford_dca,
-                    jupiter_route_ok=jupiter_route_ok,
-                ):
+            if not wbtc_hold_until_profit_mode(position.mint):
+                dca_sec = Config.LADDER_MISSED_NEGATIVE_DCA_MINUTES * 60
+                pos_exit_sec = Config.LADDER_MISSED_POSITIVE_EXIT_MINUTES * 60
+                if hold_sec >= dca_sec and pnl <= 0:
+                    if self._prefer_dca_on_ladder_timeout(
+                        position,
+                        current_price,
+                        price_feed=price_feed,
+                        mint=mint,
+                        current_liquidity_usd=current_liquidity_usd,
+                        can_afford_dca=can_afford_dca,
+                        jupiter_route_ok=jupiter_route_ok,
+                    ):
+                        logger.info(
+                            "Ladder timeout DCA: %s held=%.0fs pnl=%.4f buy_count=%d",
+                            position.symbol,
+                            hold_sec,
+                            pnl,
+                            position.buy_count,
+                        )
+                        return ExitSignal(SignalType.BUY_DCA_LADDER_TIMEOUT)
+                    else:
+                        logger.info(
+                            "Ladder timeout sell (negative): %s held=%.0fs pnl=%.4f",
+                            position.symbol,
+                            hold_sec,
+                            pnl,
+                        )
+                        return ExitSignal(SignalType.SELL_LADDER_MISSED_30M)
+                if hold_sec >= pos_exit_sec and pnl > 0:
+                    if not self._meets_min_net_win(position, pnl):
+                        self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
+                        return None
                     logger.info(
-                        "Ladder timeout DCA: %s held=%.0fs pnl=%.4f buy_count=%d",
+                        "Ladder timeout sell (positive): %s held=%.0fs pnl=%.4f",
                         position.symbol,
                         hold_sec,
                         pnl,
-                        position.buy_count,
                     )
-                    return ExitSignal(SignalType.BUY_DCA_LADDER_TIMEOUT)
-                else:
-                    logger.info(
-                        "Ladder timeout sell (negative): %s held=%.0fs pnl=%.4f",
-                        position.symbol,
-                        hold_sec,
-                        pnl,
+                    return ExitSignal(SignalType.SELL_LADDER_MISSED_10M).with_wbtc_quote_check(
+                        position
                     )
-                    return ExitSignal(SignalType.SELL_LADDER_MISSED_30M)
-            if hold_sec >= pos_exit_sec and pnl > 0:
-                if not self._meets_min_net_win(position, pnl):
-                    self._log_hold_reason_if_profitable(position, pnl, hold_sec, executable_pnl_pct=executable_pnl_pct)
-                    return None
-                logger.info(
-                    "Ladder timeout sell (positive): %s held=%.0fs pnl=%.4f",
-                    position.symbol,
-                    hold_sec,
-                    pnl,
-                )
-                return ExitSignal(SignalType.SELL_LADDER_MISSED_10M).with_wbtc_quote_check(
-                    position
-                )
 
         if hold_sec >= Config.TIME_STOP_MINUTES * 60:
-            if not (
+            if wbtc_hold_until_profit_mode(position.mint):
+                pass
+            elif not (
                 is_wbtc_watchlist_mint(position.mint)
                 and ladder_missed
                 and pnl <= 0

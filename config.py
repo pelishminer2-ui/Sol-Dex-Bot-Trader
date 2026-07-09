@@ -119,8 +119,11 @@ DEFAULT_LOSS_FRESH_QUOTE_PCT = 0.01
 DEFAULT_STOP_LOSS_NEVER_MISS = True
 DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = 4.0
 DEFAULT_WBTC_PROFIT_ONLY_EXITS = True
-DEFAULT_WBTC_MIN_DAILY_GAIN_USD = 300.0
+DEFAULT_WBTC_MIN_DAILY_GAIN_USD = 301.0
 DEFAULT_WBTC_REQUIRE_POSITIVE_DAY = True
+DEFAULT_WBTC_DAY_GAIN_SUSTAIN_MINUTES = 30
+DEFAULT_WBTC_STOP_LOSS_ENABLED = False
+DEFAULT_WBTC_ENTRY_SUSTAIN_PATH = "data/wbtc_entry_sustain.json"
 DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD = 20.0
 DEFAULT_JITOSOL_REQUIRE_POSITIVE_DAY = True
 DEFAULT_WETH_MIN_DAILY_GAIN_USD = 150.0
@@ -353,13 +356,15 @@ def is_non_memecoin_proxy_mint(mint: str) -> bool:
     return m in proxies
 
 
-# Voluntary WBTC exits that require quote-verified net >= MIN_NET_WIN_SOL.
+# Voluntary WBTC exits that require quote-verified net > 0 after fees.
 WBTC_VOLUNTARY_EXIT_SIGNALS = frozenset({
     "sell_take_profit_partial",
     "sell_trend_weaken_2pct",
     "sell_ladder_missed_10m_positive",
     "sell_slowdown",
     "sell_time_stop",
+    "sell_wbtc_hold_profit",
+    "sell_instant_5pct",
 })
 
 
@@ -378,10 +383,24 @@ def instant_profit_exempt_from_min_net_win(mint: str) -> bool:
 
 
 def wbtc_min_net_win_threshold() -> float:
-    """Effective min net SOL for WBTC profit-only voluntary exits."""
-    if Config.MIN_NET_WIN_SOL > 0:
-        return Config.MIN_NET_WIN_SOL
-    return DEFAULT_MIN_NET_WIN_SOL
+    """Effective min net SOL for WBTC hold-until-profit exits (fee-positive)."""
+    if not Config.WBTC_PROFIT_ONLY_EXITS:
+        if Config.MIN_NET_WIN_SOL > 0:
+            return Config.MIN_NET_WIN_SOL
+        return DEFAULT_MIN_NET_WIN_SOL
+    return 0.0
+
+
+def wbtc_hold_until_profit_mode(mint: str) -> bool:
+    """True when WBTC uses hold-until fee-positive exit (no SL / no time force)."""
+    return is_wbtc_watchlist_mint(mint) and Config.WBTC_PROFIT_ONLY_EXITS
+
+
+def stop_loss_applies_for_mint(mint: str) -> bool:
+    """False for WBTC when WBTC_STOP_LOSS_ENABLED=false; always True for memecoins."""
+    if is_wbtc_watchlist_mint(mint):
+        return Config.WBTC_STOP_LOSS_ENABLED
+    return True
 
 
 def wbtc_min_expected_gain_pct() -> float:
@@ -1191,6 +1210,22 @@ class Config:
     )
     WBTC_REQUIRE_POSITIVE_DAY = (
         os.getenv("WBTC_REQUIRE_POSITIVE_DAY", "true").lower() == "true"
+    )
+    WBTC_DAY_GAIN_SUSTAIN_MINUTES = int(
+        float(
+            os.getenv(
+                "WBTC_DAY_GAIN_SUSTAIN_MINUTES",
+                str(DEFAULT_WBTC_DAY_GAIN_SUSTAIN_MINUTES),
+            )
+        )
+    )
+    WBTC_STOP_LOSS_ENABLED = (
+        os.getenv("WBTC_STOP_LOSS_ENABLED", "false").lower() == "true"
+    )
+    WBTC_ENTRY_SUSTAIN_PATH = str(
+        resolve_data_path(
+            os.getenv("WBTC_ENTRY_SUSTAIN_PATH", DEFAULT_WBTC_ENTRY_SUSTAIN_PATH)
+        )
     )
     _wbtc_min_expected_gain = os.getenv("WBTC_MIN_EXPECTED_GAIN_PCT", "").strip()
     WBTC_MIN_EXPECTED_GAIN_PCT = (
@@ -2594,6 +2629,8 @@ class Config:
             "wbtc_profit_only_exits": cls.WBTC_PROFIT_ONLY_EXITS,
             "wbtc_min_daily_gain_usd": cls.WBTC_MIN_DAILY_GAIN_USD,
             "wbtc_require_positive_day": cls.WBTC_REQUIRE_POSITIVE_DAY,
+            "wbtc_day_gain_sustain_minutes": cls.WBTC_DAY_GAIN_SUSTAIN_MINUTES,
+            "wbtc_stop_loss_enabled": cls.WBTC_STOP_LOSS_ENABLED,
             "wbtc_min_expected_gain_pct": wbtc_min_expected_gain_pct(),
             "jitosol_min_daily_gain_usd": cls.JITOSOL_MIN_DAILY_GAIN_USD,
             "jitosol_require_positive_day": cls.JITOSOL_REQUIRE_POSITIVE_DAY,

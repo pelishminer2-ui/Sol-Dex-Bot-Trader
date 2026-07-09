@@ -6,13 +6,14 @@ alwaysApply: true
 # Trading Bot Core Rules (always apply)
 
 ### Exits (non-negotiable)
-- Stop loss ALWAYS at configured % (1.5% memecoins, 2% WBTC) using worst of mark, quote, trough
+- Stop loss ALWAYS at configured % (1.5% memecoins) using worst of mark, quote, trough
 - Never miss stop loss — forced sell with retries, 0.5s poll in loss zone, fresh Jupiter quotes
 - Instant profit at +3.25% and +5% using mark, peak, AND quote PnL
-- Emergency 3% / catastrophic 5% hard caps
+- Emergency 3% / catastrophic 5% hard caps (memecoins; WBTC exempt when `WBTC_STOP_LOSS_ENABLED=false`)
 - Non-memecoin max hold 15 min: SL if at threshold, otherwise plain time exit (not SL)
-- Proxy assets (WBTC/JitoSOL/WETH): after 15 min, sell when green on mark/quote (profit-taking); red positions not forced out (SL still applies)
-- WBTC keeps 2% stop loss; JitoSOL/WETH use configured SL (default 1.5%)
+- Proxy assets (JitoSOL/WETH): after 15 min, sell when green on mark/quote (profit-taking); red positions not forced out (SL still applies)
+- **WBTC (user override):** `WBTC_STOP_LOSS_ENABLED=false` — no SL, no 15m max-hold, no 15m green time exit; hold until Jupiter quote shows fee-positive net (`WBTC_PROFIT_ONLY_EXITS=true`). Instant +3.25%/+5% OK only when net > 0 after fees.
+- JitoSOL/WETH use configured SL (default 1.5%)
 - Forced exits never defer for impact, never block on min-net
 
 ### Learning
