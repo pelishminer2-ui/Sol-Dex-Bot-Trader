@@ -252,18 +252,10 @@ class ReentryRetryManager:
         }
 
     def status_snapshot(self) -> dict:
-        effective_ts = Config.reentry_retry_effective_after_ts()
-        effective_iso = None
-        if effective_ts not in (float("inf"), float("-inf")):
-            effective_iso = datetime.fromtimestamp(
-                effective_ts, tz=timezone.utc
-            ).isoformat()
         pending = self.get_pending_actions()
         return {
             "enabled": Config.REENTRY_RETRY_ENABLED,
             "active": self.is_active(),
-            "effective_after": Config.REENTRY_RETRY_EFFECTIVE_AFTER,
-            "effective_after_iso": effective_iso,
             "window_minutes": Config.REENTRY_RETRY_WINDOW_MINUTES,
             "block_hours": Config.REENTRY_RETRY_BLOCK_HOURS,
             "max_attempts": Config.REENTRY_RETRY_MAX_ATTEMPTS,
