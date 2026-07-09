@@ -1777,6 +1777,8 @@ class Config:
     FLASK_HOST = os.getenv("FLASK_HOST", os.getenv("GUI_HOST", "127.0.0.1"))
     GUI_PORT = int(os.getenv("GUI_PORT", os.getenv("FLASK_PORT", "5000")))
     FIREWALL_RATE_LIMIT = int(os.getenv("FIREWALL_RATE_LIMIT", "120"))
+    # Lenient GET polling budget (dashboard refreshes ~6 req/3s ≈ 120/min steady-state).
+    FIREWALL_READ_RATE_LIMIT = int(os.getenv("FIREWALL_READ_RATE_LIMIT", "600"))
     TRUST_X_FORWARDED_FOR = os.getenv("TRUST_X_FORWARDED_FOR", "false").lower() == "true"
     ENFORCE_TRANSFER_GUARD = os.getenv("ENFORCE_TRANSFER_GUARD", "true").lower() == "true"
 

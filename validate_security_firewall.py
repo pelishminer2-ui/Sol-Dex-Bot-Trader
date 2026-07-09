@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from app import app
 from jupiter import JupiterExecutor, SwapQuote
-from security_firewall import RateLimiter, _rate_limiter
+from security_firewall import RateLimiter, _read_rate_limiter, _write_rate_limiter
 from trading_lock import trading_lock
 
 
@@ -97,26 +97,67 @@ def test_rate_limit_triggers():
 
     import security_firewall as sf
 
-    sf._rate_limiter = RateLimiter(2, window_sec=60.0)
-    sf._rate_limiter.reset()
+    sf._write_rate_limiter = RateLimiter(2, window_sec=60.0)
+    sf._write_rate_limiter.reset()
     ip = "127.0.0.1"
-    assert sf._rate_limiter.is_allowed(ip, max_requests=2)
-    assert sf._rate_limiter.is_allowed(ip, max_requests=2)
-    assert not sf._rate_limiter.is_allowed(ip, max_requests=2)
-    sf._rate_limiter = RateLimiter(120, window_sec=60.0)
+    assert sf._write_rate_limiter.is_allowed(ip, max_requests=2)
+    assert sf._write_rate_limiter.is_allowed(ip, max_requests=2)
+    assert not sf._write_rate_limiter.is_allowed(ip, max_requests=2)
+    sf._write_rate_limiter = RateLimiter(120, window_sec=60.0)
     print("PASS: HTTP rate limit returns 429 after threshold")
 
 
 def test_tax_preview_exempt_from_rate_limit():
     import security_firewall as sf
 
-    sf._rate_limiter = RateLimiter(2, window_sec=60.0)
+    sf._read_rate_limiter = RateLimiter(2, window_sec=60.0)
+    sf._read_rate_limiter.reset()
     with _client() as client:
         for _ in range(5):
             r = client.get("/api/tax/preview", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
             assert r.status_code == 200, f"tax preview should be exempt, got {r.status_code}"
-    sf._rate_limiter = RateLimiter(120, window_sec=60.0)
+    sf._read_rate_limiter = RateLimiter(600, window_sec=60.0)
     print("PASS: /api/tax/preview exempt from rate limit")
+
+
+def test_dashboard_read_polling_high_budget():
+    """Simulate 3s dashboard poll burst — read routes use separate 600/min bucket."""
+    import security_firewall as sf
+
+    sf._read_rate_limiter = RateLimiter(600, window_sec=60.0)
+    sf._read_rate_limiter.reset()
+    poll_paths = (
+        "/api/bot/status",
+        "/api/movers?limit=10",
+        "/api/positions",
+        "/api/trades?limit=20",
+        "/api/logs?limit=80",
+        "/api/actions/pending",
+    )
+    with _client() as client:
+        for _ in range(25):
+            for path in poll_paths:
+                r = client.get(path, environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+                assert r.status_code != 429, f"{path} blocked by rate limit after poll burst"
+    print("PASS: dashboard read polling within read-rate budget")
+
+
+def test_index_and_static_exempt_from_rate_limit():
+    import security_firewall as sf
+
+    sf._read_rate_limiter = RateLimiter(1, window_sec=60.0)
+    sf._read_rate_limiter.reset()
+    sf._write_rate_limiter = RateLimiter(1, window_sec=60.0)
+    sf._write_rate_limiter.reset()
+    with _client() as client:
+        for _ in range(10):
+            r = client.get("/", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+            assert r.status_code == 200, f"index should be exempt, got {r.status_code}"
+        r = client.get("/static/index.html", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+        assert r.status_code in (200, 404), f"static should be exempt, got {r.status_code}"
+    sf._read_rate_limiter = RateLimiter(600, window_sec=60.0)
+    sf._write_rate_limiter = RateLimiter(120, window_sec=60.0)
+    print("PASS: index and static exempt from rate limit")
 
 
 def test_trading_lock_allows_paper_mode_from_any_thread():
@@ -202,6 +243,8 @@ def main():
     test_cors_restricted()
     test_rate_limit_triggers()
     test_tax_preview_exempt_from_rate_limit()
+    test_dashboard_read_polling_high_budget()
+    test_index_and_static_exempt_from_rate_limit()
     test_trading_lock_allows_paper_mode_from_any_thread()
     test_trading_lock_blocks_unauthorized_live_execute()
     test_trading_lock_allows_dry_run_without_lock()

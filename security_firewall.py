@@ -97,8 +97,17 @@ class RateLimiter:
             self._hits.clear()
 
 
-_rate_limiter: Optional[RateLimiter] = None
+_read_rate_limiter: Optional[RateLimiter] = None
+_write_rate_limiter: Optional[RateLimiter] = None
 _blocked_count = 0
+
+# Dashboard assets + tax/paper previews — no rate limit (polling-safe).
+_RATE_LIMIT_EXEMPT_EXACT = frozenset({
+    "/",
+    "/favicon.ico",
+    "/manifest.json",
+    "/service-worker.js",
+})
 
 
 def get_firewall_stats() -> dict:
@@ -106,6 +115,7 @@ def get_firewall_stats() -> dict:
         "active": True,
         "localhost_only": True,
         "rate_limit_per_min": Config.FIREWALL_RATE_LIMIT,
+        "read_rate_limit_per_min": Config.FIREWALL_READ_RATE_LIMIT,
         "blocked_requests": _blocked_count,
         "trust_x_forwarded_for": Config.TRUST_X_FORWARDED_FOR,
     }
@@ -149,6 +159,29 @@ def _is_paper_path(path: str) -> bool:
 
 def _is_live_path(path: str) -> bool:
     return path.startswith(LIVE_ROUTE_PREFIX)
+
+
+def _is_rate_limit_exempt(method: str, path: str) -> bool:
+    """Static assets, index, and tax/paper preview polls — never rate limited."""
+    path = _normalize_path(path)
+    if method == "GET" and (
+        path in _RATE_LIMIT_EXEMPT_EXACT
+        or _is_static_path(path)
+        or _is_tax_path(path)
+        or _is_paper_path(path)
+    ):
+        return True
+    return False
+
+
+def _is_dashboard_read(method: str, path: str) -> bool:
+    """Lenient limit for GET polling (status, movers, actions/pending, etc.)."""
+    if method != "GET":
+        return False
+    path = _normalize_path(path)
+    if _is_rate_limit_exempt(method, path):
+        return False
+    return _route_allowed(method, path)
 
 
 def _route_allowed(method: str, path: str) -> bool:
@@ -226,8 +259,9 @@ def _body_has_forbidden_fields() -> Optional[str]:
 
 
 def init_firewall(app: Flask) -> None:
-    global _rate_limiter
-    _rate_limiter = RateLimiter(Config.FIREWALL_RATE_LIMIT, window_sec=60.0)
+    global _read_rate_limiter, _write_rate_limiter
+    _read_rate_limiter = RateLimiter(Config.FIREWALL_READ_RATE_LIMIT, window_sec=60.0)
+    _write_rate_limiter = RateLimiter(Config.FIREWALL_RATE_LIMIT, window_sec=60.0)
 
     @app.before_request
     def _firewall_before_request():
@@ -239,13 +273,19 @@ def init_firewall(app: Flask) -> None:
         method = request.method.upper()
         path = _normalize_path(request.path)
 
-        # Tax/paper preview routes are polled by the dashboard; exempt from rate limit.
-        if _rate_limiter and not _is_tax_path(path) and not _is_paper_path(path):
-            per_min = Config.FIREWALL_RATE_LIMIT
-            if _is_localhost(client_ip) and per_min >= 60:
-                per_min = max(per_min, 300)
-            if not _rate_limiter.is_allowed(client_ip, max_requests=per_min):
-                return _reject("rate limit exceeded", status=429)
+        if not _is_rate_limit_exempt(method, path):
+            if _is_dashboard_read(method, path):
+                read_per_min = Config.FIREWALL_READ_RATE_LIMIT
+                if _read_rate_limiter and not _read_rate_limiter.is_allowed(
+                    client_ip, max_requests=read_per_min
+                ):
+                    return _reject("rate limit exceeded", status=429)
+            else:
+                write_per_min = Config.FIREWALL_RATE_LIMIT
+                if _write_rate_limiter and not _write_rate_limiter.is_allowed(
+                    client_ip, max_requests=write_per_min
+                ):
+                    return _reject("rate limit exceeded", status=429)
 
         if not _route_allowed(method, path):
             return _reject(f"route not allowlisted: {method} {path}")
