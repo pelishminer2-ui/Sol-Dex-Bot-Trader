@@ -398,14 +398,23 @@ def jitosol_min_expected_gain_pct() -> float:
     return Config.INSTANT_EXIT_3PCT
 
 
-def wbtc_companion_slot_open(open_mints: list[str]) -> bool:
-    """True when WBTC is the sole open position and a companion slot is available."""
-    return len(open_mints) == 1 and is_wbtc_watchlist_mint(open_mints[0])
-
-
 def companion_trade_enabled() -> bool:
-    """True when JitoSOL/WETH proxy companion slots are allowed."""
+    """True when WBTC / JitoSOL / WETH companion slots are allowed."""
     return bool(Config.COMPANION_TRADE_ENABLED)
+
+
+def is_companion_anchor_mint(mint: str) -> bool:
+    """
+    True for WBTC or enabled JitoSOL/WETH proxy mints — the stable leg that
+    unlocks COMPANION_TRADE_MAX extra concurrent memecoin slot(s) when held.
+    """
+    if not mint or not companion_trade_enabled():
+        return False
+    return (
+        is_wbtc_watchlist_mint(mint)
+        or is_sol_proxy_trade_mint(mint)
+        or is_weth_trade_mint(mint)
+    )
 
 
 def is_proxy_companion_anchor_mint(mint: str) -> bool:
@@ -424,11 +433,31 @@ def max_positions_with_companion() -> int:
     return Config.MAX_OPEN_POSITIONS + max(0, Config.COMPANION_TRADE_MAX)
 
 
+def companion_slot_open(open_mints: list[str]) -> bool:
+    """True when a sole companion anchor is open and a memecoin slot is free."""
+    return (
+        companion_trade_enabled()
+        and len(open_mints) == 1
+        and is_companion_anchor_mint(open_mints[0])
+    )
+
+
+def wbtc_companion_slot_open(open_mints: list[str]) -> bool:
+    """True when WBTC is the sole open position and a companion slot is available."""
+    return (
+        companion_trade_enabled()
+        and len(open_mints) == 1
+        and is_wbtc_watchlist_mint(open_mints[0])
+    )
+
+
 def proxy_companion_slot_open(open_mints: list[str]) -> bool:
     """True when a sole JitoSOL/WETH proxy is open and a companion slot is free."""
-    if not companion_trade_enabled():
-        return False
-    return len(open_mints) == 1 and is_proxy_companion_anchor_mint(open_mints[0])
+    return (
+        companion_trade_enabled()
+        and len(open_mints) == 1
+        and is_proxy_companion_anchor_mint(open_mints[0])
+    )
 
 
 def max_allowed_open_positions(
@@ -436,24 +465,26 @@ def max_allowed_open_positions(
     candidate_mint: Optional[str] = None,
 ) -> int:
     """
-    Max concurrent positions: 1 normally; 2 when WBTC is held or is the next entry
-    while one other position is already open; also +COMPANION_TRADE_MAX when a
-    JitoSOL/WETH proxy anchor is held or is the next entry (when enabled).
+    Max concurrent positions: 1 normally; +COMPANION_TRADE_MAX when a companion
+    anchor (WBTC / JitoSOL / WETH) is held or is the next entry while companion
+    trading is enabled. Legacy MAX_OPEN_POSITIONS_WBTC still applies when companion
+    trading is disabled.
     """
     limits = [Config.MAX_OPEN_POSITIONS]
-    if any(is_wbtc_watchlist_mint(m) for m in open_mints):
-        limits.append(Config.MAX_OPEN_POSITIONS_WBTC)
-    if candidate_mint and is_wbtc_watchlist_mint(candidate_mint) and open_mints:
-        limits.append(Config.MAX_OPEN_POSITIONS_WBTC)
     if companion_trade_enabled():
-        if any(is_proxy_companion_anchor_mint(m) for m in open_mints):
+        if any(is_companion_anchor_mint(m) for m in open_mints):
             limits.append(max_positions_with_companion())
         if (
             candidate_mint
-            and is_proxy_companion_anchor_mint(candidate_mint)
+            and is_companion_anchor_mint(candidate_mint)
             and open_mints
         ):
             limits.append(max_positions_with_companion())
+    else:
+        if any(is_wbtc_watchlist_mint(m) for m in open_mints):
+            limits.append(Config.MAX_OPEN_POSITIONS_WBTC)
+        if candidate_mint and is_wbtc_watchlist_mint(candidate_mint) and open_mints:
+            limits.append(Config.MAX_OPEN_POSITIONS_WBTC)
     return max(limits)
 
 

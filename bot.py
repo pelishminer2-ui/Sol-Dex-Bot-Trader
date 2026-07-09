@@ -5,7 +5,7 @@ import threading
 import time
 from typing import List, Optional
 
-from config import Config, SOL_MINT, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_jitosol_trade_mint, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, proxy_companion_slot_open, sol_trading_enabled, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
+from config import Config, SOL_MINT, companion_slot_open, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_jitosol_trade_mint, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, proxy_companion_slot_open, sol_trading_enabled, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
 from dexscreener_client import get_dexscreener_client
 from jupiter_client import get_jupiter_client
 from jupiter import JupiterExecutor, SwapQuote
@@ -576,13 +576,25 @@ class TradingBot:
             else:
                 self._record_action("Scan complete — no qualified movers (filters may be strict)")
 
-    def _trade_candidates(self) -> List[MoverCandidate]:
-        """Ranked watchlist slice considered for new entries (max concurrent positions unchanged)."""
+    def _companion_entry_pinned_mints(self) -> set[str]:
+        """Pinned / proxy mints excluded from the companion memecoin candidate pool."""
         pinned = set(Config.watchlist_mints()) if Config.watchlist_mint_enabled() else set()
         if sol_trading_enabled():
             pinned.add(Config.SOL_TRADE_MINT)
         if weth_trading_enabled():
             pinned.add(Config.WETH_MINT)
+        return pinned
+
+    def _has_companion_memecoin_candidates(self, held_mints: set[str]) -> bool:
+        """True when the watchlist still has non-anchor movers to evaluate for a 2nd leg."""
+        pinned = self._companion_entry_pinned_mints()
+        return any(
+            c.mint not in pinned and c.mint not in held_mints for c in self.watchlist
+        )
+
+    def _trade_candidates(self) -> List[MoverCandidate]:
+        """Ranked watchlist slice considered for new entries (max concurrent positions unchanged)."""
+        pinned = self._companion_entry_pinned_mints()
         pool = [c for c in self.watchlist if c.mint not in pinned]
         candidates = pool[: Config.TRADE_CANDIDATE_TOP_N]
         qualified_pinned: List[MoverCandidate] = []
@@ -2599,14 +2611,21 @@ class TradingBot:
                         open_count,
                         position_limit,
                     )
-                    if wbtc_companion_slot_open(open_mints):
-                        logger.info(
-                            "WBTC companion slot open — seeking 2nd trade"
-                        )
-                    elif proxy_companion_slot_open(open_mints):
-                        logger.info(
-                            "Proxy companion slot open — seeking 2nd trade"
-                        )
+                    if companion_slot_open(open_mints):
+                        anchor = open_mints[0][:8]
+                        if wbtc_companion_slot_open(open_mints):
+                            logger.info(
+                                "WBTC companion slot open — seeking 2nd trade"
+                            )
+                        elif proxy_companion_slot_open(open_mints):
+                            logger.info(
+                                "Proxy companion slot open — seeking 2nd trade"
+                            )
+                        else:
+                            logger.info(
+                                "Companion slot open (%s…) — seeking 2nd trade",
+                                anchor,
+                            )
 
                     await self._monitor_all_open_positions()
 
@@ -2616,6 +2635,12 @@ class TradingBot:
                     self.last_jupiter_health = get_jupiter_client().get_health()
 
                     if self.strategy.can_open_more():
+                        held = {p.mint for p in self.strategy.positions}
+                        if companion_slot_open(open_mints) and not self._has_companion_memecoin_candidates(
+                            held
+                        ):
+                            await self._refresh_watchlist()
+                            last_scan = now
                         await self._try_entry()
                     elif Config.watchlist_mint_enabled():
                         self._poll_pinned_watchlist_mint()

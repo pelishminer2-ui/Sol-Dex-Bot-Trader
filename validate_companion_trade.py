@@ -16,7 +16,9 @@ from config import (
     JITOSOL_MINT,
     WETH_MINT,
     can_open_more_positions,
+    companion_slot_open,
     companion_trade_enabled,
+    is_companion_anchor_mint,
     is_proxy_companion_anchor_mint,
     max_allowed_open_positions,
     max_positions_with_companion,
@@ -84,9 +86,72 @@ def test_companion_config_defaults():
 
 def test_wbtc_companion_slot_still_works():
     assert wbtc_companion_slot_open([WBTC_MINT]) is True
+    assert companion_slot_open([WBTC_MINT]) is True
+    assert is_companion_anchor_mint(WBTC_MINT) is True
     assert wbtc_companion_slot_open([WBTC_MINT, MINT_A]) is False
     assert max_allowed_open_positions([WBTC_MINT]) == 2
     print("PASS: WBTC companion slot unchanged")
+
+
+def test_wbtc_open_allows_companion():
+    with _companion_enabled_ctx():
+        strategy = MomentumStrategy()
+        strategy.open_position(
+            _candidate(WBTC_MINT, "WBTC"), 1.0, 0.05, 0.003, token_amount_raw=100
+        )
+        assert companion_slot_open([WBTC_MINT]) is True
+        assert strategy.can_open_more() is True
+        assert strategy.can_open_more(MINT_A) is True
+        assert max_allowed_open_positions([WBTC_MINT]) == 2
+        risk = RiskManager()
+        ok, _ = risk.can_open_position(
+            1,
+            1.0,
+            dry_run=True,
+            open_mints=[WBTC_MINT],
+            candidate_mint=MINT_A,
+        )
+        assert ok
+        strategy.open_position(
+            _candidate(MINT_A, "AAA"), 1.0, 0.05, 0.003, token_amount_raw=100
+        )
+        assert strategy.open_position_count() == 2
+        assert strategy.can_open_more() is False
+    print("PASS: WBTC open allows one companion entry")
+
+
+def test_wbtc_one_strike_does_not_block_companion_memecoin():
+    """WBTC one-strike blocks WBTC re-entry only, not a companion memecoin leg."""
+    with _companion_enabled_ctx(), patch.object(
+        Config, "LOSS_ONE_STRIKE_PER_SESSION", True
+    ):
+        strategy = MomentumStrategy()
+        strategy.record_loss_reentry_cooldown(WBTC_MINT)
+        assert strategy.is_on_loss_reentry_cooldown(WBTC_MINT) is True
+        strategy.open_position(
+            _candidate(WBTC_MINT, "WBTC"), 1.0, 0.05, 0.003, token_amount_raw=100
+        )
+        good = _candidate(MINT_B, "GOOD", momentum_pct=40.0, source="pumpfun")
+        with patch("entry_filters.entry_winrate_skip_reason", return_value=None):
+            signal = strategy.evaluate_entry(
+                good, 1.0, 0.05, sol_trend_snapshot={"sol_trend_ok": True}
+            )
+        assert signal == SignalType.BUY
+        wbtc_signal = strategy.evaluate_entry(
+            _candidate(WBTC_MINT, "WBTC2"), 1.0, 0.05, sol_trend_snapshot={}
+        )
+        assert wbtc_signal == SignalType.NONE
+        fresh = MomentumStrategy()
+        fresh.record_loss_reentry_cooldown(WBTC_MINT)
+        blocked = fresh.evaluate_entry(
+            _candidate(WBTC_MINT, "WBTC"), 1.0, 0.05, sol_trend_snapshot={}
+        )
+        assert blocked == SignalType.NONE
+        wbtc_skip = fresh.entry_skip_reason(
+            _candidate(WBTC_MINT, "WBTC"), 0.05, sol_trend_snapshot={}
+        )
+        assert wbtc_skip and "one-strike" in wbtc_skip
+    print("PASS: WBTC one-strike does not block companion memecoin")
 
 
 def test_proxy_anchor_recognition():
@@ -175,6 +240,13 @@ def test_companion_disabled_restores_single_cap():
         )
         assert strategy.can_open_more() is False
         assert max_allowed_open_positions([JITOSOL_MINT]) == 1
+        assert companion_slot_open([JITOSOL_MINT]) is False
+        strategy_wbtc = MomentumStrategy()
+        strategy_wbtc.open_position(
+            _candidate(WBTC_MINT, "WBTC"), 1.0, 0.05, 0.003, token_amount_raw=100
+        )
+        assert max_allowed_open_positions([WBTC_MINT]) == 2
+        assert wbtc_companion_slot_open([WBTC_MINT]) is False
     print("PASS: COMPANION_TRADE_ENABLED=false restores single-position cap")
 
 
@@ -285,6 +357,8 @@ def main():
     tests = [
         test_companion_config_defaults,
         test_wbtc_companion_slot_still_works,
+        test_wbtc_open_allows_companion,
+        test_wbtc_one_strike_does_not_block_companion_memecoin,
         test_proxy_anchor_recognition,
         test_jitosol_open_allows_companion,
         test_weth_open_allows_companion,

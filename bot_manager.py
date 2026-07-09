@@ -565,9 +565,10 @@ class BotManager:
                 if bot
                 else None
             )
-            from config import max_allowed_open_positions, proxy_companion_slot_open, wbtc_companion_slot_open
+            from config import companion_slot_open, max_allowed_open_positions, proxy_companion_slot_open, wbtc_companion_slot_open
 
             effective_max_open_positions = max_allowed_open_positions(open_mints)
+            companion_open = companion_slot_open(open_mints)
             wbtc_companion = wbtc_companion_slot_open(open_mints)
             proxy_companion = proxy_companion_slot_open(open_mints)
             public_key = self.get_public_key()
@@ -698,6 +699,7 @@ class BotManager:
             "max_open_positions_wbtc": Config.MAX_OPEN_POSITIONS_WBTC,
             "companion_trade_enabled": Config.COMPANION_TRADE_ENABLED,
             "companion_trade_max": Config.COMPANION_TRADE_MAX,
+            "companion_slot_open": companion_open,
             "wbtc_companion_slot_open": wbtc_companion,
             "proxy_companion_slot_open": proxy_companion,
             "balance_sol": effective_balance,
@@ -1303,7 +1305,12 @@ class BotManager:
         for api_key, config_key in mapping.items():
             if api_key in payload and payload[api_key] is not None:
                 updates[config_key] = payload[api_key]
-        return Config.update_runtime(**updates)
+        result = Config.update_runtime(**updates)
+        if "SETUP_LEARNING_MIN_WIN_LEAN" in result.get("applied", {}):
+            from session_entry_tuning import apply_runtime_win_lean
+
+            apply_runtime_win_lean(result["applied"]["SETUP_LEARNING_MIN_WIN_LEAN"])
+        return result
 
     def restore_config_bookmark(self) -> Dict[str, Any]:
         from config import restore_config_bookmark
