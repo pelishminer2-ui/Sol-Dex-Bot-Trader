@@ -487,6 +487,54 @@ def mint_unblock():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.route("/api/actions/pending")
+def actions_pending():
+    return jsonify(
+        {
+            "ok": True,
+            "pending": bot_manager.get_pending_actions(),
+            "status": bot_manager.reentry_retry_status(),
+        }
+    )
+
+
+@app.route("/api/actions/decide", methods=["POST"])
+def actions_decide():
+    data = request.get_json(silent=True) or {}
+    mint = (data.get("mint") or data.get("token_mint") or "").strip()
+    if not mint:
+        return jsonify({"ok": False, "error": "mint is required"}), 400
+    allow_raw = data.get("allow")
+    if allow_raw is None:
+        decision = (data.get("decision") or "").strip().lower()
+        if decision == "allow":
+            allow_raw = True
+        elif decision == "deny":
+            allow_raw = False
+        else:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "allow (bool) or decision (allow/deny) is required",
+                    }
+                ),
+                400,
+            )
+    deny_similar = bool(
+        data.get("deny_similar_pattern") or data.get("apply_to_similar")
+    )
+    try:
+        result = bot_manager.decide_reentry_action(
+            mint,
+            allow=bool(allow_raw),
+            deny_similar_pattern=deny_similar,
+        )
+        return jsonify({"ok": True, **result})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.route("/api/bot/status")
 def bot_status():
     status = bot_manager.get_status()

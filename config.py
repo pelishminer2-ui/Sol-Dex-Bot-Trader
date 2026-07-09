@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,11 @@ DEFAULT_MIN_NET_WIN_SOL = 0.003
 DEFAULT_LOSS_REENTRY_COOLDOWN_MINUTES = 120
 DEFAULT_LOSS_REENTRY_REPEAT_COOLDOWN_MINUTES = 240
 DEFAULT_REENTRY_MIN_MOMENTUM_PCT = 0.015
+# Smart re-chase retry after loss-strike / loss-cooldown (entry-only).
+DEFAULT_REENTRY_RETRY_ENABLED = True
+DEFAULT_REENTRY_RETRY_WINDOW_MINUTES = 60
+DEFAULT_REENTRY_RETRY_BLOCK_HOURS = 2
+DEFAULT_REENTRY_RETRY_MAX_ATTEMPTS = 2
 DEFAULT_MAX_LOSS_PER_TRADE_SOL = 0.012
 DEFAULT_MIN_LIQUIDITY_USD = 25000
 DEFAULT_MIN_MOMENTUM_PCT = 0.015
@@ -113,6 +119,8 @@ DEFAULT_LOSS_FRESH_QUOTE_PCT = 0.01
 DEFAULT_STOP_LOSS_NEVER_MISS = True
 DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = 4.0
 DEFAULT_WBTC_PROFIT_ONLY_EXITS = True
+DEFAULT_WBTC_MIN_DAILY_GAIN_USD = 75.0
+DEFAULT_WBTC_REQUIRE_POSITIVE_DAY = True
 DEFAULT_GMGN_MIN_LIQUIDITY_USD = 25000
 DEFAULT_MIN_VOLUME_24H_USD = 75000
 DEFAULT_NON_WATCHLIST_MIN_VOLUME_24H_USD = 75000
@@ -351,6 +359,14 @@ def wbtc_min_net_win_threshold() -> float:
     if Config.MIN_NET_WIN_SOL > 0:
         return Config.MIN_NET_WIN_SOL
     return DEFAULT_MIN_NET_WIN_SOL
+
+
+def wbtc_min_expected_gain_pct() -> float:
+    """WBTC entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.0325)."""
+    override = getattr(Config, "WBTC_MIN_EXPECTED_GAIN_PCT", None)
+    if override is not None:
+        return float(override)
+    return Config.INSTANT_EXIT_3PCT
 
 
 def wbtc_companion_slot_open(open_mints: list[str]) -> bool:
@@ -1007,11 +1023,52 @@ class Config:
             str(DEFAULT_REENTRY_MIN_MOMENTUM_PCT),
         )
     )
+    REENTRY_RETRY_ENABLED = (
+        os.getenv(
+            "REENTRY_RETRY_ENABLED",
+            "true" if DEFAULT_REENTRY_RETRY_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    REENTRY_RETRY_WINDOW_MINUTES = int(
+        float(
+            os.getenv(
+                "REENTRY_RETRY_WINDOW_MINUTES",
+                str(DEFAULT_REENTRY_RETRY_WINDOW_MINUTES),
+            )
+        )
+    )
+    REENTRY_RETRY_BLOCK_HOURS = int(
+        float(
+            os.getenv(
+                "REENTRY_RETRY_BLOCK_HOURS",
+                str(DEFAULT_REENTRY_RETRY_BLOCK_HOURS),
+            )
+        )
+    )
+    REENTRY_RETRY_MAX_ATTEMPTS = int(
+        float(
+            os.getenv(
+                "REENTRY_RETRY_MAX_ATTEMPTS",
+                str(DEFAULT_REENTRY_RETRY_MAX_ATTEMPTS),
+            )
+        )
+    )
     WBTC_STOP_LOSS_PCT = float(
         os.getenv("WBTC_STOP_LOSS_PCT", str(DEFAULT_WBTC_STOP_LOSS_PCT))
     )
     WBTC_PROFIT_ONLY_EXITS = (
         os.getenv("WBTC_PROFIT_ONLY_EXITS", "true").lower() == "true"
+    )
+    WBTC_MIN_DAILY_GAIN_USD = float(
+        os.getenv("WBTC_MIN_DAILY_GAIN_USD", str(DEFAULT_WBTC_MIN_DAILY_GAIN_USD))
+    )
+    WBTC_REQUIRE_POSITIVE_DAY = (
+        os.getenv("WBTC_REQUIRE_POSITIVE_DAY", "true").lower() == "true"
+    )
+    _wbtc_min_expected_gain = os.getenv("WBTC_MIN_EXPECTED_GAIN_PCT", "").strip()
+    WBTC_MIN_EXPECTED_GAIN_PCT = (
+        float(_wbtc_min_expected_gain) if _wbtc_min_expected_gain else None
     )
     MAX_LOSS_PER_TRADE_SOL = float(
         os.getenv("MAX_LOSS_PER_TRADE_SOL", str(DEFAULT_MAX_LOSS_PER_TRADE_SOL))
@@ -1707,6 +1764,11 @@ class Config:
     BOT_RUNTIME_STATE_PATH = str(
         resolve_data_path(os.getenv("BOT_RUNTIME_STATE_PATH", "bot_runtime_state.json"))
     )
+    REENTRY_RETRY_STATE_PATH = str(
+        resolve_data_path(
+            os.getenv("REENTRY_RETRY_STATE_PATH", "data/reentry_retry_state.json")
+        )
+    )
     TAX_CSV_PATH = str(resolve_data_path(os.getenv("TAX_CSV_PATH", "tax_trades.csv")))
     TAX_MONTHLY_CSV_PATH = str(resolve_data_path(os.getenv("TAX_MONTHLY_CSV_PATH", "tax_summary_monthly.csv")))
     TAX_YEARLY_CSV_PATH = str(resolve_data_path(os.getenv("TAX_YEARLY_CSV_PATH", "tax_summary_yearly.csv")))
@@ -1723,6 +1785,15 @@ class Config:
         "testnet": "https://api.testnet.solana.com",
         "mainnet-beta": "https://api.mainnet-beta.solana.com",
     }
+
+    @classmethod
+    def reentry_retry_effective_after_ts(cls) -> float:
+        """Legacy hook — retry is active immediately when REENTRY_RETRY_ENABLED=true."""
+        return 0.0
+
+    @classmethod
+    def reentry_retry_is_active(cls) -> bool:
+        return bool(cls.REENTRY_RETRY_ENABLED)
 
     @classmethod
     def effective_pumpfun_min_liquidity(cls) -> float:
@@ -1840,7 +1911,7 @@ class Config:
             rules[0] = WatchlistMintRule(
                 mint=(cls.WATCHLIST_MINT or primary.mint).strip(),
                 label=primary.label,
-                min_day_usd_gain=cls.WATCHLIST_MIN_USD_GAIN,
+                min_day_usd_gain=cls.WBTC_MIN_DAILY_GAIN_USD,
                 use_standard_exits=True,
             )
         return tuple(rules)
@@ -2308,6 +2379,10 @@ class Config:
             "max_open_positions_wbtc": cls.MAX_OPEN_POSITIONS_WBTC,
             "wbtc_watchlist_mint": DEFAULT_WATCHLIST_MINT,
             "reentry_dip_pct": cls.REENTRY_DIP_PCT,
+            "reentry_retry_enabled": cls.REENTRY_RETRY_ENABLED,
+            "reentry_retry_window_minutes": cls.REENTRY_RETRY_WINDOW_MINUTES,
+            "reentry_retry_block_hours": cls.REENTRY_RETRY_BLOCK_HOURS,
+            "reentry_retry_max_attempts": cls.REENTRY_RETRY_MAX_ATTEMPTS,
             "min_liquidity_usd": cls.MIN_LIQUIDITY_USD,
             "min_volume_24h_usd": cls.MIN_VOLUME_24H_USD,
             "non_watchlist_min_volume_24h_usd": cls.NON_WATCHLIST_MIN_VOLUME_24H_USD,
@@ -2318,6 +2393,9 @@ class Config:
             "reentry_min_momentum_pct": cls.REENTRY_MIN_MOMENTUM_PCT,
             "wbtc_stop_loss_pct": cls.WBTC_STOP_LOSS_PCT,
             "wbtc_profit_only_exits": cls.WBTC_PROFIT_ONLY_EXITS,
+            "wbtc_min_daily_gain_usd": cls.WBTC_MIN_DAILY_GAIN_USD,
+            "wbtc_require_positive_day": cls.WBTC_REQUIRE_POSITIVE_DAY,
+            "wbtc_min_expected_gain_pct": wbtc_min_expected_gain_pct(),
             "max_loss_per_trade_sol": cls.MAX_LOSS_PER_TRADE_SOL,
             "max_entry_price_impact_pct": cls.MAX_ENTRY_PRICE_IMPACT_PCT,
             "max_exit_price_impact_pct": cls.MAX_EXIT_PRICE_IMPACT_PCT,
@@ -2365,6 +2443,11 @@ class Config:
             "sol_trend_cache_ttl_sec": cls.SOL_TREND_CACHE_TTL_SEC,
             "sol_trend_quality_override_enabled": cls.SOL_TREND_QUALITY_OVERRIDE_ENABLED,
             "loss_one_strike_per_session": cls.LOSS_ONE_STRIKE_PER_SESSION,
+            "reentry_retry_enabled": cls.REENTRY_RETRY_ENABLED,
+            "reentry_retry_active": cls.reentry_retry_is_active(),
+            "reentry_retry_window_minutes": cls.REENTRY_RETRY_WINDOW_MINUTES,
+            "reentry_retry_block_hours": cls.REENTRY_RETRY_BLOCK_HOURS,
+            "reentry_retry_max_attempts": cls.REENTRY_RETRY_MAX_ATTEMPTS,
             "enable_sol_trading": cls.ENABLE_SOL_TRADING,
             "sol_trading_active": sol_trading_enabled(),
             "sol_trade_mint": cls.SOL_TRADE_MINT,

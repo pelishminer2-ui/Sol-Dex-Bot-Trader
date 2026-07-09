@@ -359,6 +359,35 @@
     .steps-panel li { margin: 0.25rem 0; }
     .steps-panel li.done,
     .steps-panel span.done { color: var(--accent); }
+    .actions-panel {
+      border: 1px solid rgba(255, 200, 87, 0.35);
+      background: rgba(255, 200, 87, 0.06);
+    }
+    .actions-item {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+      margin-bottom: 0.5rem;
+      background: var(--surface2);
+    }
+    .actions-item h3 {
+      font-size: 0.95rem;
+      margin: 0 0 0.35rem;
+    }
+    .actions-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 0.75rem;
+      align-items: center;
+      margin-top: 0.35rem;
+    }
+    .actions-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
     .live-checklist {
       font-size: 0.8rem;
       line-height: 1.6;
@@ -463,6 +492,62 @@
       margin-bottom: 0.35rem;
     }
     .setup-actions { margin-top: 0.65rem; }
+    .pending-actions-panel {
+      margin-top: 0.65rem;
+      padding: 0.55rem 0.65rem;
+      background: rgba(255, 200, 87, 0.08);
+      border: 1px solid rgba(255, 200, 87, 0.35);
+      border-radius: 8px;
+      font-size: 0.78rem;
+    }
+    .pending-actions-header {
+      color: var(--warning);
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-bottom: 0.45rem;
+    }
+    .pending-action-item {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem 0.65rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .pending-action-item:last-child { border-bottom: none; }
+    .pending-action-symbol {
+      font-weight: 700;
+      color: var(--warning);
+      min-width: 3.5rem;
+    }
+    .pending-action-msg { color: var(--muted); flex: 1 1 12rem; }
+    .pending-action-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 0.5rem;
+    }
+    .pending-action-similar {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin: 0;
+    }
+    .pending-action-similar input { margin: 0; }
+    .btn-allow {
+      background: rgba(46, 213, 115, 0.2);
+      color: #2ed573;
+      border: 1px solid rgba(46, 213, 115, 0.4);
+    }
+    .btn-deny {
+      background: rgba(255, 71, 87, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(255, 71, 87, 0.35);
+    }
     .setup-advanced {
       margin-top: 0.5rem;
       padding-top: 0.5rem;
@@ -804,6 +889,10 @@
                   <button class="btn-secondary" type="button" id="btnResetSpreads">Reset Defaults</button>
                   <button class="btn-secondary" id="btnApplyConfig">Apply Config</button>
                 </div>
+                <div id="pendingActionsPanel" class="pending-actions-panel" style="display:none" aria-live="polite">
+                  <div class="pending-actions-header">Re-entry approval required</div>
+                  <div id="pendingActionsList"></div>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -893,6 +982,8 @@
           </div>
         </div>
       </div>
+
+      <!-- Actions: re-chase decisions live under Setup → Actions row (pendingActionsPanel) -->
 
       <!-- Unified: Open Trades + Net Profit (single table) -->
       <div class="card col-12" id="unifiedTradesCard">
@@ -3303,6 +3394,79 @@
       }
     }
 
+    async function refreshActionsPanel() {
+      const panel = document.getElementById("pendingActionsPanel");
+      const list = document.getElementById("pendingActionsList");
+      if (!panel || !list) return;
+      try {
+        const data = await api("/api/actions/pending");
+        const pending = data.pending || [];
+        const st = data.status || {};
+        if (!st.enabled && !pending.length) {
+          panel.style.display = "none";
+          list.innerHTML = "";
+          return;
+        }
+        if (!pending.length) {
+          panel.style.display = "none";
+          list.innerHTML = "";
+          return;
+        }
+        panel.style.display = "block";
+        list.innerHTML = pending.map(function (item) {
+          const sym = def(item.symbol, (item.mint || "").slice(0, 8));
+          const msg = def(item.message, sym + " failed retry entries — allow similar trades?");
+          const mint = item.mint || "";
+          return (
+            '<div class="pending-action-item" data-mint="' + mint + '">' +
+              '<span class="pending-action-symbol">' + sym + '</span>' +
+              '<span class="pending-action-msg">' + msg + '</span>' +
+              '<div class="pending-action-controls">' +
+                '<label class="pending-action-similar" title="NARC-style pattern — apply to similar tickers">' +
+                  '<input type="checkbox" class="action-similar" data-mint="' + mint + '"> Similar tickers' +
+                '</label>' +
+                '<button type="button" class="btn-secondary btn-allow action-allow-btn" data-mint="' + mint + '" data-symbol="' + sym + '">Allow</button>' +
+                '<button type="button" class="btn-secondary btn-deny action-deny-btn" data-mint="' + mint + '" data-symbol="' + sym + '">Deny</button>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join("");
+        list.querySelectorAll(".action-allow-btn").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            submitReentryAction(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), true);
+          });
+        });
+        list.querySelectorAll(".action-deny-btn").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            submitReentryAction(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), false);
+          });
+        });
+      } catch (e) {
+        console.warn("Actions panel refresh failed:", e);
+      }
+    }
+
+    async function submitReentryAction(mint, symbol, allow) {
+      if (!mint) return;
+      const list = document.getElementById("pendingActionsList");
+      const similarBox = list && list.querySelector('.action-similar[data-mint="' + mint + '"]');
+      try {
+        await api("/api/actions/decide", {
+          method: "POST",
+          body: JSON.stringify({
+            mint: mint,
+            allow: !!allow,
+            deny_similar_pattern: !!(similarBox && similarBox.checked),
+          }),
+        });
+        logActivity("Re-chase decision: " + (allow ? "allow" : "deny") + " " + (symbol || mint.slice(0, 8)));
+        await refreshActionsPanel();
+        await refresh();
+      } catch (e) {
+        alert("Decision failed: " + (e.message || e));
+      }
+    }
+
     async function refresh() {
       try {
         const status = await api("/api/bot/status");
@@ -3369,6 +3533,11 @@
           updateStartButtonState(status);
         } catch (btnErr) {
           console.error("Button state update failed:", btnErr);
+        }
+        try {
+          await refreshActionsPanel();
+        } catch (actionsErr) {
+          console.warn("Actions panel update failed:", actionsErr);
         }
       } catch (e) {
         console.error("Refresh failed:", e);

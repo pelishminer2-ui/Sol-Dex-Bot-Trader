@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Dict, List, Optional, Set
 
-from config import Config, WatchlistMintRule
+from config import Config, WatchlistMintRule, is_wbtc_watchlist_mint
 from dexscreener_client import get_dexscreener_client
 from price_feed import PriceFeed
 from scanner import MoverCandidate
@@ -254,6 +254,10 @@ def _rule_fields_for_status(rule: WatchlistMintRule) -> Dict:
 
 
 def _entry_rule_summary(rule: WatchlistMintRule) -> str:
+    if is_wbtc_watchlist_mint(rule.mint):
+        from wbtc_entry_gate import wbtc_entry_rule_summary
+
+        return wbtc_entry_rule_summary()
     if rule.min_day_pct_gain is not None:
         return f"buy when 24h >= {rule.min_day_pct_gain * 100:.0f}%"
     if rule.min_day_usd_gain is not None:
@@ -308,7 +312,17 @@ def probe_watchlist_mint_status(
         elif gain_info.get("day_pct_gain") is not None:
             momentum_pct = gain_info["day_pct_gain"]
 
-    entry_status = _status_entry_label(gain_info["qualifies"], mint, held_mints)
+    if is_wbtc_watchlist_mint(mint):
+        from wbtc_entry_gate import wbtc_day_gate_passes
+
+        qualifies = wbtc_day_gate_passes(
+            day_usd_gain=gain_info.get("day_usd_gain"),
+            day_pct_gain=gain_info.get("day_pct_gain"),
+        )
+    else:
+        qualifies = gain_info["qualifies"]
+
+    entry_status = _status_entry_label(qualifies, mint, held_mints)
 
     return {
         "enabled": True,
@@ -327,7 +341,7 @@ def probe_watchlist_mint_status(
         "momentum_pct": momentum_pct,
         "watchlist_min_usd_gain": rule.min_day_usd_gain,
         "watchlist_min_day_pct_gain": rule.min_day_pct_gain,
-        "qualifies": gain_info["qualifies"],
+        "qualifies": qualifies,
         "entry_status": entry_status,
         **_rule_fields_for_status(rule),
     }

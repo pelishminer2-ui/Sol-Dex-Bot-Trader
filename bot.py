@@ -28,6 +28,7 @@ from trade_utils import (
 )
 from price_feed import PriceFeed
 from reentry_tracker import ReentryTracker
+from reentry_retry import reentry_retry_manager
 from risk import RiskManager
 from scanner import MoverCandidate, scan_unified
 from setup_learner import SetupLearner, features_from_position_profile
@@ -181,12 +182,16 @@ class TradingBot:
             return "no_momentum_data"
         if "loss re-entry cooldown" in lower or "loss cooldown" in lower or "one-strike" in lower:
             return "loss_cooldown"
+        if "re-chase" in lower:
+            return "reentry_retry"
         if "sol macro" in lower:
             return "sol_trend"
         if "trade cooldown" in lower:
             return "trade_cooldown"
         if "watchlist gain" in lower or "watchlist mint excluded" in lower:
             return "watchlist_gain"
+        if "wbtc:" in lower:
+            return "wbtc_gate"
         if "sol trade" in lower:
             return "sol_trade"
         if "stock-related" in lower:
@@ -925,10 +930,33 @@ class TradingBot:
         )
 
     def _record_completed_trade_outcome(
-        self, mint: str, symbol: str, net_pnl_sol: float
+        self, mint: str, symbol: str, net_pnl_sol: float, *, loss_features: Optional[dict] = None
     ) -> None:
         if net_pnl_sol < 0:
+            if reentry_retry_manager.is_active():
+                handled = reentry_retry_manager.record_retry_outcome(
+                    mint,
+                    symbol=symbol,
+                    won=False,
+                    loss_signature=loss_features,
+                )
+                if handled:
+                    self._record_action(
+                        f"Re-chase retry loss on {symbol} — "
+                        f"blocked {Config.REENTRY_RETRY_BLOCK_HOURS}h"
+                    )
+                    pending = reentry_retry_manager.get_pending_actions()
+                    if any(p["mint"] == mint for p in pending):
+                        self._record_action(
+                            f"Action required: allow/deny re-chase for {symbol}"
+                        )
             self.strategy.record_loss_reentry_cooldown(mint)
+        elif net_pnl_sol > 0 and reentry_retry_manager.is_active():
+            if reentry_retry_manager.record_retry_outcome(
+                mint, symbol=symbol, won=True
+            ):
+                self.strategy.clear_mint_blocks(mint)
+                self._record_action(f"Re-chase retry win on {symbol} — blocks cleared")
         self.risk.record_trade_outcome(net_pnl_sol, dry_run=self.dry_run)
 
     def _fetch_position_prices(self, mints: List[str]) -> dict:
@@ -1539,7 +1567,14 @@ class TradingBot:
                         exit_reason=partial_journal.get("reason"),
                     )
                     self._record_completed_trade_outcome(
-                        position.mint, position.symbol, position.realized_net_pnl_sol
+                        position.mint,
+                        position.symbol,
+                        position.realized_net_pnl_sol,
+                        loss_features=(
+                            self._trade_loss_signature(position)
+                            if position.realized_net_pnl_sol < 0
+                            else None
+                        ),
                     )
                     self.reentry_tracker.record_exit(
                         position.mint, current_price, position.symbol
@@ -1618,7 +1653,14 @@ class TradingBot:
                 exit_reason=sell_journal.get("reason"),
             )
             self._record_completed_trade_outcome(
-                position.mint, position.symbol, position.realized_net_pnl_sol
+                position.mint,
+                position.symbol,
+                position.realized_net_pnl_sol,
+                loss_features=(
+                    self._trade_loss_signature(position)
+                    if position.realized_net_pnl_sol < 0
+                    else None
+                ),
             )
             return
 
@@ -1703,7 +1745,14 @@ class TradingBot:
             exit_reason=sell_journal.get("reason"),
         )
         self._record_completed_trade_outcome(
-            position.mint, position.symbol, position.realized_net_pnl_sol
+            position.mint,
+            position.symbol,
+            position.realized_net_pnl_sol,
+            loss_features=(
+                self._trade_loss_signature(position)
+                if position.realized_net_pnl_sol < 0
+                else None
+            ),
         )
         self._record_action(
             f"Force sold {position.symbol}: {reason} net {sell_journal.get('net_pnl_sol', 0):+.4f} SOL"
@@ -1802,7 +1851,136 @@ class TradingBot:
                 exit_reason=sell_journal.get("reason"),
             )
             self._record_completed_trade_outcome(
-                position.mint, position.symbol, position.realized_net_pnl_sol
+                position.mint,
+                position.symbol,
+                position.realized_net_pnl_sol,
+                loss_features=(
+                    self._trade_loss_signature(position)
+                    if position.realized_net_pnl_sol < 0
+                    else None
+                ),
+            )
+
+    def _trade_loss_signature(self, position: Position) -> dict:
+        from setup_learner import features_from_position_profile, normalize_setup_features
+
+        features = features_from_position_profile(
+            position.profile,
+            entry_price_impact_pct=position.profile.get("entry_price_impact_pct"),
+            scanner_source=position.profile.get("scanner_source"),
+        )
+        return normalize_setup_features(features)
+
+    async def _reentry_retry_slippage_ok(
+        self, candidate: MoverCandidate
+    ) -> tuple[bool, Optional[str]]:
+        """Fresh Jupiter slippage / orderflow check before a re-chase retry entry."""
+        assert self.solana and self.jupiter
+
+        balance = await self.solana.get_balance()
+        trade_size = self.risk.compute_trade_size(balance, dry_run=self.dry_run)
+        if trade_size <= 0:
+            return False, "trade size is zero"
+
+        quote = self.jupiter.buy_token(candidate.mint, trade_size)
+        if not quote:
+            return False, f"no Jupiter route for {candidate.symbol}"
+
+        sell_preview = self._preview_l1_sell_quote(candidate.mint, quote)
+        full_sell_preview = self.jupiter.sell_token(
+            candidate.mint, quote.out_amount, use_cache=True
+        )
+        if full_sell_preview:
+            full_impact = abs(full_sell_preview.price_impact_pct)
+            if full_impact > Config.MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT:
+                return (
+                    False,
+                    f"full exit preview impact {full_impact:.2f}% > "
+                    f"{Config.MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT:.1f}%",
+                )
+            stop = effective_stop_loss_pct(candidate.mint)
+            sol_in, _ = quote_sol_flow(quote)
+            _, sol_out = quote_sol_flow(full_sell_preview)
+            if sol_in > 0:
+                flat_fees = estimate_round_trip_fees_sol(
+                    trade_size, quote.raw, full_sell_preview.raw
+                )
+                flat_pnl_pct = (sol_out - sol_in - flat_fees) / sol_in
+                if flat_pnl_pct <= -stop:
+                    return (
+                        False,
+                        f"flat-book sell preview loss {flat_pnl_pct * 100:.2f}% "
+                        f"> stop {stop * 100:.2f}%",
+                    )
+
+        ok, check_reason = self.risk.check_entry_eligibility(
+            trade_size,
+            candidate.liquidity_usd,
+            quote.price_impact_pct,
+            skip_liquidity=(candidate.source == "reentry"),
+            mint=candidate.mint,
+            symbol=candidate.symbol,
+            name=candidate.name,
+            jupiter_quote_buy=quote.raw,
+            jupiter_quote_sell=sell_preview.raw if sell_preview else None,
+            sell_preview_impact_pct=(
+                sell_preview.price_impact_pct if sell_preview else None
+            ),
+        )
+        if not ok:
+            return False, check_reason or "entry eligibility failed"
+
+        ok, check_reason = self.risk.pre_trade_check(
+            balance,
+            quote.price_impact_pct,
+            dry_run=self.dry_run,
+            max_impact_pct=Config.effective_max_entry_price_impact_pct(),
+        )
+        if not ok:
+            return False, check_reason or "pre-trade impact check failed"
+        return True, None
+
+    async def _maybe_open_reentry_retry_window(
+        self,
+        candidate: MoverCandidate,
+        current_price: float,
+        momentum: Optional[float],
+        *,
+        usd_gain: Optional[float] = None,
+    ) -> None:
+        if not reentry_retry_manager.is_active():
+            return
+        if not self.strategy.is_on_loss_reentry_cooldown(
+            candidate.mint, ignore_retry_bypass=True
+        ):
+            return
+        if not reentry_retry_manager.can_open_retry_window(candidate.mint):
+            return
+        signal = self.strategy.evaluate_entry(
+            candidate,
+            current_price,
+            momentum,
+            usd_gain=usd_gain,
+            sol_trend_snapshot=self.sol_trend_snapshot,
+            setup_learner=self.setup_learner,
+            skip_loss_cooldown_check=True,
+        )
+        if signal != SignalType.BUY:
+            return
+        slippage_ok, slip_reason = await self._reentry_retry_slippage_ok(candidate)
+        if not slippage_ok:
+            logger.debug(
+                "Re-chase window not opened for %s: %s",
+                candidate.symbol,
+                slip_reason,
+            )
+            return
+        signature = reentry_retry_manager.loss_signature_from_candidate(candidate)
+        if reentry_retry_manager.open_retry_window(
+            candidate.mint, candidate.symbol, signature
+        ):
+            self._record_action(
+                f"Smart re-chase: 1h retry window for {candidate.symbol}"
             )
 
     async def _stop_for_paper_balance_depletion(self) -> None:
@@ -1819,6 +1997,7 @@ class TradingBot:
         momentum: Optional[float],
         *,
         is_dip_reentry: bool = False,
+        is_reentry_retry: bool = False,
     ) -> bool:
         assert self.solana and self.jupiter
 
@@ -1916,6 +2095,24 @@ class TradingBot:
             trade_size, quote, sell_preview
         )
 
+        if is_wbtc_watchlist_mint(candidate.mint):
+            from wbtc_entry_gate import wbtc_instant_gain_feasible_from_quotes
+
+            wbtc_ok, wbtc_reason = wbtc_instant_gain_feasible_from_quotes(
+                trade_size,
+                fee_budget,
+                buy_impact_pct=quote.price_impact_pct,
+                sell_preview_impact_pct=(
+                    sell_preview.price_impact_pct if sell_preview else None
+                ),
+            )
+            if not wbtc_ok:
+                reason = wbtc_reason or "WBTC: instant target not feasible"
+                self._note_entry_skip(reason)
+                self._record_action(f"Entry skipped: {reason}")
+                logger.warning("Buy blocked: %s", reason)
+                return False
+
         ok, check_reason = self.risk.check_entry_eligibility(
             trade_size,
             candidate.liquidity_usd,
@@ -1995,6 +2192,8 @@ class TradingBot:
             )
         if is_dip_reentry:
             self.strategy.traded_mints_cooldown.pop(candidate.mint, None)
+        if is_reentry_retry:
+            reentry_retry_manager.mark_retry_entry(candidate.mint)
 
         self.risk.journal_write(
             build_buy_journal(
@@ -2014,9 +2213,11 @@ class TradingBot:
         if self.dry_run:
             paper_session_manager.record_buy(trade_size)
         kind = "dip re-entry" if is_dip_reentry else (
-            "SOL trade" if candidate.source == "sol_trade" else (
-                "WETH trade" if candidate.source == "weth_trade" else (
-                    "watchlist" if candidate.source == "watchlist_mint" else "momentum"
+            "re-chase retry" if is_reentry_retry else (
+                "SOL trade" if candidate.source == "sol_trade" else (
+                    "WETH trade" if candidate.source == "weth_trade" else (
+                        "watchlist" if candidate.source == "watchlist_mint" else "momentum"
+                    )
                 )
             )
         )
@@ -2252,6 +2453,21 @@ class TradingBot:
                 candidate.session_usd_gain = gain_info.get("session_usd_gain")
                 candidate.day_usd_gain = gain_info.get("day_usd_gain")
                 candidate.day_pct_gain = gain_info.get("day_pct_gain")
+            if reentry_retry_manager.is_active():
+                denied, deny_reason = reentry_retry_manager.entry_denied_for_candidate(
+                    candidate
+                )
+                if denied:
+                    self._note_entry_skip(deny_reason)
+                    continue
+                await self._maybe_open_reentry_retry_window(
+                    candidate,
+                    current_price,
+                    momentum,
+                    usd_gain=candidate.day_usd_gain
+                    if is_pinned_watchlist_mint(candidate.mint)
+                    else None,
+                )
             signal = self.strategy.evaluate_entry(
                 candidate,
                 current_price,
@@ -2272,7 +2488,27 @@ class TradingBot:
                     self._note_entry_skip(skip_reason)
                 continue
 
-            if await self._execute_entry(candidate, current_price, momentum):
+            is_reentry_retry = reentry_retry_manager.is_retry_entry_pending(
+                candidate.mint
+            )
+            if is_reentry_retry:
+                slippage_ok, slip_reason = await self._reentry_retry_slippage_ok(
+                    candidate
+                )
+                if not slippage_ok:
+                    reason = (
+                        f"re-chase retry slippage check failed: "
+                        f"{slip_reason or 'unknown'} ({candidate.symbol})"
+                    )
+                    self._note_entry_skip(reason)
+                    continue
+
+            if await self._execute_entry(
+                candidate,
+                current_price,
+                momentum,
+                is_reentry_retry=is_reentry_retry,
+            ):
                 held_mints.add(candidate.mint)
 
         if self._cycle_entry_skip_reason is not None:

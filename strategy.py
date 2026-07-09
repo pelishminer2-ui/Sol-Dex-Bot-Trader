@@ -27,6 +27,7 @@ from fee_estimator import (
     get_fee_budget,
 )
 from scanner import MoverCandidate
+from wbtc_entry_gate import wbtc_entry_skip_reason
 from watchlist_scanner import (
     get_watchlist_rule,
     is_pinned_watchlist_mint,
@@ -207,7 +208,14 @@ class MomentumStrategy:
             count,
         )
 
-    def is_on_loss_reentry_cooldown(self, mint: str) -> bool:
+    def is_on_loss_reentry_cooldown(
+        self, mint: str, *, ignore_retry_bypass: bool = False
+    ) -> bool:
+        if not ignore_retry_bypass:
+            from reentry_retry import reentry_retry_manager
+
+            if reentry_retry_manager.bypasses_loss_block(mint):
+                return False
         if Config.LOSS_ONE_STRIKE_PER_SESSION and mint in self._one_strike_blocked:
             return True
         until = self._loss_reentry_until.get(mint, 0.0)
@@ -297,6 +305,7 @@ class MomentumStrategy:
         *,
         sol_trend_snapshot: Optional[dict] = None,
         setup_learner=None,
+        skip_loss_cooldown_check: bool = False,
     ) -> SignalType:
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
         from stock_token_filter import is_stock_related_token, log_skipped_stock_token
@@ -314,7 +323,9 @@ class MomentumStrategy:
             return SignalType.NONE
         if self.is_on_cooldown(candidate.mint):
             return SignalType.NONE
-        if self.is_on_loss_reentry_cooldown(candidate.mint):
+        if not skip_loss_cooldown_check and self.is_on_loss_reentry_cooldown(
+            candidate.mint
+        ):
             logger.debug(
                 "Entry blocked (loss cooldown): %s",
                 candidate.symbol,
@@ -369,6 +380,21 @@ class MomentumStrategy:
             if day_gain is None:
                 day_gain = candidate.usd_gain_baseline
             day_pct = getattr(candidate, "day_pct_gain", None)
+            if is_wbtc_watchlist_mint(candidate.mint):
+                wbtc_reason = wbtc_entry_skip_reason(
+                    candidate, day_usd_gain=day_gain, day_pct_gain=day_pct
+                )
+                if wbtc_reason:
+                    logger.info("Entry blocked (WBTC gate): %s", wbtc_reason)
+                    return SignalType.NONE
+                logger.info(
+                    "Buy signal (WBTC): %s day_usd_gain=$%.2f day_pct=%.3f%% price=%.8f",
+                    candidate.symbol,
+                    day_gain if day_gain is not None else 0.0,
+                    (day_pct or 0.0) * 100,
+                    current_price,
+                )
+                return SignalType.BUY
             if watchlist_entry_qualifies(
                 rule,
                 day_usd_gain=day_gain,
@@ -423,6 +449,7 @@ class MomentumStrategy:
         *,
         sol_trend_snapshot: Optional[dict] = None,
         setup_learner=None,
+        skip_loss_cooldown_check: bool = False,
     ) -> Optional[str]:
         """Human-readable reason when evaluate_entry would not buy."""
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
@@ -440,7 +467,9 @@ class MomentumStrategy:
             return "max open positions reached"
         if self.is_on_cooldown(candidate.mint):
             return f"trade cooldown active: {candidate.symbol}"
-        if self.is_on_loss_reentry_cooldown(candidate.mint):
+        if not skip_loss_cooldown_check and self.is_on_loss_reentry_cooldown(
+            candidate.mint
+        ):
             if (
                 Config.LOSS_ONE_STRIKE_PER_SESSION
                 and candidate.mint in self._one_strike_blocked
@@ -480,6 +509,10 @@ class MomentumStrategy:
             if day_gain is None:
                 day_gain = candidate.usd_gain_baseline
             day_pct = getattr(candidate, "day_pct_gain", None)
+            if is_wbtc_watchlist_mint(candidate.mint):
+                return wbtc_entry_skip_reason(
+                    candidate, day_usd_gain=day_gain, day_pct_gain=day_pct
+                )
             if watchlist_entry_qualifies(
                 rule,
                 day_usd_gain=day_gain,

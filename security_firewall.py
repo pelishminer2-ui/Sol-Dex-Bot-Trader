@@ -53,6 +53,8 @@ ALLOWED_ROUTES: Set[Tuple[str, str]] = {
     ("POST", "/api/bot/stop"),
     ("POST", "/api/bot/force-reset"),
     ("POST", "/api/mint/unblock"),
+    ("GET", "/api/actions/pending"),
+    ("POST", "/api/actions/decide"),
     ("POST", "/api/config"),
     ("POST", "/api/config/save-bookmark"),
     ("POST", "/api/config/apply-best-win-strategy"),

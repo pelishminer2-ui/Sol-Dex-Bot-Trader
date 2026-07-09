@@ -690,6 +690,7 @@ class BotManager:
             "config": Config.to_dict(),
             "open_positions_count": open_positions_count,
             "consecutive_loss_pause": consecutive_loss_pause,
+            "reentry_retry": self._reentry_retry_status(),
             "max_open_positions": effective_max_open_positions,
             "max_open_positions_base": Config.MAX_OPEN_POSITIONS,
             "max_open_positions_wbtc": Config.MAX_OPEN_POSITIONS_WBTC,
@@ -1347,6 +1348,54 @@ class BotManager:
             new_lines.append(f"SOLANA_PRIVATE_KEY={key}")
 
         path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _reentry_retry_status() -> dict:
+        from reentry_retry import reentry_retry_manager
+
+        return reentry_retry_manager.status_snapshot()
+
+    def reentry_retry_status(self) -> dict:
+        return self._reentry_retry_status()
+
+    def get_pending_actions(self) -> List[Dict[str, Any]]:
+        from reentry_retry import reentry_retry_manager
+
+        return reentry_retry_manager.get_pending_actions()
+
+    def decide_reentry_action(
+        self,
+        mint: str,
+        *,
+        allow: bool,
+        deny_similar_pattern: bool = False,
+    ) -> Dict[str, Any]:
+        from reentry_retry import reentry_retry_manager
+
+        mint = (mint or "").strip()
+        if not mint:
+            raise ValueError("mint is required")
+        result = reentry_retry_manager.apply_decision(
+            mint,
+            allow=allow,
+            deny_similar_pattern=deny_similar_pattern,
+        )
+        if allow:
+            with self._lock:
+                bot = self._bot
+                if bot:
+                    bot.strategy.clear_mint_blocks(mint)
+                    bot._record_action(
+                        f"User allowed re-chase for {result.get('symbol') or mint[:8]}"
+                    )
+        else:
+            with self._lock:
+                bot = self._bot
+                if bot:
+                    bot._record_action(
+                        f"User denied re-chase for {result.get('symbol') or mint[:8]}"
+                    )
+        return result
 
     def unblock_mint(
         self, mint: str, *, symbol: str = "", name: str = ""

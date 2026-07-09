@@ -142,9 +142,12 @@ def test_strategy_evaluate_entry_allows_wbtc_watchlist():
     reset_logged_skips()
     strategy = MomentumStrategy()
     wbtc = _candidate(WATCHLIST_MINT, "WBTC", name="Wrapped BTC (Wormhole)")
-    with patch("watchlist_scanner.watchlist_usd_gain_qualifies", return_value=True):
-        with patch("strategy.is_pinned_watchlist_mint", return_value=True):
-            assert strategy.evaluate_entry(wbtc, 65000.0, momentum=0.0, usd_gain=80.0) == SignalType.BUY
+    wbtc.day_usd_gain = 80.0
+    wbtc.day_pct_gain = 0.001
+    with patch("strategy.is_pinned_watchlist_mint", return_value=True):
+        assert strategy.evaluate_entry(
+            wbtc, 65000.0, momentum=0.0, usd_gain=80.0
+        ) == SignalType.BUY
     print("PASS: strategy_evaluate_entry_allows_wbtc_watchlist")
 
 
