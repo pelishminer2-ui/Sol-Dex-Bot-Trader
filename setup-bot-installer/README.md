@@ -24,7 +24,7 @@ Outputs:
 |----------|------|
 | Frozen app (PyInstaller) | `setup-bot-installer\build\app\SolDexBotTrader\` |
 | **setup.exe** | `setup-bot-installer\output\setup.exe` |
-| User guide PDF | `docs\Sol-Dex-Bot-Trader-User-Guide.pdf` (also copied into installer payload) |
+| User guide PDF | `setup-bot-installer\output\Sol-Dex-Bot-Trader-User-Guide.pdf` (also `docs\` + installer payload) |
 
 ## Steps performed by `build.ps1`
 

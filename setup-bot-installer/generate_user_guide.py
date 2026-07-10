@@ -3,6 +3,7 @@
 Writes:
   - docs/Sol-Dex-Bot-Trader-User-Guide.pdf
   - setup-bot-installer/Sol-Dex-Bot-Trader-User-Guide.pdf
+  - setup-bot-installer/output/Sol-Dex-Bot-Trader-User-Guide.pdf
 """
 
 from __future__ import annotations
@@ -33,15 +34,20 @@ ASSETS = INSTALLER / "assets"
 DOCS = ROOT / "docs"
 OUT_DOCS = DOCS / "Sol-Dex-Bot-Trader-User-Guide.pdf"
 OUT_INSTALLER = INSTALLER / "Sol-Dex-Bot-Trader-User-Guide.pdf"
+OUT_OUTPUT = INSTALLER / "output" / "Sol-Dex-Bot-Trader-User-Guide.pdf"
 
 FEE_WALLET = "8TdLLnveaK5iFD6dmVU7qfw8V14cM7CyCcHiZfgcRQMi"
 FEE_SOL = "0.025"
+INSTALL_DIR = r"%LOCALAPPDATA%\Programs\Sol Dex Bot Trader\\"
+DASHBOARD_URL = "http://127.0.0.1:5000"
 
 BRAND = colors.HexColor("#0f2744")
 ACCENT = colors.HexColor("#1a6b8a")
 DANGER = colors.HexColor("#8b1e1e")
 WARN_BG = colors.HexColor("#fff3cd")
 DANGER_BG = colors.HexColor("#f8d7da")
+OK_BG = colors.HexColor("#eaf6ea")
+OK_BORDER = colors.HexColor("#2d6a3e")
 MUTED = colors.HexColor("#555555")
 
 
@@ -103,6 +109,14 @@ def _styles():
             textColor=DANGER,
             alignment=TA_LEFT,
         ),
+        "ok": ParagraphStyle(
+            "OkCustom",
+            parent=base["Normal"],
+            fontSize=10,
+            leading=13,
+            textColor=OK_BORDER,
+            alignment=TA_LEFT,
+        ),
         "caption": ParagraphStyle(
             "CaptionCustom",
             parent=base["Normal"],
@@ -123,8 +137,8 @@ def _styles():
     return styles
 
 
-def _callout(text: str, styles, bg=DANGER_BG, border=DANGER) -> KeepTogether:
-    p = Paragraph(text, styles["warn"])
+def _callout(text: str, styles, bg=DANGER_BG, border=DANGER, style_key="warn") -> KeepTogether:
+    p = Paragraph(text, styles[style_key])
     t = Table([[p]], colWidths=[6.5 * inch])
     t.setStyle(
         TableStyle(
@@ -148,7 +162,10 @@ def _img(name: str, width: float = 6.2 * inch) -> list:
     im = Image(str(path))
     aspect = im.imageHeight / float(im.imageWidth)
     im.drawWidth = width
-    im.drawHeight = width * aspect
+    im.drawHeight = min(width * aspect, 4.2 * inch)
+    if width * aspect > 4.2 * inch:
+        im.drawWidth = 4.2 * inch / aspect
+        im.drawHeight = 4.2 * inch
     return [im]
 
 
@@ -156,7 +173,7 @@ def build_story(styles) -> list:
     story: list = []
 
     story.append(Paragraph("Sol Dex Bot Trader", styles["title"]))
-    story.append(Paragraph("End-User Guide — Install, Wallet, Operate, Safety", styles["subtitle"]))
+    story.append(Paragraph("End-User Guide — Install, Console, Wallet, Operate, Safety", styles["subtitle"]))
 
     story.append(
         _callout(
@@ -171,34 +188,140 @@ def build_story(styles) -> list:
         )
     )
 
-    story.append(Paragraph("1. Install (setup.exe)", styles["h1"]))
+    # --- 1. Install ---
+    story.append(Paragraph("1. Install &amp; first launch (setup.exe)", styles["h1"]))
     story.append(
         Paragraph(
             "Run <b>setup.exe</b>. Accept the prompts and finish the wizard. "
-            "You do <b>not</b> need to run PowerShell scripts or <font face='Courier'>.bat</font> files. "
+            "You do <b>not</b> need PowerShell scripts or <font face='Courier'>.bat</font> files. "
             "When installation completes (or when you launch from the Start Menu / Desktop shortcut), "
             "the app starts the local server and opens your <b>default browser</b> to "
-            "<font face='Courier'>http://127.0.0.1:5000</font>.",
+            f"<font face='Courier'>{DASHBOARD_URL}</font>.",
             styles["body"],
         )
     )
-    story.extend(
-        [
-            Paragraph("What to expect:", styles["h2"]),
-            ListFlowable(
-                [
-                    ListItem(Paragraph("Start Menu and optional Desktop shortcut: <b>Sol Dex Bot Trader</b>", styles["bullet"])),
-                    ListItem(Paragraph("User Guide PDF installed under the app <font face='Courier'>docs</font> folder (also linked in Start Menu)", styles["bullet"])),
-                    ListItem(Paragraph("Dashboard loads on localhost only — never expose port 5000 to the internet", styles["bullet"])),
-                ],
-                bulletType="bullet",
-                start="•",
-            ),
-            Spacer(1, 6),
-        ]
+    story.extend(_img("install-flow.png", width=6.3 * inch))
+    story.append(
+        Paragraph(
+            "Install flow: setup.exe → install folder → console (keep open) → browser dashboard.",
+            styles["caption"],
+        )
+    )
+    story.append(
+        ListFlowable(
+            [
+                ListItem(
+                    Paragraph(
+                        f"<b>Install folder:</b> <font face='Courier'>{INSTALL_DIR}</font> "
+                        "(Windows per-user Programs path)",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        f"<b>.env created</b> under that folder on first launch "
+                        f"(seeded from <font face='Courier'>.env.example</font> if missing). "
+                        f"Full path example: <font face='Courier'>{INSTALL_DIR}.env</font>",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "Start Menu and optional Desktop shortcut: <b>Sol Dex Bot Trader</b>",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "User Guide PDF installed under the app <font face='Courier'>docs</font> folder "
+                        "(also linked in Start Menu)",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "Dashboard loads on localhost only — never expose port 5000 to the internet",
+                        styles["bullet"],
+                    )
+                ),
+            ],
+            bulletType="bullet",
+            start="•",
+        )
+    )
+    story.append(Spacer(1, 6))
+
+    # --- 2. Console MUST stay open ---
+    story.append(Paragraph("2. Console window MUST stay open", styles["h1"]))
+    story.append(
+        _callout(
+            "<b>CRITICAL:</b> When the bot launches, a <b>black terminal / console window</b> opens. "
+            "That window <b>IS the Flask server process</b>. "
+            "It must remain open the entire time you use the dashboard or trade. "
+            "You may <b>minimize</b> it, but <b>do not close it</b>. "
+            "Closing the console stops the server — the browser dashboard goes offline and trading stops.",
+            styles,
+            bg=WARN_BG,
+            border=colors.HexColor("#856404"),
+        )
+    )
+    story.extend(_img("console-keep-open.png", width=6.3 * inch))
+    story.append(
+        Paragraph(
+            "The black console is the server. Minimize OK — close = bot stops.",
+            styles["caption"],
+        )
+    )
+    story.append(
+        ListFlowable(
+            [
+                ListItem(
+                    Paragraph(
+                        "<b>Keep open:</b> console shows lines like Dashboard URL and install dir — that means the server is running",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Minimize:</b> fine — use the browser at "
+                        f"<font face='Courier'>{DASHBOARD_URL}</font> while the console stays in the taskbar",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Do not close:</b> clicking X on the console kills the process; Start/Stop in the UI will not work until you relaunch the app",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Why:</b> the packaged app runs the local web server inside that console window — there is no separate background service",
+                        styles["bullet"],
+                    )
+                ),
+            ],
+            bulletType="bullet",
+            start="•",
+        )
+    )
+    story.append(Spacer(1, 6))
+    story.append(
+        _callout(
+            "<b>Remember:</b> Browser tab alone is not enough. "
+            "If the console is closed, refresh will fail and no trades can run. "
+            "Relaunch <b>Sol Dex Bot Trader</b> from Start Menu to bring the console back.",
+            styles,
+            bg=OK_BG,
+            border=OK_BORDER,
+            style_key="ok",
+        )
     )
 
-    story.append(Paragraph("2. Supported wallets (Phantom or Solflare ONLY)", styles["h1"]))
+    story.append(PageBreak())
+
+    # --- 3. Wallets ---
+    story.append(Paragraph("3. Supported wallets (Phantom or Solflare ONLY)", styles["h1"]))
     story.append(
         _callout(
             "<b>Wallets:</b> Use <b>Phantom</b> or <b>Solflare</b> only. "
@@ -217,7 +340,7 @@ def build_story(styles) -> list:
         )
     )
 
-    story.append(Paragraph("3. Export private key — Phantom", styles["h1"]))
+    story.append(Paragraph("4. Export private key — Phantom", styles["h1"]))
     story.extend(_img("phantom-export-key.png"))
     story.append(
         Paragraph(
@@ -227,7 +350,7 @@ def build_story(styles) -> list:
         )
     )
 
-    story.append(Paragraph("4. Export private key — Solflare", styles["h1"]))
+    story.append(Paragraph("5. Export private key — Solflare", styles["h1"]))
     story.extend(_img("solflare-export-key.png"))
     story.append(
         Paragraph(
@@ -239,7 +362,9 @@ def build_story(styles) -> list:
     )
 
     story.append(PageBreak())
-    story.append(Paragraph("5. Operate the bot", styles["h1"]))
+
+    # --- 6. Operate ---
+    story.append(Paragraph("6. Operate the bot", styles["h1"]))
     story.extend(_img("bot-dashboard-overview.png"))
     story.append(
         Paragraph(
@@ -250,26 +375,79 @@ def build_story(styles) -> list:
     story.append(
         ListFlowable(
             [
-                ListItem(Paragraph("<b>Start Bot / Stop</b> — start or stop the trading loop", styles["bullet"])),
-                ListItem(Paragraph("<b>Paper Trade</b> (recommended first) — simulated balance, real market data, no on-chain swaps, <b>no live-start fee</b>", styles["bullet"])),
-                ListItem(Paragraph("<b>Live</b> — real Jupiter swaps with your funded wallet (fee applies on each Live start)", styles["bullet"])),
-                ListItem(Paragraph("<b>Open Trades</b> — view open positions; use <b>Sell</b> for a manual full exit", styles["bullet"])),
-                ListItem(Paragraph("<b>Actions / Smart Re-entry</b> — Allow or Deny pending re-entry decisions when prompted", styles["bullet"])),
+                ListItem(
+                    Paragraph(
+                        "<b>Start Bot / Stop</b> — start or stop the trading loop (console must still be open)",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Paper Trade</b> (recommended first) — simulated balance, real market data, "
+                        "no on-chain swaps, <b>no live-start fee</b>",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Live</b> — real Jupiter swaps with your funded wallet "
+                        f"(<b>{FEE_SOL} SOL</b> fee applies on each Live start — see section 8)",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Open Trades</b> — view open positions; use <b>Sell</b> / Manual Sell for a full exit",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Actions / Smart Re-entry</b> — when a re-entry decision is pending, "
+                        "use <b>Allow</b> or <b>Deny</b> in the Actions panel",
+                        styles["bullet"],
+                    )
+                ),
             ],
             bulletType="bullet",
             start="•",
         )
     )
 
-    story.append(Paragraph("6. Strategies — which button to use", styles["h1"]))
+    story.append(Paragraph("7. Strategies — which button to use", styles["h1"]))
+    story.extend(_img("strategy-buttons.png", width=6.3 * inch))
+    story.append(
+        Paragraph(
+            "Strategy button row: Best Win · Steady Trade (recommended) · Balanced Win · Revert · Reset · Apply Config.",
+            styles["caption"],
+        )
+    )
     rows = [
         [Paragraph("<b>Button</b>", styles["bullet"]), Paragraph("<b>What it does</b>", styles["bullet"])],
-        [Paragraph("Best Win", styles["bullet"]), Paragraph("Strict filters — fewer, higher-quality entries", styles["bullet"])],
-        [Paragraph("Steady Trade", styles["bullet"]), Paragraph("<b>Default / recommended</b> — balanced pace with loss protections", styles["bullet"])],
-        [Paragraph("Balanced Win", styles["bullet"]), Paragraph("More trades, still fee-aware", styles["bullet"])],
-        [Paragraph("Revert to bookmark", styles["bullet"]), Paragraph("Restore the saved pre-strategy bookmark config", styles["bullet"])],
-        [Paragraph("Reset Defaults", styles["bullet"]), Paragraph("Reset spread / setup defaults", styles["bullet"])],
-        [Paragraph("Apply Config", styles["bullet"]), Paragraph("Apply the values currently shown in the Setup panel", styles["bullet"])],
+        [
+            Paragraph("Best Win", styles["bullet"]),
+            Paragraph("Strict filters — fewer, higher-quality entries", styles["bullet"]),
+        ],
+        [
+            Paragraph("Steady Trade", styles["bullet"]),
+            Paragraph("<b>Default / recommended</b> — balanced pace with loss protections", styles["bullet"]),
+        ],
+        [
+            Paragraph("Balanced Win", styles["bullet"]),
+            Paragraph("More trades, still fee-aware", styles["bullet"]),
+        ],
+        [
+            Paragraph("Revert to bookmark", styles["bullet"]),
+            Paragraph("Restore the saved pre-strategy bookmark config", styles["bullet"]),
+        ],
+        [
+            Paragraph("Reset Defaults", styles["bullet"]),
+            Paragraph("Reset spread / setup defaults", styles["bullet"]),
+        ],
+        [
+            Paragraph("Apply Config", styles["bullet"]),
+            Paragraph("Apply the values currently shown in the Setup panel", styles["bullet"]),
+        ],
     ]
     table = Table(rows, colWidths=[1.6 * inch, 4.9 * inch])
     table.setStyle(
@@ -289,7 +467,8 @@ def build_story(styles) -> list:
     story.append(table)
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph("7. Live trading fee (0.025 SOL)", styles["h1"]))
+    # --- 8. Fee ---
+    story.append(Paragraph("8. Live trading fee (0.025 SOL)", styles["h1"]))
     story.append(
         _callout(
             f"<b>Live-start fee:</b> <b>{FEE_SOL} SOL</b> is charged <b>each time you start Live trading</b> "
@@ -302,15 +481,47 @@ def build_story(styles) -> list:
         )
     )
 
-    story.append(Paragraph("8. Safety", styles["h1"]))
+    # --- 9. Safety ---
+    story.append(Paragraph("9. Safety", styles["h1"]))
     story.append(
         ListFlowable(
             [
-                ListItem(Paragraph("Runs on <b>localhost only</b> (127.0.0.1) — do not port-forward or expose publicly", styles["bullet"])),
-                ListItem(Paragraph("<b>Never share</b> your private key, seed phrase, or .env file", styles["bullet"])),
-                ListItem(Paragraph("Start with <b>Paper Trade</b> until you understand Start/Stop, strategies, and exits", styles["bullet"])),
-                ListItem(Paragraph("Keep only funds you can afford to lose in the trading wallet", styles["bullet"])),
-                ListItem(Paragraph("<b>Gains are not guaranteed</b> — markets move against you; you invest at your own risk", styles["bullet"])),
+                ListItem(
+                    Paragraph(
+                        "Keep the <b>black console window open</b> while using the bot (minimize OK)",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "Runs on <b>localhost only</b> (127.0.0.1) — do not port-forward or expose publicly",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Never share</b> your private key, seed phrase, or .env file",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "Start with <b>Paper Trade</b> until you understand Start/Stop, strategies, and exits",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "Keep only funds you can afford to lose in the trading wallet",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Gains are not guaranteed</b> — markets move against you; you invest at your own risk",
+                        styles["bullet"],
+                    )
+                ),
             ],
             bulletType="bullet",
             start="•",
@@ -328,7 +539,7 @@ def build_story(styles) -> list:
     )
     story.append(
         Paragraph(
-            "Sol Dex Bot Trader — local use only · User guide regenerable via setup-bot-installer/generate_user_guide.py",
+            "Sol Dex Bot Trader — local use only · Regenerable via setup-bot-installer/generate_user_guide.py",
             styles["footer"],
         )
     )
@@ -350,10 +561,12 @@ def _add_page_number(canvas, doc):
 def main() -> None:
     DOCS.mkdir(parents=True, exist_ok=True)
     ASSETS.mkdir(parents=True, exist_ok=True)
+    OUT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     styles = _styles()
-    story = build_story(styles)
 
-    for out in (OUT_DOCS, OUT_INSTALLER):
+    # Build story fresh per output — reportlab flowables are single-use.
+    for out in (OUT_DOCS, OUT_INSTALLER, OUT_OUTPUT):
+        story = build_story(styles)
         doc = SimpleDocTemplate(
             str(out),
             pagesize=letter,
@@ -365,7 +578,7 @@ def main() -> None:
             author="Sol Dex Bot Trader",
         )
         doc.build(story, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
-        print(f"Wrote {out}")
+        print(f"Wrote {out} ({out.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

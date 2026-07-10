@@ -112,9 +112,14 @@ try {
 
     $PdfInstaller = Join-Path $InstallerDir "Sol-Dex-Bot-Trader-User-Guide.pdf"
     $PdfDocs = Join-Path $Root "docs\Sol-Dex-Bot-Trader-User-Guide.pdf"
+    $OutDir = Join-Path $InstallerDir "output"
+    $PdfOutput = Join-Path $OutDir "Sol-Dex-Bot-Trader-User-Guide.pdf"
     if (-not (Test-Path $PdfInstaller)) {
         throw "Missing PDF at $PdfInstaller - run generate_user_guide.py first"
     }
+    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+    Copy-Item -Force $PdfInstaller $PdfOutput
+    Write-Host "PDF copied to: $PdfOutput"
 
     if (-not $SkipPyInstaller) {
         Write-Host ""
@@ -151,16 +156,18 @@ try {
             exit 2
         }
         Write-Host "Using ISCC: $Iscc"
-        $OutDir = Join-Path $InstallerDir "output"
         New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
         # ISCC resolves OutputDir relative to the .iss file location
         & $Iscc (Join-Path $InstallerDir "setup.iss")
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed" }
         $Setup = Join-Path $OutDir "setup.exe"
         if (-not (Test-Path $Setup)) { throw "setup.exe not produced at $Setup" }
+        # Re-copy PDF after Inno in case OutputDir was cleaned; keep end-user PDF in output/
+        Copy-Item -Force $PdfInstaller $PdfOutput
         $sizeMb = [math]::Round((Get-Item $Setup).Length / 1MB, 1)
         Write-Host ""
         Write-Host ("DONE: {0} ({1} MB)" -f $Setup, $sizeMb) -ForegroundColor Green
+        Write-Host ("PDF:  {0}" -f $PdfOutput)
         Write-Host ("PDF:  {0}" -f $PdfDocs)
     } else {
         Write-Host ""
