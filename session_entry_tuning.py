@@ -88,6 +88,20 @@ def effective_setup_learning_min_win_lean() -> float:
     return min(float(base) + bump, cap)
 
 
+def apply_runtime_win_lean(new_lean: float) -> None:
+    """Sync session base when win-lean is changed via runtime config API."""
+    with _lock:
+        base = _state.get("base_win_lean")
+        bump = float(_state.get("win_lean_bump", 0.0))
+        if base is None:
+            base = Config.SETUP_LEARNING_MIN_WIN_LEAN
+        current = float(base) + bump
+        new_lean = float(new_lean)
+        _state["base_win_lean"] = new_lean
+        if new_lean < current:
+            _state["win_lean_bump"] = 0.0
+
+
 def _append_log(entry: dict) -> None:
     path = _log_path()
     path.parent.mkdir(parents=True, exist_ok=True)

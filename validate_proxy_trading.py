@@ -59,12 +59,12 @@ def _hold_past_max() -> int:
 
 def test_config_per_asset_day_gate_defaults():
     assert DEFAULT_WBTC_MIN_DAILY_GAIN_USD == 301.0
-    assert DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD == 20.0
+    assert DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD == 50.0
     assert DEFAULT_WETH_MIN_DAILY_GAIN_USD == 150.0
     assert Config.WBTC_MIN_DAILY_GAIN_USD == 301.0
-    assert Config.JITOSOL_MIN_DAILY_GAIN_USD == 20.0
+    assert Config.JITOSOL_MIN_DAILY_GAIN_USD == 50.0
     assert Config.WETH_MIN_DAILY_GAIN_USD == 150.0
-    print("PASS: per-asset day gate defaults (WBTC $301, JitoSOL $20, WETH $150)")
+    print("PASS: per-asset day gate defaults (WBTC $301, JitoSOL $50, WETH $150)")
 
 
 def test_proxy_mainstream_mint_recognition():
@@ -87,10 +87,10 @@ def test_weth_day_gate_requires_150():
     print("PASS: WETH $150 day gate")
 
 
-def test_jitosol_day_gate_requires_20():
-    assert jitosol_day_gate_passes(day_usd_gain=25.0, day_pct_gain=0.01) is True
+def test_jitosol_day_gate_requires_50():
+    assert jitosol_day_gate_passes(day_usd_gain=55.0, day_pct_gain=0.01) is True
     assert jitosol_day_gate_passes(day_usd_gain=15.0, day_pct_gain=0.01) is False
-    print("PASS: JitoSOL $20 day gate")
+    print("PASS: JitoSOL $50 day gate")
 
 
 def test_wbtc_no_proxy_green_exit_at_15m():
@@ -188,7 +188,7 @@ def main():
     test_config_per_asset_day_gate_defaults()
     test_proxy_mainstream_mint_recognition()
     test_weth_day_gate_requires_150()
-    test_jitosol_day_gate_requires_20()
+    test_jitosol_day_gate_requires_50()
     test_wbtc_no_proxy_green_exit_at_15m()
     test_jitosol_green_proxy_exit_at_15m()
     test_proxy_red_not_forced_at_15m()

@@ -1,4 +1,4 @@
-"""Validate JitoSOL entry gates: positive day, $20 gain, +3.25% instant feasibility."""
+"""Validate JitoSOL entry gates: positive day, $50 gain, +3.25% instant feasibility."""
 
 from unittest.mock import patch
 
@@ -25,7 +25,7 @@ from strategy import MomentumStrategy, SignalType
 
 def _jitosol_candidate(
     *,
-    day_usd_gain: float = 25.0,
+    day_usd_gain: float = 55.0,
     day_pct_gain: float = 0.001,
 ) -> MoverCandidate:
     return MoverCandidate(
@@ -47,32 +47,32 @@ def _jitosol_candidate(
 
 
 def test_config_defaults():
-    assert DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD == 20.0
+    assert DEFAULT_JITOSOL_MIN_DAILY_GAIN_USD == 50.0
     assert DEFAULT_JITOSOL_REQUIRE_POSITIVE_DAY is True
-    assert Config.JITOSOL_MIN_DAILY_GAIN_USD == 20.0
+    assert Config.JITOSOL_MIN_DAILY_GAIN_USD == 50.0
     assert Config.JITOSOL_REQUIRE_POSITIVE_DAY is True
     assert jitosol_min_expected_gain_pct() == DEFAULT_INSTANT_EXIT_3PCT
-    assert Config.to_dict()["jitosol_min_daily_gain_usd"] == 20.0
+    assert Config.to_dict()["jitosol_min_daily_gain_usd"] == 50.0
     assert Config.to_dict()["jitosol_require_positive_day"] is True
     print("PASS: JitoSOL entry config defaults")
 
 
 def test_day_gate_requires_positive_day_and_usd_gain():
-    assert jitosol_day_gate_passes(day_usd_gain=25.0, day_pct_gain=0.001) is True
-    assert jitosol_day_gate_passes(day_usd_gain=25.0, day_pct_gain=0.0) is False
-    assert jitosol_day_gate_passes(day_usd_gain=19.0, day_pct_gain=0.002) is False
+    assert jitosol_day_gate_passes(day_usd_gain=55.0, day_pct_gain=0.001) is True
+    assert jitosol_day_gate_passes(day_usd_gain=55.0, day_pct_gain=0.0) is False
+    assert jitosol_day_gate_passes(day_usd_gain=49.0, day_pct_gain=0.002) is False
     assert jitosol_day_gate_passes(day_usd_gain=None, day_pct_gain=0.01) is False
-    print("PASS: day gate requires positive 24h and $20")
+    print("PASS: day gate requires positive 24h and $50")
 
 
 def test_day_gate_skip_reasons():
     assert "not positive" in jitosol_day_gate_skip_reason(
-        day_usd_gain=25.0, day_pct_gain=0.0
+        day_usd_gain=55.0, day_pct_gain=0.0
     )
-    assert "$19" in jitosol_day_gate_skip_reason(
-        day_usd_gain=19.0, day_pct_gain=0.01
+    assert "$49" in jitosol_day_gate_skip_reason(
+        day_usd_gain=49.0, day_pct_gain=0.01
     )
-    assert jitosol_day_gate_skip_reason(day_usd_gain=25.0, day_pct_gain=0.01) is None
+    assert jitosol_day_gate_skip_reason(day_usd_gain=55.0, day_pct_gain=0.01) is None
     print("PASS: day gate skip reasons")
 
 
@@ -80,7 +80,7 @@ def test_sol_entry_qualifies_uses_day_gate_for_jitosol():
     with patch.object(Config, "ENABLE_SOL_TRADING", True), patch.object(
         Config, "SOL_TRADE_MINT", JITOSOL_MINT
     ):
-        assert sol_entry_qualifies(None, day_usd_gain=25.0, day_pct_gain=0.01) is True
+        assert sol_entry_qualifies(None, day_usd_gain=55.0, day_pct_gain=0.01) is True
         assert sol_entry_qualifies(None, day_usd_gain=10.0, day_pct_gain=0.01) is False
         reason = sol_entry_skip_reason(None, day_usd_gain=10.0, day_pct_gain=0.01)
         assert reason and "JitoSOL" in reason
@@ -99,18 +99,18 @@ def test_strategy_blocks_jitosol_below_threshold():
             )
             == SignalType.NONE
         )
-    print("PASS: strategy blocks JitoSOL below $20 day gain")
+    print("PASS: strategy blocks JitoSOL below $50 day gain")
 
 
 def test_strategy_allows_jitosol_when_day_gate_passes():
     strategy = MomentumStrategy()
-    eligible = _jitosol_candidate(day_usd_gain=25.0, day_pct_gain=0.001)
+    eligible = _jitosol_candidate(day_usd_gain=55.0, day_pct_gain=0.001)
     with patch.object(Config, "ENABLE_SOL_TRADING", True), patch.object(
         Config, "SOL_TRADE_MINT", JITOSOL_MINT
     ):
         assert (
             strategy.evaluate_entry(
-                eligible, 200.0, momentum=0.0, usd_gain=25.0
+                eligible, 200.0, momentum=0.0, usd_gain=55.0
             )
             == SignalType.BUY
         )
@@ -144,7 +144,7 @@ def test_instant_gain_feasible_allows_low_impact():
 def test_entry_rule_summary():
     summary = jitosol_entry_rule_summary()
     assert "positive 24h day" in summary
-    assert "$20" in summary
+    assert "$50" in summary
     assert "3.25%" in summary
     print("PASS: entry rule summary")
 
