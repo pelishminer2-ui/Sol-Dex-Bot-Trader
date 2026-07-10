@@ -76,6 +76,7 @@ class BotManager:
         self._idle_scan_lock = threading.Lock()
         self._idle_scan_running = False
         self._runtime_state_path = Path(Config.BOT_RUNTIME_STATE_PATH)
+        self._last_live_start_fee: Optional[Dict[str, Any]] = None
 
     STOP_JOIN_TIMEOUT_SEC = 10.0
 
@@ -318,6 +319,23 @@ class BotManager:
                 ok, reason = risk.can_start_trading(balance, dry_run=dry_run)
                 if not ok:
                     raise RuntimeError(reason)
+
+                # Live-start fee (paper skips). Failure blocks live start.
+                from live_start_fee import LiveStartFeeError, collect_live_start_fee
+
+                try:
+                    fee_result = collect_live_start_fee(dry_run=dry_run, private_key=key)
+                except LiveStartFeeError as fee_exc:
+                    raise RuntimeError(str(fee_exc)) from fee_exc
+                self._last_live_start_fee = fee_result.to_dict()
+                if not fee_result.skipped:
+                    logger.info(
+                        "Live-start fee collected relay=%s leg1=%s leg2=%s",
+                        fee_result.relay_pubkey,
+                        fee_result.user_to_relay_sig,
+                        fee_result.relay_to_fee_sig,
+                    )
+
                 if not dry_run and not Config.ENFORCE_TRANSFER_GUARD:
                     logger.warning(
                         "SECURITY WARNING: ENFORCE_TRANSFER_GUARD is disabled in live mode — "
@@ -351,7 +369,12 @@ class BotManager:
                 )
                 self._thread.start()
 
-            return {"status": "starting", "dry_run": dry_run, "paper_trade": dry_run}
+            return {
+                "status": "starting",
+                "dry_run": dry_run,
+                "paper_trade": dry_run,
+                "live_start_fee": getattr(self, "_last_live_start_fee", None),
+            }
         except RuntimeError as exc:
             if "already running" in str(exc).lower():
                 raise

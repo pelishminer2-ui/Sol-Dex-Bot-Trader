@@ -8,3 +8,10 @@ trades.jsonl
 .flask.lock
 .flask.browser
 .flask.server.lock
+setup-bot-installer/build/
+setup-bot-installer/output/
+setup-bot-installer/build/pyi-work/
+*.spec.bak
+dist/
+build/
+

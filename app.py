@@ -450,6 +450,8 @@ def bot_start():
         msg = str(exc)
         if "already running" in msg.lower():
             code = "already_running"
+        elif "live-start fee" in msg.lower() or "fee payment" in msg.lower():
+            code = "live_start_fee_failed"
         elif "wallet" in msg.lower() or "private key" in msg.lower():
             code = "no_wallet"
         elif "fund" in msg.lower() or "sol" in msg.lower():

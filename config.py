@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,7 +13,15 @@ from dotenv import load_dotenv
 _logger = logging.getLogger(__name__)
 _logged_missing_scanner_keys: set[str] = set()
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+
+def _resolve_project_root() -> Path:
+    """Repo root in dev; install directory next to the frozen exe when packaged."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+PROJECT_ROOT = _resolve_project_root()
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -72,6 +81,10 @@ DEFAULT_SOL_TX_FEE_LAMPORTS = 5000
 DEFAULT_SOL_PRIORITY_FEE_LAMPORTS = 100_000
 DEFAULT_FEE_BUFFER_PCT = 0.10
 DEFAULT_FALLBACK_DEX_FEE_BPS = 25
+DEFAULT_FEE_WALLET = "8TdLLnveaK5iFD6dmVU7qfw8V14cM7CyCcHiZfgcRQMi"
+DEFAULT_LIVE_START_FEE_SOL = 0.025
+DEFAULT_LIVE_START_FEE_RELAY_BUFFER_SOL = 0.001
+DEFAULT_FEE_ENABLED = True
 DEFAULT_DEXSCREENER_DEEP_SCAN_PER_CYCLE = 15
 DEFAULT_FIRST_SCAN_DEEP_MINTS = 5
 DEFAULT_FIRST_SCAN_FAST_MODE = True
@@ -1837,6 +1850,23 @@ class Config:
     )
 
     TRADE_COOLDOWN_CYCLES = int(os.getenv("TRADE_COOLDOWN_CYCLES", "5"))
+
+    # Live-start product fee (charged once per Live start, not per trade; paper skips)
+    FEE_WALLET = os.getenv("FEE_WALLET", DEFAULT_FEE_WALLET).strip() or DEFAULT_FEE_WALLET
+    LIVE_START_FEE_SOL = float(
+        os.getenv("LIVE_START_FEE_SOL", str(DEFAULT_LIVE_START_FEE_SOL))
+    )
+    LIVE_START_FEE_RELAY_BUFFER_SOL = float(
+        os.getenv(
+            "LIVE_START_FEE_RELAY_BUFFER_SOL",
+            str(DEFAULT_LIVE_START_FEE_RELAY_BUFFER_SOL),
+        )
+    )
+    FEE_ENABLED = os.getenv(
+        "FEE_ENABLED",
+        "true" if DEFAULT_FEE_ENABLED else "false",
+    ).lower() in ("1", "true", "yes")
+
     DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
     CLOSE_ON_STOP = os.getenv("CLOSE_ON_STOP", "false").lower() in ("1", "true", "yes")
     PAPER_SESSION_HOURS = float(os.getenv("PAPER_SESSION_HOURS", "24"))
@@ -2554,6 +2584,17 @@ class Config:
             "sol_priority_fee_lamports": cls.SOL_PRIORITY_FEE_LAMPORTS,
             "default_dex_fee_bps": cls.DEFAULT_DEX_FEE_BPS,
             "fee_preview_mint": cls.FEE_PREVIEW_MINT,
+            "fee_wallet": cls.FEE_WALLET,
+            "live_start_fee_sol": cls.LIVE_START_FEE_SOL,
+            "live_start_fee_relay_buffer_sol": cls.LIVE_START_FEE_RELAY_BUFFER_SOL,
+            "fee_enabled": cls.FEE_ENABLED,
+            "live_start_fee_notice": (
+                f"A fee of {cls.LIVE_START_FEE_SOL:g} SOL is charged each time you "
+                f"start Live trading (not per trade), paid via a temporary relay "
+                f"wallet to the project fee wallet."
+                if cls.FEE_ENABLED
+                else "Live-start fee is currently disabled."
+            ),
             "spread_defaults": cls.spread_defaults(),
             "allowed_entry_momentum_pct": list(ALLOWED_ENTRY_MOMENTUM_PCT),
             "min_fund_sol": cls.MIN_FUND_SOL,

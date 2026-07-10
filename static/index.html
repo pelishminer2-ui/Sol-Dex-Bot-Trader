@@ -799,6 +799,10 @@
                   <label for="paperTradeToggle" style="margin:0">Paper Trade</label>
                   <span class="compact-hint">real prices, no swaps</span>
                 </div>
+                <div id="liveStartFeeNotice" class="compact-hint" style="display:none;margin-top:0.4rem;color:var(--danger)">
+                  Live start fee: <strong id="liveStartFeeAmount">0.025</strong> SOL each time you start Live
+                  (not per trade), via a temporary relay wallet. Gains are not guaranteed — invest at your own risk.
+                </div>
               </td>
             </tr>
             <tr>
@@ -1626,6 +1630,8 @@
     let entryMomentumTouched = false;
     let minFundSol = 0.75;
     let minFundWaiverActive = false;
+    let liveStartFeeSol = 0.025;
+    let liveStartFeeEnabled = true;
     let paperStartingBalanceSol = 0.75;
     let paperRunningBalance = null;
     let minPaperBalanceSol = 0.1;
@@ -1683,6 +1689,9 @@
       if (err.code === "no_wallet") {
         return "Live trading requires a wallet. Set your private key first, or enable Paper Trade.";
       }
+      if (err.code === "live_start_fee_failed") {
+        return "Live start blocked — fee payment failed.\n\n" + msg;
+      }
       if (err.code === "insufficient_funds") {
         return msg;
       }
@@ -1691,6 +1700,9 @@
       }
       if (/already running/i.test(msg)) {
         return msg + "\n\nIf the bot is not actually trading, click Stop (or Force Reset) to clear stale state, then Start again.";
+      }
+      if (/live-start fee|fee payment/i.test(msg)) {
+        return "Live start blocked — fee payment failed.\n\n" + msg;
       }
       if (/wallet|private key/i.test(msg)) {
         return "Live trading requires a wallet. Set your private key first, or enable Paper Trade.";
@@ -2274,6 +2286,8 @@
     function updateLiveModeWarning() {
       const paperTrade = document.getElementById("paperTradeToggle").checked;
       const warn = document.getElementById("liveModeWarning");
+      const feeNotice = document.getElementById("liveStartFeeNotice");
+      if (feeNotice) feeNotice.style.display = paperTrade ? "none" : "block";
       if (paperTrade) {
         warn.style.display = "none";
         return;
@@ -2300,7 +2314,8 @@
         return;
       }
       warn.style.display = "block";
-      warn.textContent = "Live mode — real funds used for swaps.";
+      const feeSol = (typeof liveStartFeeSol === "number" && liveStartFeeSol > 0) ? liveStartFeeSol : 0.025;
+      warn.textContent = "Live mode — real funds used for swaps. " + feeSol + " SOL start fee each Live start (not per trade). Gains not guaranteed.";
     }
 
     const SCANNER_API_BADGE = {
@@ -3021,6 +3036,14 @@
         window.__instantExit3Pct = cfg.instant_exit_3pct;
       }
       if (cfg.min_fund_sol != null) minFundSol = cfg.min_fund_sol;
+      if (cfg.live_start_fee_sol != null) liveStartFeeSol = Number(cfg.live_start_fee_sol);
+      if (cfg.fee_enabled != null) liveStartFeeEnabled = !!cfg.fee_enabled;
+      const feeAmtEl = document.getElementById("liveStartFeeAmount");
+      if (feeAmtEl) feeAmtEl.textContent = String(liveStartFeeSol);
+      const feeNotice = document.getElementById("liveStartFeeNotice");
+      if (feeNotice && !liveStartFeeEnabled) {
+        feeNotice.textContent = "Live-start fee is currently disabled.";
+      }
       if (cfg.paper_target_balance_sol != null) {
         paperStartingBalanceSol = cfg.paper_target_balance_sol;
       } else if (cfg.paper_simulated_balance_sol != null) {
@@ -3853,7 +3876,14 @@
           );
           return;
         }
-        if (!confirm("Start LIVE trading? Real funds will be used for Jupiter swaps.")) return;
+        if (!confirm(
+          "Start LIVE trading?\n\n" +
+          "• Real funds will be used for Jupiter swaps.\n" +
+          "• A fee of " + ((typeof liveStartFeeSol === "number" && liveStartFeeSol > 0) ? liveStartFeeSol : 0.025) +
+          " SOL is charged each time you start Live (not per trade), paid via a temporary relay wallet.\n" +
+          "• Gains are not guaranteed. You invest at your own risk.\n\n" +
+          "Continue?"
+        )) return;
       }
       const cfg = configPayloadFromUI();
       const slBefore = cfg.stop_loss_pct;

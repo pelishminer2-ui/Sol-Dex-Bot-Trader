@@ -1,0 +1,372 @@
+"""Generate Sol-Dex-Bot-Trader-User-Guide.pdf (regenerable).
+
+Writes:
+  - docs/Sol-Dex-Bot-Trader-User-Guide.pdf
+  - setup-bot-installer/Sol-Dex-Bot-Trader-User-Guide.pdf
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import (
+    Image,
+    KeepTogether,
+    ListFlowable,
+    ListItem,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+
+ROOT = Path(__file__).resolve().parent.parent
+INSTALLER = Path(__file__).resolve().parent
+ASSETS = INSTALLER / "assets"
+DOCS = ROOT / "docs"
+OUT_DOCS = DOCS / "Sol-Dex-Bot-Trader-User-Guide.pdf"
+OUT_INSTALLER = INSTALLER / "Sol-Dex-Bot-Trader-User-Guide.pdf"
+
+FEE_WALLET = "8TdLLnveaK5iFD6dmVU7qfw8V14cM7CyCcHiZfgcRQMi"
+FEE_SOL = "0.025"
+
+BRAND = colors.HexColor("#0f2744")
+ACCENT = colors.HexColor("#1a6b8a")
+DANGER = colors.HexColor("#8b1e1e")
+WARN_BG = colors.HexColor("#fff3cd")
+DANGER_BG = colors.HexColor("#f8d7da")
+MUTED = colors.HexColor("#555555")
+
+
+def _styles():
+    base = getSampleStyleSheet()
+    styles = {
+        "title": ParagraphStyle(
+            "TitleCustom",
+            parent=base["Title"],
+            fontSize=22,
+            textColor=BRAND,
+            spaceAfter=8,
+            alignment=TA_CENTER,
+        ),
+        "subtitle": ParagraphStyle(
+            "SubtitleCustom",
+            parent=base["Normal"],
+            fontSize=11,
+            textColor=MUTED,
+            alignment=TA_CENTER,
+            spaceAfter=16,
+        ),
+        "h1": ParagraphStyle(
+            "H1Custom",
+            parent=base["Heading1"],
+            fontSize=14,
+            textColor=BRAND,
+            spaceBefore=14,
+            spaceAfter=8,
+        ),
+        "h2": ParagraphStyle(
+            "H2Custom",
+            parent=base["Heading2"],
+            fontSize=12,
+            textColor=ACCENT,
+            spaceBefore=10,
+            spaceAfter=6,
+        ),
+        "body": ParagraphStyle(
+            "BodyCustom",
+            parent=base["Normal"],
+            fontSize=10,
+            leading=14,
+            alignment=TA_JUSTIFY,
+            spaceAfter=6,
+        ),
+        "bullet": ParagraphStyle(
+            "BulletCustom",
+            parent=base["Normal"],
+            fontSize=10,
+            leading=13,
+            leftIndent=8,
+        ),
+        "warn": ParagraphStyle(
+            "WarnCustom",
+            parent=base["Normal"],
+            fontSize=10,
+            leading=13,
+            textColor=DANGER,
+            alignment=TA_LEFT,
+        ),
+        "caption": ParagraphStyle(
+            "CaptionCustom",
+            parent=base["Normal"],
+            fontSize=8,
+            textColor=MUTED,
+            alignment=TA_CENTER,
+            spaceAfter=10,
+            spaceBefore=2,
+        ),
+        "footer": ParagraphStyle(
+            "FooterCustom",
+            parent=base["Normal"],
+            fontSize=8,
+            textColor=MUTED,
+            alignment=TA_CENTER,
+        ),
+    }
+    return styles
+
+
+def _callout(text: str, styles, bg=DANGER_BG, border=DANGER) -> KeepTogether:
+    p = Paragraph(text, styles["warn"])
+    t = Table([[p]], colWidths=[6.5 * inch])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), bg),
+                ("BOX", (0, 0), (-1, -1), 1.5, border),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    return KeepTogether([t, Spacer(1, 10)])
+
+
+def _img(name: str, width: float = 6.2 * inch) -> list:
+    path = ASSETS / name
+    if not path.exists():
+        return [Paragraph(f"<i>[Image missing: {name}]</i>", _styles()["caption"])]
+    im = Image(str(path))
+    aspect = im.imageHeight / float(im.imageWidth)
+    im.drawWidth = width
+    im.drawHeight = width * aspect
+    return [im]
+
+
+def build_story(styles) -> list:
+    story: list = []
+
+    story.append(Paragraph("Sol Dex Bot Trader", styles["title"]))
+    story.append(Paragraph("End-User Guide — Install, Wallet, Operate, Safety", styles["subtitle"]))
+
+    story.append(
+        _callout(
+            "<b>RISK DISCLAIMER — READ FIRST:</b> Cryptocurrency trading is highly speculative. "
+            "<b>Gains are not guaranteed.</b> You can lose some or all of the funds you allocate. "
+            "Past paper or live results do not predict future performance. "
+            "<b>You invest and trade at your own risk.</b> "
+            "This software is a local trading assistant only — not financial advice.",
+            styles,
+            bg=DANGER_BG,
+            border=DANGER,
+        )
+    )
+
+    story.append(Paragraph("1. Install (setup.exe)", styles["h1"]))
+    story.append(
+        Paragraph(
+            "Run <b>setup.exe</b>. Accept the prompts and finish the wizard. "
+            "You do <b>not</b> need to run PowerShell scripts or <font face='Courier'>.bat</font> files. "
+            "When installation completes (or when you launch from the Start Menu / Desktop shortcut), "
+            "the app starts the local server and opens your <b>default browser</b> to "
+            "<font face='Courier'>http://127.0.0.1:5000</font>.",
+            styles["body"],
+        )
+    )
+    story.extend(
+        [
+            Paragraph("What to expect:", styles["h2"]),
+            ListFlowable(
+                [
+                    ListItem(Paragraph("Start Menu and optional Desktop shortcut: <b>Sol Dex Bot Trader</b>", styles["bullet"])),
+                    ListItem(Paragraph("User Guide PDF installed under the app <font face='Courier'>docs</font> folder (also linked in Start Menu)", styles["bullet"])),
+                    ListItem(Paragraph("Dashboard loads on localhost only — never expose port 5000 to the internet", styles["bullet"])),
+                ],
+                bulletType="bullet",
+                start="•",
+            ),
+            Spacer(1, 6),
+        ]
+    )
+
+    story.append(Paragraph("2. Supported wallets (Phantom or Solflare ONLY)", styles["h1"]))
+    story.append(
+        _callout(
+            "<b>Wallets:</b> Use <b>Phantom</b> or <b>Solflare</b> only. "
+            "Do not use other wallets, hardware-export workflows this guide does not cover, "
+            "or paste keys into untrusted websites.",
+            styles,
+            bg=WARN_BG,
+            border=colors.HexColor("#856404"),
+        )
+    )
+    story.append(
+        Paragraph(
+            "The bot needs your wallet’s <b>base58 private key</b> (or JSON byte array) for Live trading. "
+            "Paper mode does not require a key. Never share your private key with anyone.",
+            styles["body"],
+        )
+    )
+
+    story.append(Paragraph("3. Export private key — Phantom", styles["h1"]))
+    story.extend(_img("phantom-export-key.png"))
+    story.append(
+        Paragraph(
+            "Illustrative diagram (not a live screenshot). Typical path: Phantom → Settings → "
+            "Security &amp; Privacy → Export Private Key → authenticate → copy the base58 key into the bot’s Wallet Key field → Set Wallet.",
+            styles["caption"],
+        )
+    )
+
+    story.append(Paragraph("4. Export private key — Solflare", styles["h1"]))
+    story.extend(_img("solflare-export-key.png"))
+    story.append(
+        Paragraph(
+            "Illustrative diagram. Typical path: Solflare → Settings → Export Security / Private Key → "
+            "authenticate → copy base58 into the bot → Set Wallet. Prefer keeping the key in memory only; "
+            "use Save to .env only on a trusted personal PC.",
+            styles["caption"],
+        )
+    )
+
+    story.append(PageBreak())
+    story.append(Paragraph("5. Operate the bot", styles["h1"]))
+    story.extend(_img("bot-dashboard-overview.png"))
+    story.append(
+        Paragraph(
+            "Illustrative dashboard overview. Your installed UI may differ slightly in layout.",
+            styles["caption"],
+        )
+    )
+    story.append(
+        ListFlowable(
+            [
+                ListItem(Paragraph("<b>Start Bot / Stop</b> — start or stop the trading loop", styles["bullet"])),
+                ListItem(Paragraph("<b>Paper Trade</b> (recommended first) — simulated balance, real market data, no on-chain swaps, <b>no live-start fee</b>", styles["bullet"])),
+                ListItem(Paragraph("<b>Live</b> — real Jupiter swaps with your funded wallet (fee applies on each Live start)", styles["bullet"])),
+                ListItem(Paragraph("<b>Open Trades</b> — view open positions; use <b>Sell</b> for a manual full exit", styles["bullet"])),
+                ListItem(Paragraph("<b>Actions / Smart Re-entry</b> — Allow or Deny pending re-entry decisions when prompted", styles["bullet"])),
+            ],
+            bulletType="bullet",
+            start="•",
+        )
+    )
+
+    story.append(Paragraph("6. Strategies — which button to use", styles["h1"]))
+    rows = [
+        [Paragraph("<b>Button</b>", styles["bullet"]), Paragraph("<b>What it does</b>", styles["bullet"])],
+        [Paragraph("Best Win", styles["bullet"]), Paragraph("Strict filters — fewer, higher-quality entries", styles["bullet"])],
+        [Paragraph("Steady Trade", styles["bullet"]), Paragraph("<b>Default / recommended</b> — balanced pace with loss protections", styles["bullet"])],
+        [Paragraph("Balanced Win", styles["bullet"]), Paragraph("More trades, still fee-aware", styles["bullet"])],
+        [Paragraph("Revert to bookmark", styles["bullet"]), Paragraph("Restore the saved pre-strategy bookmark config", styles["bullet"])],
+        [Paragraph("Reset Defaults", styles["bullet"]), Paragraph("Reset spread / setup defaults", styles["bullet"])],
+        [Paragraph("Apply Config", styles["bullet"]), Paragraph("Apply the values currently shown in the Setup panel", styles["bullet"])],
+    ]
+    table = Table(rows, colWidths=[1.6 * inch, 4.9 * inch])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef5")),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#eaf6ea")),
+            ]
+        )
+    )
+    story.append(table)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("7. Live trading fee (0.025 SOL)", styles["h1"]))
+    story.append(
+        _callout(
+            f"<b>Live-start fee:</b> <b>{FEE_SOL} SOL</b> is charged <b>each time you start Live trading</b> "
+            f"(not per trade, not in Paper mode). Payment uses a temporary / rented relay wallet: "
+            f"your wallet → ephemeral relay → project fee wallet "
+            f"<font face='Courier'>{FEE_WALLET}</font>. "
+            f"If the fee payment fails, Live start is blocked. "
+            f"<b>Gains are not guaranteed. You invest at your own risk.</b>",
+            styles,
+        )
+    )
+
+    story.append(Paragraph("8. Safety", styles["h1"]))
+    story.append(
+        ListFlowable(
+            [
+                ListItem(Paragraph("Runs on <b>localhost only</b> (127.0.0.1) — do not port-forward or expose publicly", styles["bullet"])),
+                ListItem(Paragraph("<b>Never share</b> your private key, seed phrase, or .env file", styles["bullet"])),
+                ListItem(Paragraph("Start with <b>Paper Trade</b> until you understand Start/Stop, strategies, and exits", styles["bullet"])),
+                ListItem(Paragraph("Keep only funds you can afford to lose in the trading wallet", styles["bullet"])),
+                ListItem(Paragraph("<b>Gains are not guaranteed</b> — markets move against you; you invest at your own risk", styles["bullet"])),
+            ],
+            bulletType="bullet",
+            start="•",
+        )
+    )
+
+    story.append(Spacer(1, 16))
+    story.append(
+        _callout(
+            "<b>Final reminder:</b> This bot can lose money in Live mode. "
+            "<b>Gains are not guaranteed. Invest at your own risk.</b> "
+            "By using Live trading you accept responsibility for your keys, fees, and trade outcomes.",
+            styles,
+        )
+    )
+    story.append(
+        Paragraph(
+            "Sol Dex Bot Trader — local use only · User guide regenerable via setup-bot-installer/generate_user_guide.py",
+            styles["footer"],
+        )
+    )
+    return story
+
+
+def _add_page_number(canvas, doc):
+    canvas.saveState()
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(MUTED)
+    canvas.drawCentredString(
+        letter[0] / 2.0,
+        0.5 * inch,
+        f"Sol Dex Bot Trader User Guide  ·  page {doc.page}  ·  Gains not guaranteed — invest at your own risk",
+    )
+    canvas.restoreState()
+
+
+def main() -> None:
+    DOCS.mkdir(parents=True, exist_ok=True)
+    ASSETS.mkdir(parents=True, exist_ok=True)
+    styles = _styles()
+    story = build_story(styles)
+
+    for out in (OUT_DOCS, OUT_INSTALLER):
+        doc = SimpleDocTemplate(
+            str(out),
+            pagesize=letter,
+            leftMargin=0.75 * inch,
+            rightMargin=0.75 * inch,
+            topMargin=0.65 * inch,
+            bottomMargin=0.75 * inch,
+            title="Sol Dex Bot Trader User Guide",
+            author="Sol Dex Bot Trader",
+        )
+        doc.build(story, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
+        print(f"Wrote {out}")
+
+
+if __name__ == "__main__":
+    main()

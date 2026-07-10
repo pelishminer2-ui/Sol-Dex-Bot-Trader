@@ -1,0 +1,4 @@
+# Build-only deps for setup-bot-installer (not required at bot runtime)
+pyinstaller>=6.0
+reportlab>=4.0
+Pillow>=10.0

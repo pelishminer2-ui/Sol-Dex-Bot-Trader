@@ -1,0 +1,10 @@
+# Optional Windows-container image for installer builds.
+# Requires Docker Desktop in Windows-container mode + Inno Setup installed in the image/host mount.
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+SHELL ["powershell", "-Command", "$ErrorActionPreference='Stop';"]
+
+WORKDIR C:\\src
+
+# Expect the repo mounted at C:\src and Inno Setup available on the host path or preinstalled.
+CMD ["powershell", "-File", "C:\\src\\setup-bot-installer\\build.ps1"]
