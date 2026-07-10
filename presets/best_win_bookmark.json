@@ -1,12 +1,12 @@
 {
   "label": "pre-best-win",
-  "created_at": "2026-07-09T00:18:55.543322+00:00",
+  "created_at": "2026-07-09T16:26:22.713132+00:00",
   "description": "Snapshot before Best Win preset \u2014 use Revert to bookmark",
   "values": {
     "trade_size_sol": 0.1,
-    "entry_momentum_pct": 0.004,
+    "entry_momentum_pct": 0.0075,
     "stop_loss_pct": 0.015,
-    "min_liquidity_usd": 25000.0,
+    "min_liquidity_usd": 30000.0,
     "min_volume_24h_usd": 45000.0,
     "min_momentum_pct": 0.015,
     "min_expected_net_profit_sol": 0.0004,
