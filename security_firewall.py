@@ -43,6 +43,7 @@ ALLOWED_ROUTES: Set[Tuple[str, str]] = {
     ("GET", "/api/bot/status"),
     ("GET", "/api/movers"),
     ("GET", "/api/positions"),
+    ("POST", "/api/positions/sell"),
     ("GET", "/api/trades"),
     ("GET", "/api/logs"),
     ("GET", "/api/config"),
@@ -53,6 +54,7 @@ ALLOWED_ROUTES: Set[Tuple[str, str]] = {
     ("POST", "/api/bot/stop"),
     ("POST", "/api/bot/force-reset"),
     ("POST", "/api/mint/unblock"),
+
     ("GET", "/api/actions/pending"),
     ("POST", "/api/actions/decide"),
     ("POST", "/api/actions/dev/preview"),
@@ -239,6 +241,7 @@ def _body_has_forbidden_fields() -> Optional[str]:
             "/api/wallet",
             "/api/mint/unblock",
             "/api/actions/decide",
+            "/api/positions/sell",
         ):
             if isinstance(value, str) and value:
                 return "arbitrary mint injection blocked"

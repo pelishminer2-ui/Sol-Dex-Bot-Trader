@@ -650,10 +650,25 @@
     }
     .unified-position-row:last-child { border-bottom: none; }
     .unified-position-main { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.15rem; }
-    .unified-position-main .sym { font-weight: 700; font-size: 0.9rem; }
+    .unified-position-main .sym { font-weight: 700; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
     .unified-position-detail { color: var(--muted); font-size: 0.75rem; }
     .unified-position-detail strong { color: var(--text); font-weight: 500; }
     .position-card-pnl { font-weight: 700; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+    .btn-sell-position {
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid var(--danger);
+      border-radius: 4px;
+      padding: 0.12rem 0.45rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-sell-position:hover { opacity: 0.85; background: rgba(239, 68, 68, 0.12); }
+    .btn-sell-position:disabled { opacity: 0.4; cursor: not-allowed; }
     .unified-pnl-cell .pnl-stat-grid { margin-top: 0; }
     .unified-recent-label { margin-top: 0.65rem; margin-bottom: 0.25rem; }
     @media (max-width: 900px) {
@@ -3237,10 +3252,15 @@
         : "";
       const ladderMarks = positionLadderMarks(pos);
       const sizeSol = pos.sol_invested ?? pos.size_sol;
+      const mintAttr = String(pos.mint || "").replace(/"/g, "&quot;");
+      const symAttr = String(pos.symbol || "?").replace(/"/g, "&quot;");
+      const sellBtn = pos.mint
+        ? `<button type="button" class="btn-sell-position" data-mint="${mintAttr}" data-symbol="${symAttr}" title="Manual sell ${symAttr}">Sell</button>`
+        : "";
       return `
         <div class="unified-position-row">
           <div class="unified-position-main">
-            <span class="sym">${pos.symbol}${wlBadge}${ladderMarks}</span>
+            <span class="sym">${pos.symbol}${wlBadge}${ladderMarks}${sellBtn}</span>
             <span class="position-card-pnl ${cls}">${pct(pos.pnl_pct)}</span>
           </div>
           <div class="unified-position-detail">
@@ -3250,6 +3270,39 @@
             · ${Math.round(pos.hold_sec)}s
           </div>
         </div>`;
+    }
+
+    function bindPositionSellControls(root) {
+      if (!root) return;
+      root.querySelectorAll(".btn-sell-position").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          manualSellPosition(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), btn);
+        });
+      });
+    }
+
+    async function manualSellPosition(mint, symbol, btn) {
+      const sym = symbol || (mint ? mint.slice(0, 8) : "?");
+      if (!mint) {
+        alert("Cannot sell: missing mint");
+        return;
+      }
+      if (!confirm("Sell " + sym + " now?")) return;
+      if (btn) btn.disabled = true;
+      try {
+        const result = await api("/api/positions/sell", {
+          method: "POST",
+          body: JSON.stringify({ mint: mint, symbol: symbol || undefined, reason: "sell_manual" }),
+        });
+        if (!result.ok) {
+          throw new Error(result.error || "sell_failed");
+        }
+        logActivity("Manual sell: " + sym + (result.pnl_pct != null ? " (" + pct(result.pnl_pct) + ")" : ""));
+        await refresh();
+      } catch (e) {
+        alert("Sell failed: " + (e.message || e));
+        if (btn) btn.disabled = false;
+      }
     }
 
     function renderPositions(positions, maxPositions, watchlistMints, companionSlot) {
@@ -3268,6 +3321,7 @@
       }
       el.className = "unified-positions";
       el.innerHTML = positions.map(p => renderPositionCard(p, watchlistMints)).join("");
+      bindPositionSellControls(el);
     }
 
     function renderPosition(pos) {

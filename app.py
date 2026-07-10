@@ -666,6 +666,24 @@ def positions():
     )
 
 
+@app.route("/api/positions/sell", methods=["POST"])
+def positions_sell():
+    """Manual full exit for one open position (paper or live). Overrides WBTC hold-until-profit."""
+    data = request.get_json(silent=True) or {}
+    mint = (data.get("mint") or data.get("token_mint") or "").strip()
+    symbol = (data.get("symbol") or "").strip()
+    if not mint and not symbol:
+        return jsonify({"ok": False, "error": "mint or symbol is required"}), 400
+    reason = (data.get("reason") or "sell_manual").strip() or "sell_manual"
+    try:
+        result = bot_manager.force_sell(mint=mint or None, symbol=symbol or None, reason=reason)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 @app.route("/api/trades")
 def trades():
     limit = request.args.get("limit", 50, type=int)
