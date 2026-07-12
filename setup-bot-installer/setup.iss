@@ -3,13 +3,13 @@
 ; Prefer: .\build.ps1 from this folder (stamps build date/time automatically)
 ;
 ; Optional defines from build.ps1:
-;   /DMyAppVersion=1.0.2
+;   /DMyAppVersion=1.0.3
 ;   /DMyAppBuildDate=2026-07-12
-;   /DMyAppBuildTime=17:54:00
-;   /DMyAppBuildStamp=2026-07-12T17:54:00-04:00
+;   /DMyAppBuildTime=18:00:00
+;   /DMyAppBuildStamp=2026-07-12T18:00:00-04:00
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.2"
+  #define MyAppVersion "1.0.3"
 #endif
 #ifndef MyAppBuildDate
   #define MyAppBuildDate GetDateTimeString('yyyy-mm-dd', '-', ':')
@@ -69,9 +69,11 @@ Source: "Sol-Dex-Bot-Trader-User-Guide.pdf"; DestDir: "{app}\docs"; Flags: ignor
 Source: "..\.env.example"; DestDir: "{app}"; DestName: ".env.example"; Flags: ignoreversion
 Source: "BUILD_INFO.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "version.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Stop-SolDexBot.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{group}\Stop Sol Dex Bot Trader"; Filename: "{app}\Stop-SolDexBot.bat"; WorkingDir: "{app}"
 Name: "{group}\User Guide (PDF)"; Filename: "{app}\docs\Sol-Dex-Bot-Trader-User-Guide.pdf"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon

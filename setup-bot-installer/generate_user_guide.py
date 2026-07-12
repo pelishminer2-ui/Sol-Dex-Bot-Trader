@@ -46,9 +46,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.2"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.3"
     except OSError:
-        return "1.0.2"
+        return "1.0.3"
 
 
 def _guide_built_stamp() -> str:
@@ -187,7 +187,7 @@ def build_story(styles) -> list:
     story: list = []
 
     story.append(Paragraph("Sol Dex Bot Trader", styles["title"]))
-    story.append(Paragraph("End-User Guide — Install, Console, Wallet, Operate, Safety", styles["subtitle"]))
+    story.append(Paragraph("End-User Guide — Install, Run, Wallet, Operate, Safety", styles["subtitle"]))
     story.append(
         Paragraph(
             f"Version {_app_version()}  ·  Guide built {_guide_built_stamp()}",
@@ -223,7 +223,7 @@ def build_story(styles) -> list:
     story.extend(_img("install-flow.png", width=6.3 * inch))
     story.append(
         Paragraph(
-            "Install flow: setup.exe → install folder → console (keep open) → browser dashboard.",
+            "Install flow: setup.exe → install folder → background app (tray) → browser dashboard.",
             styles["caption"],
         )
     )
@@ -271,25 +271,27 @@ def build_story(styles) -> list:
     )
     story.append(Spacer(1, 6))
 
-    # --- 2. Console MUST stay open ---
-    story.append(Paragraph("2. Console window MUST stay open", styles["h1"]))
+    # --- 2. Runs without a console window ---
+    story.append(Paragraph("2. Runs without a CMD / console window", styles["h1"]))
     story.append(
         _callout(
-            "<b>CRITICAL:</b> When the bot launches, a <b>black terminal / console window</b> opens. "
-            "That window <b>IS the Flask server process</b>. "
-            "It must remain open the entire time you use the dashboard or trade. "
-            "You may <b>minimize</b> it, but <b>do not close it</b>. "
-            "Closing the console stops the server — the browser dashboard goes offline and trading stops.",
+            "<b>No black CMD window:</b> The packaged app runs as a <b>windowed background process</b> "
+            "(no DOS/CMD console that must stay open). "
+            "A <b>system tray icon</b> appears while the server is running. "
+            "Your browser opens to "
+            f"<font face='Courier'>{DASHBOARD_URL}</font>. "
+            "Diagnostics go to "
+            f"<font face='Courier'>{INSTALL_DIR}logs\\soldexbot.log</font>.",
             styles,
-            bg=WARN_BG,
-            border=colors.HexColor("#856404"),
+            bg=OK_BG,
+            border=OK_BORDER,
+            style_key="ok",
         )
     )
-    story.extend(_img("console-keep-open.png", width=6.3 * inch))
     story.append(
         Paragraph(
-            "The black console is the server. Minimize OK — close = bot stops.",
-            styles["caption"],
+            "How to tell it is running and how to stop it:",
+            styles["body"],
         )
     )
     story.append(
@@ -297,26 +299,44 @@ def build_story(styles) -> list:
             [
                 ListItem(
                     Paragraph(
-                        "<b>Keep open:</b> console shows lines like Dashboard URL and install dir — that means the server is running",
+                        "<b>Running:</b> tray icon present + dashboard loads at "
+                        f"<font face='Courier'>{DASHBOARD_URL}</font>",
                         styles["bullet"],
                     )
                 ),
                 ListItem(
                     Paragraph(
-                        "<b>Minimize:</b> fine — use the browser at "
-                        f"<font face='Courier'>{DASHBOARD_URL}</font> while the console stays in the taskbar",
+                        "<b>Stop (preferred):</b> right-click the tray icon → <b>Quit</b>",
                         styles["bullet"],
                     )
                 ),
                 ListItem(
                     Paragraph(
-                        "<b>Do not close:</b> clicking X on the console kills the process; Start/Stop in the UI will not work until you relaunch the app",
+                        "<b>Stop (Start Menu):</b> <b>Stop Sol Dex Bot Trader</b> "
+                        "(runs <font face='Courier'>Stop-SolDexBot.bat</font>)",
                         styles["bullet"],
                     )
                 ),
                 ListItem(
                     Paragraph(
-                        "<b>Why:</b> the packaged app runs the local web server inside that console window — there is no separate background service",
+                        "<b>Stop (fallback):</b> "
+                        "<font face='Courier'>taskkill /IM SolDexBotTrader.exe /F</font>",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Note:</b> Dashboard <b>Stop</b> only stops the trading loop — "
+                        "it does <b>not</b> exit the local server. Use tray Quit (or Stop shortcut) "
+                        "to fully shut down the app.",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Logs:</b> if something fails, open "
+                        f"<font face='Courier'>{INSTALL_DIR}logs\\soldexbot.log</font> "
+                        "(tray menu also has <b>Open Logs Folder</b>)",
                         styles["bullet"],
                     )
                 ),
@@ -328,13 +348,12 @@ def build_story(styles) -> list:
     story.append(Spacer(1, 6))
     story.append(
         _callout(
-            "<b>Remember:</b> Browser tab alone is not enough. "
-            "If the console is closed, refresh will fail and no trades can run. "
-            "Relaunch <b>Sol Dex Bot Trader</b> from Start Menu to bring the console back.",
+            "<b>Remember:</b> Closing the browser tab does <b>not</b> stop the bot. "
+            "Use tray <b>Quit</b> or Start Menu <b>Stop Sol Dex Bot Trader</b>. "
+            "Relaunch from Start Menu / Desktop when you want the dashboard again.",
             styles,
-            bg=OK_BG,
-            border=OK_BORDER,
-            style_key="ok",
+            bg=WARN_BG,
+            border=colors.HexColor("#856404"),
         )
     )
 
@@ -397,7 +416,8 @@ def build_story(styles) -> list:
             [
                 ListItem(
                     Paragraph(
-                        "<b>Start Bot / Stop</b> — start or stop the trading loop (console must still be open)",
+                        "<b>Start Bot / Stop</b> — start or stop the trading loop "
+                        "(server stays running in the tray until you Quit)",
                         styles["bullet"],
                     )
                 ),
@@ -508,7 +528,8 @@ def build_story(styles) -> list:
             [
                 ListItem(
                     Paragraph(
-                        "Keep the <b>black console window open</b> while using the bot (minimize OK)",
+                        "No CMD window is required — stop fully via tray <b>Quit</b> or "
+                        "Start Menu <b>Stop Sol Dex Bot Trader</b>",
                         styles["bullet"],
                     )
                 ),

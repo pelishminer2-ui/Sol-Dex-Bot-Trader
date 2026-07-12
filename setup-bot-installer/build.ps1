@@ -167,7 +167,7 @@ try {
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."
     & $Python -m pip install --upgrade pip | Out-Null
-    & $Python -m pip install -r (Join-Path $Root "requirements.txt") "pyinstaller>=6.0" "reportlab>=4.0" "Pillow>=10.0" | Out-Null
+    & $Python -m pip install -r (Join-Path $Root "requirements.txt") -r (Join-Path $InstallerDir "requirements-build.txt") | Out-Null
 
     if (-not $SkipPdf) {
         Write-Host ""

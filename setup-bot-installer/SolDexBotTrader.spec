@@ -43,6 +43,11 @@ hiddenimports = [
     "pnl_tracker",
     "tax_export",
     "live_tradeable_balance",
+    "pystray",
+    "pystray._win32",
+    "PIL",
+    "PIL.Image",
+    "PIL.ImageDraw",
 ]
 
 datas = [
@@ -88,7 +93,9 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    # Windowed / GUI subsystem — no CMD console that must stay open.
+    # Logging goes to <install>\logs\soldexbot.log; tray Quit stops the process.
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
