@@ -100,6 +100,13 @@ class SolanaClient:
             logger.error("Error getting raw token balance for %s: %s", mint, exc)
             return 0
 
+    async def get_latest_blockhash(self):
+        """Fetch a fresh Confirmed blockhash (never reuse across paper/live)."""
+        resp = await self.client.get_latest_blockhash(commitment=Confirmed)
+        if resp.value is None:
+            raise RuntimeError("Failed to fetch latest blockhash from RPC")
+        return resp.value.blockhash
+
     async def send_versioned_transaction(
         self, tx_bytes: bytes, auth_token: Optional[str] = None
     ) -> Optional[str]:

@@ -6,8 +6,9 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <!-- cache-sync: 2026-07-08T21:55:00-04:00 smart-reentry-actions-panel-always-visible -->
+  <!-- cache-sync: 2026-07-12T18:40:00-04:00 wallet-connect-phantom-solflare -->
   <title>Solana Mover Trading Bot</title>
+  <script src="/static/wallet_connect.js"></script>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#14f195">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -107,9 +108,85 @@
       gap: 1rem;
       min-width: 0;
     }
+    .header-wallet {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+      margin-left: auto;
+    }
+    .wallet-connect-wrap {
+      position: relative;
+    }
+    .btn-connect {
+      background: var(--accent);
+      color: #000;
+      padding: 0.45rem 0.9rem;
+      font-size: 0.8rem;
+      white-space: nowrap;
+    }
+    .wallet-connect-menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 4px);
+      min-width: 160px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.35rem;
+      z-index: 50;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    }
+    .wallet-connect-menu button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      color: var(--text);
+      padding: 0.45rem 0.65rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+    }
+    .wallet-connect-menu button:hover {
+      background: var(--surface2);
+      opacity: 1;
+    }
+    .wallet-connect-menu button:disabled {
+      opacity: 0.45;
+    }
+    .wallet-connected-row {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+    .wallet-connected-row .mono {
+      font-size: 0.75rem;
+      color: var(--accent);
+    }
+    .wallet-provider-tag {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      padding: 0.15rem 0.4rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+    }
+    .wallet-connect-hint {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 0.35rem;
+      line-height: 1.35;
+    }
     @media (max-width: 900px) {
       .header-main {
         flex: 1 1 100%;
+      }
+      .header-wallet {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-end;
       }
     }
     header h1 { font-size: 1.25rem; font-weight: 600; }
@@ -754,6 +831,20 @@
         <span id="maxPotentialBadge" class="badge badge-max-potential" style="display:none">Max Potential</span>
         <span id="lastSynced" class="hint" title="Server time from last status poll">Last synced: —</span>
       </div>
+      <div class="header-wallet" id="headerWallet">
+        <div class="wallet-connect-wrap" id="walletConnectWrap">
+          <button type="button" class="btn-connect" id="btnWalletConnect" title="Connect Phantom or Solflare">Connect</button>
+          <div class="wallet-connect-menu" id="walletConnectMenu" hidden>
+            <button type="button" id="btnConnectPhantom" data-wallet="phantom">Phantom</button>
+            <button type="button" id="btnConnectSolflare" data-wallet="solflare">Solflare</button>
+          </div>
+        </div>
+        <div class="wallet-connected-row" id="walletConnectedPanel" hidden>
+          <span class="wallet-provider-tag" id="headerWalletProvider">—</span>
+          <span class="mono" id="headerWalletPubkey" title="">—</span>
+          <button type="button" class="btn-secondary" id="btnWalletDisconnect" style="padding:0.35rem 0.65rem;font-size:0.75rem">Disconnect</button>
+        </div>
+      </div>
     </div>
     </div>
   </header>
@@ -816,6 +907,9 @@
                 <div class="row" style="margin-top:0.35rem">
                   <button type="button" class="btn-primary" id="btnSetWallet">Set Wallet</button>
                   <button type="button" class="btn-warning" id="btnSaveEnv">Save to .env</button>
+                </div>
+                <div class="wallet-connect-hint" id="walletConnectHint">
+                  Use <strong>Connect</strong> (upper right) for Phantom/Solflare, then paste your exported base58 key and click <strong>Set Wallet</strong> for server auto-sign. Session key survives Paper Trade on/off.
                 </div>
               </td>
             </tr>
@@ -1672,6 +1766,139 @@
     let startInFlight = false;
     let stopInFlight = false;
     let lastBotStatus = { status: "stopped", running: false, can_start: true };
+    // Session wallet pubkey from Set Wallet / .env — survives Paper Trade toggle and Stop.
+    // Never overwritten by paper ephemeral keypairs.
+    let sessionWalletPubkey = null;
+    let connectedExtension = null; // { provider, pubkey }
+
+    function shortPubkey(pk) {
+      if (window.SolDexWalletConnect && window.SolDexWalletConnect.shortPubkey) {
+        return window.SolDexWalletConnect.shortPubkey(pk);
+      }
+      if (!pk || typeof pk !== "string") return "—";
+      if (pk.length <= 12) return pk;
+      return pk.slice(0, 4) + "…" + pk.slice(-4);
+    }
+
+    function effectiveHasWallet(s) {
+      if (s && s.has_wallet) return true;
+      if (sessionWalletPubkey) return true;
+      return false;
+    }
+
+    function applyWalletAddressDisplay(s) {
+      s = s || {};
+      if (s.session_public_key) {
+        sessionWalletPubkey = s.session_public_key;
+      } else if (s.has_wallet && s.public_key && !s.wallet_ephemeral) {
+        sessionWalletPubkey = s.public_key;
+      }
+      const el = document.getElementById("walletAddress");
+      if (!el) return;
+      if (sessionWalletPubkey) {
+        el.textContent = sessionWalletPubkey;
+        el.title = "Session wallet (Set Wallet / .env) — survives Paper Trade toggle";
+        return;
+      }
+      if (connectedExtension && connectedExtension.pubkey) {
+        el.textContent = connectedExtension.pubkey;
+        el.title = "Extension connected — paste base58 key and Set Wallet for live auto-sign";
+        return;
+      }
+      if (s.wallet_ephemeral && s.public_key) {
+        el.textContent = s.public_key;
+        el.title = "Paper ephemeral address (not a live signing key)";
+        return;
+      }
+      el.textContent = s.public_key || "—";
+      el.title = "";
+    }
+
+    function syncHeaderWalletUI() {
+      const menu = document.getElementById("walletConnectMenu");
+      const connectBtn = document.getElementById("btnWalletConnect");
+      const panel = document.getElementById("walletConnectedPanel");
+      const providers = (window.SolDexWalletConnect && window.SolDexWalletConnect.detectProviders)
+        ? window.SolDexWalletConnect.detectProviders()
+        : { phantom: null, solflare: null };
+      const phantomBtn = document.getElementById("btnConnectPhantom");
+      const solflareBtn = document.getElementById("btnConnectSolflare");
+      if (phantomBtn) {
+        phantomBtn.disabled = !providers.phantom;
+        phantomBtn.title = providers.phantom ? "Connect Phantom" : "Phantom not installed";
+        phantomBtn.textContent = providers.phantom ? "Phantom" : "Phantom (not installed)";
+      }
+      if (solflareBtn) {
+        solflareBtn.disabled = !providers.solflare;
+        solflareBtn.title = providers.solflare ? "Connect Solflare" : "Solflare not installed";
+        solflareBtn.textContent = providers.solflare ? "Solflare" : "Solflare (not installed)";
+      }
+      if (connectedExtension && connectedExtension.pubkey) {
+        if (connectBtn) connectBtn.hidden = true;
+        if (menu) menu.hidden = true;
+        if (panel) panel.hidden = false;
+        const tag = document.getElementById("headerWalletProvider");
+        const pkEl = document.getElementById("headerWalletPubkey");
+        if (tag) tag.textContent = connectedExtension.provider || "wallet";
+        if (pkEl) {
+          pkEl.textContent = shortPubkey(connectedExtension.pubkey);
+          pkEl.title = connectedExtension.pubkey;
+        }
+      } else {
+        if (connectBtn) connectBtn.hidden = false;
+        if (panel) panel.hidden = true;
+      }
+      const hint = document.getElementById("walletConnectHint");
+      if (hint) {
+        if (sessionWalletPubkey) {
+          hint.innerHTML =
+            "Session signing key active for <span class=\"mono\">" + shortPubkey(sessionWalletPubkey) +
+            "</span>. Survives Paper Trade on/off. Live Jupiter swaps auto-sign on the server.";
+        } else if (connectedExtension && connectedExtension.pubkey) {
+          hint.innerHTML =
+            "Extension connected (" + (connectedExtension.provider || "wallet") + "). " +
+            "Export your base58 private key, paste it below, and click <strong>Set Wallet</strong> so Live fee + trades can auto-sign.";
+        } else {
+          hint.innerHTML =
+            "Use <strong>Connect</strong> (upper right) for Phantom/Solflare, then paste your exported base58 key and click <strong>Set Wallet</strong> for server auto-sign. Session key survives Paper Trade on/off.";
+        }
+      }
+    }
+
+    async function connectBrowserWallet(name) {
+      if (!window.SolDexWalletConnect) {
+        alert("Wallet connect module failed to load. Hard-refresh (Ctrl+Shift+R).");
+        return;
+      }
+      try {
+        const result = await window.SolDexWalletConnect.connectProvider(name);
+        connectedExtension = { provider: result.provider, pubkey: result.pubkey };
+        syncHeaderWalletUI();
+        applyWalletAddressDisplay(lastBotStatus || {});
+        const keyInput = document.getElementById("privateKey");
+        if (keyInput) keyInput.focus();
+        alert(
+          "Connected to " + name + ":\n" + result.pubkey +
+          "\n\nFor Live trading, export your private key from " + name +
+          ", paste it in Wallet Key, and click Set Wallet.\n" +
+          "The bot signs on the server (no popup per trade). Set Wallet survives Paper Trade toggle."
+        );
+        updateQuickStartSteps(lastBotStatus || {});
+        updateStartButtonState(lastBotStatus);
+      } catch (e) {
+        alert("Connect failed: " + (e.message || e));
+      }
+    }
+
+    async function disconnectBrowserWallet() {
+      const name = connectedExtension && connectedExtension.provider;
+      if (window.SolDexWalletConnect) {
+        await window.SolDexWalletConnect.disconnectProvider(name || "phantom");
+      }
+      connectedExtension = null;
+      syncHeaderWalletUI();
+      applyWalletAddressDisplay(lastBotStatus || {});
+    }
 
     async function api(path, opts) {
       opts = opts || {};
@@ -1712,10 +1939,11 @@
     function formatStartError(err) {
       const msg = err.message || String(err);
       if (err.code === "no_wallet") {
-        return "Live trading requires a wallet. Set your private key first, or enable Paper Trade.";
+        return "Live trading requires a wallet. Connect Phantom/Solflare (upper right), then paste your exported base58 key and click Set Wallet — or enable Paper Trade.";
       }
       if (err.code === "live_start_fee_failed") {
-        return "Live start blocked — fee payment failed.\n\n" + msg;
+        return "Live start blocked — fee payment failed.\n\n" + msg +
+          "\n\nIf you see Blockhash not found, wait a moment and Start again (fresh blockhash is fetched automatically). Confirm your Set Wallet session key is still shown under Address.";
       }
       if (err.code === "insufficient_funds") {
         return msg;
@@ -1726,11 +1954,12 @@
       if (/already running/i.test(msg)) {
         return msg + "\n\nIf the bot is not actually trading, click Stop (or Force Reset) to clear stale state, then Start again.";
       }
-      if (/live-start fee|fee payment/i.test(msg)) {
-        return "Live start blocked — fee payment failed.\n\n" + msg;
+      if (/live-start fee|fee payment|blockhash/i.test(msg)) {
+        return "Live start blocked — fee payment failed.\n\n" + msg +
+          "\n\nSession Set Wallet key is kept across Paper↔Live. Retry Start; a fresh blockhash is used automatically.";
       }
       if (/wallet|private key/i.test(msg)) {
-        return "Live trading requires a wallet. Set your private key first, or enable Paper Trade.";
+        return "Live trading requires a wallet. Connect Phantom/Solflare, then Set Wallet with your base58 key — or enable Paper Trade.";
       }
       return msg;
     }
@@ -2228,7 +2457,8 @@
 
     function updateQuickStartSteps(s) {
       const paperTrade = document.getElementById("paperTradeToggle").checked;
-      const hasWallet = !!(s.public_key && s.public_key !== "—");
+      const hasWallet = effectiveHasWallet(s) ||
+        !!(s.public_key && s.public_key !== "—" && !s.wallet_ephemeral);
       document.getElementById("stepWallet").className = (!paperTrade && hasWallet) || paperTrade ? "done" : "";
       document.getElementById("stepPaper").className = paperTrade ? "done" : "";
       document.getElementById("stepStart").className = botIsActive(s) ? "done" : "";
@@ -2359,12 +2589,17 @@
         warn.style.display = "none";
         return;
       }
-      const hasWallet = !!(document.getElementById("walletAddress").textContent.trim()
-        && document.getElementById("walletAddress").textContent !== "—");
+      const hasSession = effectiveHasWallet(lastBotStatus) || !!sessionWalletPubkey;
       const funded = minFundWaiverActive
         || (walletBalanceSol != null && walletBalanceSol >= minFundSol);
       const issues = [];
-      if (!hasWallet) issues.push("set wallet key");
+      if (!hasSession) {
+        if (connectedExtension && connectedExtension.pubkey) {
+          issues.push("paste exported base58 key and Set Wallet");
+        } else {
+          issues.push("Connect + Set Wallet (base58)");
+        }
+      }
       if (!funded && walletBalanceSol != null && walletBalanceSol < minFundSol) {
         issues.push("need ≥" + minFundSol.toFixed(2) + " SOL (have " + walletBalanceSol.toFixed(4) + ")");
       } else if (!funded && walletBalanceSol == null) {
@@ -2464,7 +2699,8 @@
       mode.textContent = paperTrade ? "Paper Trade" : "Live Trading";
       mode.className = "badge " + (paperTrade ? "badge-dry" : "badge-live");
 
-      document.getElementById("walletAddress").textContent = s.public_key || "—";
+      applyWalletAddressDisplay(s);
+      syncHeaderWalletUI();
       document.getElementById("lastScan").textContent = s.last_scan_iso || fmtTime(s.last_scan_time) || "—";
       document.getElementById("activityStatus").textContent = statusLabel(s);
       const openCount = s.open_positions_count || 0;
@@ -3766,17 +4002,34 @@
     function bindUiHandlers() {
     bindClick("btnSetWallet", async () => {
       const key = document.getElementById("privateKey").value.trim();
-      if (!key) return alert("Paste your private key first");
+      if (!key) return alert("Paste your private key first (or Connect then export base58 from Phantom/Solflare)");
       try {
         const r = await api("/api/wallet", { method: "POST", body: JSON.stringify({ private_key: key }) });
         document.getElementById("privateKey").value = "";
         if (r.public_key) {
+          sessionWalletPubkey = r.public_key;
           document.getElementById("walletAddress").textContent = r.public_key;
         }
-        alert(
-          "Wallet set for session auto-sign: " + (r.public_key || "ok") +
-          "\n\nLive Jupiter swaps will sign automatically with this base58 key (no wallet popup)."
-        );
+        if (
+          connectedExtension &&
+          connectedExtension.pubkey &&
+          r.public_key &&
+          connectedExtension.pubkey !== r.public_key
+        ) {
+          alert(
+            "Warning: Set Wallet pubkey does not match the Connected extension wallet.\n\n" +
+            "Connected: " + connectedExtension.pubkey + "\n" +
+            "Set Wallet: " + r.public_key + "\n\n" +
+            "Live trades will use the Set Wallet key."
+          );
+        } else {
+          alert(
+            "Wallet set for session auto-sign: " + (r.public_key || "ok") +
+            "\n\nLive Jupiter swaps will sign automatically with this base58 key (no wallet popup)." +
+            "\nThis session key is kept when you uncheck Paper Trade."
+          );
+        }
+        syncHeaderWalletUI();
         refresh();
       } catch (e) { alert("Error: " + e.message); }
     });
@@ -3927,13 +4180,52 @@
       } else {
         displayBalanceForMode(null, false, false);
       }
+      // Never clear sessionWalletPubkey / Set Wallet when toggling paper off.
+      applyWalletAddressDisplay(lastBotStatus || {});
+      syncHeaderWalletUI();
       updateComputedTradeSize(effectiveBalanceForSizing(paperTrade), paperTrade);
       updateFundingUI(paperTrade ? currentBalance : walletBalanceSol, paperTrade);
       updateLiveModeWarning();
-      updateLiveChecklist({ has_wallet: !!document.getElementById("walletAddress").textContent.trim() && document.getElementById("walletAddress").textContent !== "—" });
-      updateQuickStartSteps({ public_key: document.getElementById("walletAddress").textContent });
+      updateLiveChecklist({ has_wallet: effectiveHasWallet(lastBotStatus) });
+      updateQuickStartSteps({
+        public_key: sessionWalletPubkey || document.getElementById("walletAddress").textContent,
+        has_wallet: effectiveHasWallet(lastBotStatus),
+        session_public_key: sessionWalletPubkey,
+      });
       updateStartButtonState(lastBotStatus);
     });
+
+    bindClick("btnWalletConnect", () => {
+      const menu = document.getElementById("walletConnectMenu");
+      if (!menu) return;
+      menu.hidden = !menu.hidden;
+      syncHeaderWalletUI();
+    });
+    bindClick("btnConnectPhantom", () => {
+      document.getElementById("walletConnectMenu").hidden = true;
+      connectBrowserWallet("phantom");
+    });
+    bindClick("btnConnectSolflare", () => {
+      document.getElementById("walletConnectMenu").hidden = true;
+      connectBrowserWallet("solflare");
+    });
+    bindClick("btnWalletDisconnect", () => {
+      disconnectBrowserWallet();
+    });
+    document.addEventListener("click", (ev) => {
+      const wrap = document.getElementById("walletConnectWrap");
+      const menu = document.getElementById("walletConnectMenu");
+      if (!wrap || !menu || menu.hidden) return;
+      if (!wrap.contains(ev.target)) menu.hidden = true;
+    });
+    // Restore prior extension connect from localStorage (pubkey only — not the private key).
+    if (window.SolDexWalletConnect) {
+      const stored = window.SolDexWalletConnect.loadStored();
+      if (stored && stored.pubkey) {
+        connectedExtension = { provider: stored.provider, pubkey: stored.pubkey };
+      }
+      syncHeaderWalletUI();
+    }
 
     bindChange("entryPct", () => {
       entryMomentumTouched = true;

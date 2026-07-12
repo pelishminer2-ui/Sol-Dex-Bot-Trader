@@ -79,6 +79,24 @@ def _lamports(sol: float) -> int:
     return int(round(float(sol) * LAMPORTS_PER_SOL))
 
 
+def _is_blockhash_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        "blockhashnotfound" in msg
+        or "blockhash not found" in msg
+        or "blockhash" in msg and "not found" in msg
+        or "expired" in msg and "blockhash" in msg
+    )
+
+
+async def _fetch_fresh_blockhash(client: AsyncClient):
+    """Fetch a fresh recent blockhash immediately before signing (never reuse)."""
+    blockhash_resp = await client.get_latest_blockhash(commitment=Confirmed)
+    if blockhash_resp.value is None:
+        raise LiveStartFeeError("Failed to fetch recent blockhash for fee payment")
+    return blockhash_resp.value.blockhash
+
+
 async def _send_sol(
     client: AsyncClient,
     payer: Keypair,
@@ -87,10 +105,7 @@ async def _send_sol(
 ) -> str:
     if lamports <= 0:
         raise LiveStartFeeError("Transfer amount must be positive")
-    blockhash_resp = await client.get_latest_blockhash()
-    if blockhash_resp.value is None:
-        raise LiveStartFeeError("Failed to fetch recent blockhash for fee payment")
-    recent = blockhash_resp.value.blockhash
+
     ix = transfer(
         TransferParams(
             from_pubkey=payer.pubkey(),
@@ -98,26 +113,47 @@ async def _send_sol(
             lamports=lamports,
         )
     )
-    tx = Transaction.new_signed_with_payer(
-        [ix],
-        payer.pubkey(),
-        [payer],
-        recent,
-    )
-    resp = await client.send_raw_transaction(
-        bytes(tx),
-        opts=TxOpts(skip_preflight=False, max_retries=3),
-    )
-    if not resp.value:
-        raise LiveStartFeeError("Fee transfer broadcast returned no signature")
-    sig = str(resp.value)
-    conf = await client.confirm_transaction(resp.value, commitment=Confirmed)
-    if not conf.value:
-        raise LiveStartFeeError(f"Fee transfer not confirmed: {sig}")
-    status = conf.value[0]
-    if status is None or status.err is not None:
-        raise LiveStartFeeError(f"Fee transfer failed on-chain: {sig} err={getattr(status, 'err', None)}")
-    return sig
+    last_exc: Optional[BaseException] = None
+    # Fresh blockhash per attempt; one retry on BlockhashNotFound / stale preflight.
+    for attempt in range(2):
+        try:
+            recent = await _fetch_fresh_blockhash(client)
+            tx = Transaction.new_signed_with_payer(
+                [ix],
+                payer.pubkey(),
+                [payer],
+                recent,
+            )
+            resp = await client.send_raw_transaction(
+                bytes(tx),
+                opts=TxOpts(skip_preflight=False, max_retries=3),
+            )
+            if not resp.value:
+                raise LiveStartFeeError("Fee transfer broadcast returned no signature")
+            sig = str(resp.value)
+            conf = await client.confirm_transaction(resp.value, commitment=Confirmed)
+            if not conf.value:
+                raise LiveStartFeeError(f"Fee transfer not confirmed: {sig}")
+            status = conf.value[0]
+            if status is None or status.err is not None:
+                raise LiveStartFeeError(
+                    f"Fee transfer failed on-chain: {sig} err={getattr(status, 'err', None)}"
+                )
+            return sig
+        except LiveStartFeeError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0 and _is_blockhash_error(exc):
+                logger.warning(
+                    "Live-start fee BlockhashNotFound/stale blockhash; "
+                    "refetching fresh blockhash and retrying once: %s",
+                    exc,
+                )
+                await asyncio.sleep(0.4)
+                continue
+            raise LiveStartFeeError(f"Fee transfer failed: {exc}") from exc
+    raise LiveStartFeeError(f"Fee transfer failed after blockhash retry: {last_exc}")
 
 
 async def _collect_async(private_key: str) -> LiveStartFeeResult:

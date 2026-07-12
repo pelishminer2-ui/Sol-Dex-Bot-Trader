@@ -153,11 +153,24 @@ try {
         'value="2.00"',
         'value="5.00"',
         'start needs >=2.00',
-        'session auto-sign'
+        'session auto-sign',
+        'id="btnWalletConnect"',
+        'id="btnConnectPhantom"',
+        'id="btnConnectSolflare"',
+        'wallet_connect.js',
+        'sessionWalletPubkey',
+        'survives Paper Trade'
     )) {
         if ($html -notlike "*$marker*") {
             throw "Dashboard missing required marker '$marker' in $DashHtml"
         }
+    }
+    $WalletJs = Join-Path $Root "static\wallet_connect.js"
+    if (-not (Test-Path $WalletJs)) { throw "Missing wallet connect module: $WalletJs" }
+    $FeePy = Join-Path $Root "live_start_fee.py"
+    $fee = Get-Content -Raw -Path $FeePy
+    if ($fee -notlike "*_is_blockhash_error*" -or $fee -notlike "*_fetch_fresh_blockhash*") {
+        throw "live_start_fee.py must refetch blockhash and retry on BlockhashNotFound"
     }
     if ($html -match 'type="number"\s+id="liveTradeableInput"') {
         throw "Live tradeable control is still a number input; expected <select> dropdown in $DashHtml"
@@ -179,7 +192,10 @@ try {
     if ($bm -notlike "*apply_session_key*") {
         throw "bot_manager.set_wallet must hot-apply apply_session_key for live auto-sign"
     }
-    Write-Host "Preflight OK: wallet set-while-live + paper 2.00 SOL gate + 0.75-5 dropdowns" -ForegroundColor Green
+    if ($bm -notlike "*session_public_key*" -or $bm -notlike "*wallet_ephemeral*") {
+        throw "bot_manager status must expose session_public_key and wallet_ephemeral"
+    }
+    Write-Host "Preflight OK: wallet Connect + session key retention + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."

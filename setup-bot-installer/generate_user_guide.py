@@ -46,9 +46,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.4"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.6"
     except OSError:
-        return "1.0.4"
+        return "1.0.6"
 
 
 def _guide_built_stamp() -> str:
@@ -373,10 +373,13 @@ def build_story(styles) -> list:
     )
     story.append(
         Paragraph(
-            "The bot needs your wallet’s <b>base58 private key</b> (or JSON byte array) for Live trading. "
-            "Paste it and click <b>Set Wallet</b> — the key stays in server memory for this session and "
-            "auto-signs Jupiter swaps (no browser wallet popup). You can set or update the key even while "
-            "the bot is running. Paper mode does not require a key. Never share your private key with anyone.",
+            "Use the dashboard <b>Connect</b> button (upper right) for <b>Phantom</b> or <b>Solflare</b> "
+            "to verify your extension wallet. Live trading still needs your wallet’s <b>base58 private key</b> "
+            "(or JSON byte array) so the bot can auto-sign Jupiter swaps on the server (no popup per trade). "
+            "After Connect, export the key, paste it, and click <b>Set Wallet</b>. The session key stays in "
+            "server memory and is <b>not cleared</b> when you uncheck Paper Trade, Stop, or Force Reset. "
+            "You can set or update the key even while the bot is running. Paper mode does not require a key. "
+            "Never share your private key with anyone.",
             styles["body"],
         )
     )

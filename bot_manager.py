@@ -156,6 +156,7 @@ class BotManager:
         }
 
     def clear_wallet(self):
+        """Explicit clear only — never called by paper/live toggle, stop, or force-reset."""
         with self._lock:
             if self._status in ("running", "starting"):
                 raise RuntimeError("Stop the bot before clearing wallet")
@@ -166,13 +167,21 @@ class BotManager:
         with self._lock:
             return bool(self._private_key or Config.SOLANA_PRIVATE_KEY)
 
+    def get_session_public_key(self) -> Optional[str]:
+        """Pubkey from Set Wallet / .env only (never paper ephemeral)."""
+        return self.get_public_key()
+
     def _thread_is_alive(self) -> bool:
         with self._lock:
             thread = self._thread
         return thread is not None and thread.is_alive()
 
     def _clear_idle_state(self) -> None:
-        """Force bot manager to stopped/idle (caller must hold _lock)."""
+        """Force bot manager to stopped/idle (caller must hold _lock).
+
+        Intentionally does NOT clear _private_key / _public_key — session wallet
+        must survive Stop, force-reset, paper↔live toggle, and failed live-start fee.
+        """
         was_paper = self._dry_run
         self._status = "stopped"
         self._bot = None
@@ -607,9 +616,13 @@ class BotManager:
             companion_open = companion_slot_open(open_mints)
             wbtc_companion = wbtc_companion_slot_open(open_mints)
             proxy_companion = proxy_companion_slot_open(open_mints)
-            public_key = self.get_public_key()
-            if bot and bot.solana and not public_key:
+            # Session / .env key only — never treat paper ephemeral keypair as "wallet set".
+            session_public_key = self.get_public_key()
+            wallet_ephemeral = False
+            public_key = session_public_key
+            if bot and bot.solana and not session_public_key:
                 public_key = str(bot.solana.public_key)
+                wallet_ephemeral = True
             trade_candidates: List[Dict[str, Any]] = []
             if bot and bot.watchlist:
                 trade_candidates = [
@@ -673,6 +686,8 @@ class BotManager:
             "dry_run": dry_run,
             "paper_trade": dry_run,
             "public_key": public_key,
+            "session_public_key": session_public_key,
+            "wallet_ephemeral": wallet_ephemeral,
             "has_wallet": self.has_wallet(),
             "started_at": started_at,
             "bot_started_at": started_at,

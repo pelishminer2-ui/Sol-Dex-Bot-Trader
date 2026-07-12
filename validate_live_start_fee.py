@@ -77,9 +77,37 @@ def test_bot_start_live_blocks_on_fee_failure():
                 except RuntimeError as exc:
                     assert "fee" in str(exc).lower()
     assert bot_manager._status in ("stopped", "idle") or not bot_manager.is_running
+    # Session key must survive failed live-start fee / reset_to_idle (paper↔live safe).
+    assert bot_manager._private_key == "unit-test-key-not-real"
+    assert bot_manager._public_key == "UnitTestPubkey111111111111111111111111111"
+    assert bot_manager.has_wallet() is True
     bot_manager.reset_to_idle(force=True)
+    assert bot_manager._private_key == "unit-test-key-not-real"
     bot_manager._private_key = None
-    print("PASS: live start blocked when fee payment fails")
+    bot_manager._public_key = None
+    print("PASS: live start blocked when fee payment fails (session key retained)")
+
+
+def test_status_exposes_session_wallet_not_ephemeral():
+    bot_manager.reset_to_idle(force=True)
+    bot_manager._private_key = "unit-test-key-not-real"
+    bot_manager._public_key = "UnitTestPubkey111111111111111111111111111"
+    status = bot_manager.get_status()
+    assert status["has_wallet"] is True
+    assert status["session_public_key"] == "UnitTestPubkey111111111111111111111111111"
+    assert status.get("wallet_ephemeral") is False
+    bot_manager._private_key = None
+    bot_manager._public_key = None
+    print("PASS: status exposes session_public_key / wallet_ephemeral")
+
+
+def test_blockhash_retry_helper():
+    from live_start_fee import _is_blockhash_error
+
+    assert _is_blockhash_error(Exception("BlockhashNotFound"))
+    assert _is_blockhash_error(Exception("Transaction simulation failed: Blockhash not found"))
+    assert not _is_blockhash_error(Exception("insufficient funds"))
+    print("PASS: blockhash error detector")
 
 
 def test_bot_start_live_succeeds_with_mocked_fee():
@@ -148,6 +176,8 @@ def main():
     test_live_requires_key_when_fee_enabled()
     test_bot_start_paper_does_not_call_chain()
     test_bot_start_live_blocks_on_fee_failure()
+    test_status_exposes_session_wallet_not_ephemeral()
+    test_blockhash_retry_helper()
     test_bot_start_live_succeeds_with_mocked_fee()
     test_api_start_fee_error_code()
     test_config_exposes_fee_fields()
