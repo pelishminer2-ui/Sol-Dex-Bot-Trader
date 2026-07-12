@@ -260,8 +260,16 @@ try {
         Write-Host "[4/4] Skipping Inno Setup"
     }
 
+    # build.bat is a thin wrapper whose content rarely changes; touch it so Explorer
+    # "Date modified" tracks the last successful build (real stamp is BUILD_INFO.txt).
+    $BatPath = Join-Path $InstallerDir "build.bat"
+    if (Test-Path $BatPath) {
+        (Get-Item $BatPath).LastWriteTime = Get-Date
+    }
+
     Write-Host ""
     Write-Host "Maintainer notes: see setup-bot-installer\README.md"
+    Write-Host "Truth stamp: setup-bot-installer\BUILD_INFO.txt (and output\BUILD_INFO.txt)"
 }
 finally {
     Pop-Location
