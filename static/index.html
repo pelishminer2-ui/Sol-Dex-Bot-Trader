@@ -833,10 +833,10 @@
                 <div id="paperBalancePanel">
                   <div class="setup-inline" style="margin-top:0.25rem">
                     <select id="paperBalanceInput" aria-label="Paper balance SOL">
-                      <option value="0.75" selected>0.75 SOL</option>
+                      <option value="0.75">0.75 SOL</option>
                       <option value="1.00">1.00 SOL</option>
                       <option value="1.50">1.50 SOL</option>
-                      <option value="2.00">2.00 SOL</option>
+                      <option value="2.00" selected>2.00 SOL</option>
                       <option value="2.50">2.50 SOL</option>
                       <option value="3.00">3.00 SOL</option>
                       <option value="3.50">3.50 SOL</option>
@@ -847,7 +847,7 @@
                     <button class="btn-secondary" type="button" id="btnSetPaperBalance">Set</button>
                     <button class="btn-secondary" type="button" id="btnResetPaperBalance">Reset</button>
                   </div>
-                  <p class="compact-hint">0.75–5 SOL · resets when you Stop Bot</p>
+                  <p class="compact-hint">0.75-5 SOL · start needs >=2.00 · resets when you Stop Bot</p>
                 </div>
                 <div id="liveTradeablePanel" style="display:none">
                   <div class="setup-inline" style="margin-top:0.25rem">
@@ -1651,10 +1651,11 @@
     let tradeSizeTouched = false;
     let entryMomentumTouched = false;
     let minFundSol = 0.75;
+    let minPaperFundSol = 2.00;
     let minFundWaiverActive = false;
     let liveStartFeeSol = 0.025;
     let liveStartFeeEnabled = true;
-    let paperStartingBalanceSol = 0.75;
+    let paperStartingBalanceSol = 2.00;
     let paperRunningBalance = null;
     let paperBalanceTouched = false;
     let minPaperBalanceSol = 0.75;
@@ -2815,6 +2816,7 @@
       }
       updateStrategyBalanceStatus(preferPaperUi, s);
       if (s.min_fund_sol != null) minFundSol = s.min_fund_sol;
+      if (s.min_paper_fund_sol != null) minPaperFundSol = s.min_paper_fund_sol;
       minFundWaiverActive = s.min_fund_waiver_active === true || s.min_fund_waived === true;
       if (s.max_wallet_trade_pct != null) backendMaxWalletTradePct = s.max_wallet_trade_pct;
       document.getElementById("minFunding").textContent =
@@ -3103,6 +3105,7 @@
         window.__instantExit3Pct = cfg.instant_exit_3pct;
       }
       if (cfg.min_fund_sol != null) minFundSol = cfg.min_fund_sol;
+      if (cfg.min_paper_fund_sol != null) minPaperFundSol = cfg.min_paper_fund_sol;
       if (cfg.live_start_fee_sol != null) liveStartFeeSol = Number(cfg.live_start_fee_sol);
       if (cfg.fee_enabled != null) liveStartFeeEnabled = !!cfg.fee_enabled;
       const feeAmtEl = document.getElementById("liveStartFeeAmount");
@@ -3226,6 +3229,14 @@
       const warn = document.getElementById("fundingWarning");
       const usePaper = paperTrade != null ? paperTrade : document.getElementById("paperTradeToggle").checked;
       if (usePaper) {
+        const paperBal = paperRunningBalance ?? paperStartingBalanceSol ?? balance;
+        if (paperBal != null && paperBal < minPaperFundSol && !minFundWaiverActive) {
+          warn.style.display = "block";
+          warn.className = "negative";
+          warn.textContent =
+            `Paper trading requires at least ${minPaperFundSol.toFixed(2)} SOL simulated. Current: ${Number(paperBal).toFixed(2)} SOL.`;
+          return;
+        }
         warn.style.display = "none";
         return;
       }
@@ -3759,7 +3770,13 @@
       try {
         const r = await api("/api/wallet", { method: "POST", body: JSON.stringify({ private_key: key }) });
         document.getElementById("privateKey").value = "";
-        alert("Wallet set: " + r.public_key);
+        if (r.public_key) {
+          document.getElementById("walletAddress").textContent = r.public_key;
+        }
+        alert(
+          "Wallet set for session auto-sign: " + (r.public_key || "ok") +
+          "\n\nLive Jupiter swaps will sign automatically with this base58 key (no wallet popup)."
+        );
         refresh();
       } catch (e) { alert("Error: " + e.message); }
     });

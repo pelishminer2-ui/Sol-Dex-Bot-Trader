@@ -159,7 +159,10 @@ DEFAULT_MAX_WALLET_TRADE_PCT = 0.75
 DEFAULT_MIN_FUND_SOL = 0.75
 DEFAULT_MIN_FUND_WAIVER_HOURS = 1.0
 DEFAULT_MIN_FUND_WAIVER_AFTER_SESSION_TRADE = True
-DEFAULT_PAPER_SIMULATED_BALANCE_SOL = 0.75
+# Paper start / default simulated wallet — product gate is 2.00 SOL (not 3.00).
+DEFAULT_PAPER_SIMULATED_BALANCE_SOL = 2.00
+DEFAULT_MIN_PAPER_FUND_SOL = 2.00
+MIN_PAPER_FUND_SOL = DEFAULT_MIN_PAPER_FUND_SOL
 MIN_PAPER_SIMULATED_BALANCE_SOL = 0.75
 MAX_PAPER_SIMULATED_BALANCE_SOL = 5.0
 MIN_PAPER_BALANCE_SOL = MIN_PAPER_SIMULATED_BALANCE_SOL
@@ -1780,6 +1783,9 @@ class Config:
     MAX_DAILY_LOSS_SOL = float(os.getenv("MAX_DAILY_LOSS_SOL", "1.0"))
     MIN_SOL_RESERVE = float(os.getenv("MIN_SOL_RESERVE", "0.02"))
     MIN_FUND_SOL = float(os.getenv("MIN_FUND_SOL", str(DEFAULT_MIN_FUND_SOL)))
+    MIN_PAPER_FUND_SOL = float(
+        os.getenv("MIN_PAPER_FUND_SOL", str(DEFAULT_MIN_PAPER_FUND_SOL))
+    )
     MIN_FUND_WAIVER_HOURS = float(
         os.getenv("MIN_FUND_WAIVER_HOURS", str(DEFAULT_MIN_FUND_WAIVER_HOURS))
     )
@@ -2598,6 +2604,7 @@ class Config:
             "spread_defaults": cls.spread_defaults(),
             "allowed_entry_momentum_pct": list(ALLOWED_ENTRY_MOMENTUM_PCT),
             "min_fund_sol": cls.MIN_FUND_SOL,
+            "min_paper_fund_sol": cls.MIN_PAPER_FUND_SOL,
             "min_fund_waiver_hours": cls.MIN_FUND_WAIVER_HOURS,
             "min_fund_waiver_after_session_trade": cls.MIN_FUND_WAIVER_AFTER_SESSION_TRADE,
             "solana_rpc_url": cls.SOLANA_RPC_URL,

@@ -46,8 +46,13 @@ class SolanaClient:
                 secret = base58.b58decode(private_key)
             return Keypair.from_bytes(secret)
         except Exception as exc:
-            logger.error("Failed to load keypair: %s", exc)
+            logger.error("Failed to load keypair: %s", type(exc).__name__)
             raise
+
+    def apply_keypair(self, private_key: str) -> None:
+        """Hot-swap keypair for session auto-sign (base58 or JSON). Never logs the key."""
+        self.keypair = self._load_keypair(private_key)
+        self.public_key = self.keypair.pubkey()
 
     async def get_balance(self) -> float:
         try:

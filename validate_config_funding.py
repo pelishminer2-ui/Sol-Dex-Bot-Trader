@@ -325,27 +325,40 @@ def test_paper_start_blocked_low_simulated_balance():
     risk = RiskManager()
     _reset_trade_activity()
     with patch.object(RiskManager, "min_fund_waived", return_value=False):
-        with patch.object(Config, "PAPER_SIMULATED_BALANCE_SOL", 0.5):
-            ok, reason = risk.can_start_trading(None, dry_run=True)
-            assert ok is False
-            assert "0.75" in reason or "minimum" in reason.lower()
+        with patch.object(Config, "MIN_PAPER_FUND_SOL", 2.0):
+            with patch.object(paper_session_manager, "get_simulated_balance", return_value=0.5):
+                ok, reason = risk.can_start_trading(None, dry_run=True)
+                assert ok is False
+                assert "2.00" in reason or "minimum" in reason.lower()
 
     with patch.object(bot_manager, "_status", "stopped"):
         with patch.object(bot_manager, "_run_bot_thread"):
             with patch.object(
                 RiskManager,
                 "can_start_trading",
-                return_value=(False, "paper simulated balance 0.5000 SOL is below minimum 0.75 SOL"),
+                return_value=(False, "paper simulated balance 0.5000 SOL is below minimum 2.00 SOL"),
             ):
                 try:
                     bot_manager.start(dry_run=True)
                     raise AssertionError("Expected RuntimeError for low paper balance")
                 except RuntimeError as exc:
-                    assert "0.75" in str(exc) or "minimum" in str(exc).lower()
+                    assert "2.00" in str(exc) or "minimum" in str(exc).lower()
 
-    _reset_paper_session(0.75)
+    _reset_paper_session(2.0)
 
-    print("PASS: paper start blocked when simulated balance < MIN_FUND_SOL")
+    print("PASS: paper start blocked when simulated balance < MIN_PAPER_FUND_SOL")
+
+
+def test_paper_start_allowed_at_two_sol():
+    """Paper can start at 2.00 simulated (not blocked until 3.00)."""
+    risk = RiskManager()
+    _reset_trade_activity()
+    with patch.object(RiskManager, "min_fund_waived", return_value=False):
+        with patch.object(Config, "MIN_PAPER_FUND_SOL", 2.0):
+            with patch.object(paper_session_manager, "get_simulated_balance", return_value=2.0):
+                ok, reason = risk.can_start_trading(None, dry_run=True)
+                assert ok is True, reason
+    print("PASS: paper start allowed at 2.00 SOL simulated")
 
 
 def test_config_to_dict_includes_spread_defaults():
@@ -1070,6 +1083,7 @@ def main():
     test_entry_allowed_below_min_fund_during_session()
 
     test_paper_start_blocked_low_simulated_balance()
+    test_paper_start_allowed_at_two_sol()
 
     test_config_to_dict_includes_spread_defaults()
 

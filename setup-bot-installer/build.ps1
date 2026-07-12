@@ -150,7 +150,10 @@ try {
         'liveTradeableTouched',
         'paperBalanceTouched',
         'setLiveTradeableSelect',
-        'value="5.00"'
+        'value="2.00"',
+        'value="5.00"',
+        'start needs >=2.00',
+        'session auto-sign'
     )) {
         if ($html -notlike "*$marker*") {
             throw "Dashboard missing required marker '$marker' in $DashHtml"
@@ -162,7 +165,21 @@ try {
     if ($cfg -notmatch 'MAX_LIVE_TRADEABLE_BALANCE_SOL\s*=\s*5\.0') {
         throw "config.py must set MAX_LIVE_TRADEABLE_BALANCE_SOL = 5.0 (found in $ConfigPy)"
     }
-    Write-Host "Preflight OK: repo-root static/index.html + config.py include 0.75-5 SOL live/paper dropdowns" -ForegroundColor Green
+    if ($cfg -notmatch 'DEFAULT_PAPER_SIMULATED_BALANCE_SOL\s*=\s*2\.0') {
+        throw "config.py must set DEFAULT_PAPER_SIMULATED_BALANCE_SOL = 2.00"
+    }
+    if ($cfg -notmatch 'DEFAULT_MIN_PAPER_FUND_SOL\s*=\s*2\.0') {
+        throw "config.py must set DEFAULT_MIN_PAPER_FUND_SOL = 2.00 (not 3.00)"
+    }
+    $BotManager = Join-Path $Root "bot_manager.py"
+    $bm = Get-Content -Raw -Path $BotManager
+    if ($bm -like "*Stop the bot before changing wallet*") {
+        throw "bot_manager.set_wallet still blocks while running — remove that guard"
+    }
+    if ($bm -notlike "*apply_session_key*") {
+        throw "bot_manager.set_wallet must hot-apply apply_session_key for live auto-sign"
+    }
+    Write-Host "Preflight OK: wallet set-while-live + paper 2.00 SOL gate + 0.75-5 dropdowns" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."

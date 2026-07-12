@@ -193,14 +193,15 @@ class RiskManager:
             return True, f"ok ({self._min_fund_waiver_reason()})"
         balance = self.effective_wallet_balance(wallet_balance_sol, dry_run)
         if dry_run:
-            if balance < Config.MIN_FUND_SOL:
+            paper_min = float(getattr(Config, "MIN_PAPER_FUND_SOL", 2.0) or 2.0)
+            if balance < paper_min:
                 from trade_activity import trade_activity
 
                 detail = trade_activity.waiver_block_detail()
                 return (
                     False,
                     f"paper simulated balance {balance:.4f} SOL is below minimum "
-                    f"{Config.MIN_FUND_SOL:.2f} SOL required to start trading "
+                    f"{paper_min:.2f} SOL required to start trading "
                     f"(waiver not applied: {detail})",
                 )
             return True, "ok"
@@ -567,6 +568,7 @@ class RiskManager:
             f"  Wallet: {wallet}\n"
             f"{balance_line}"
             f"  Min funding (live): {Config.MIN_FUND_SOL:.2f} SOL\n"
+            f"  Min funding (paper): {float(getattr(Config, 'MIN_PAPER_FUND_SOL', 2.0) or 2.0):.2f} SOL\n"
             f"  Max per trade: {Config.MAX_WALLET_TRADE_PCT * 100:.0f}% of wallet\n"
             f"  Max open positions: {Config.MAX_OPEN_POSITIONS} "
             f"({Config.MAX_OPEN_POSITIONS_WBTC} when WBTC in play)\n"

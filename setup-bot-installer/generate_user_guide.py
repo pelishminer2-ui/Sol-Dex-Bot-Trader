@@ -46,9 +46,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.3"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.4"
     except OSError:
-        return "1.0.3"
+        return "1.0.4"
 
 
 def _guide_built_stamp() -> str:
@@ -374,7 +374,9 @@ def build_story(styles) -> list:
     story.append(
         Paragraph(
             "The bot needs your wallet’s <b>base58 private key</b> (or JSON byte array) for Live trading. "
-            "Paper mode does not require a key. Never share your private key with anyone.",
+            "Paste it and click <b>Set Wallet</b> — the key stays in server memory for this session and "
+            "auto-signs Jupiter swaps (no browser wallet popup). You can set or update the key even while "
+            "the bot is running. Paper mode does not require a key. Never share your private key with anyone.",
             styles["body"],
         )
     )
@@ -423,7 +425,8 @@ def build_story(styles) -> list:
                 ),
                 ListItem(
                     Paragraph(
-                        "<b>Paper Trade</b> (recommended first) — simulated balance, real market data, "
+                        "<b>Paper Trade</b> (recommended first) — simulated balance (default / start gate "
+                        "<b>2.00 SOL</b>; dropdown 0.75–5.00), real market data, "
                         "no on-chain swaps, <b>no live-start fee</b>",
                         styles["bullet"],
                     )

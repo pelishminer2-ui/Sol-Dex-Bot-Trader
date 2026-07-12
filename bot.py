@@ -148,6 +148,28 @@ class TradingBot:
         self.market_regime_snapshot: dict = {}
         self.session_entry_tuning: dict = {}
 
+    def apply_session_key(self, private_key: str) -> None:
+        """Hot-apply a session private key for live Jupiter auto-sign.
+
+        Decodes base58 (or JSON byte array) into the SolanaClient keypair so
+        swaps sign locally — no browser wallet popup. Safe to call while the
+        bot loop is running; does not log the key.
+        """
+        key = (private_key or "").strip()
+        if not key:
+            raise ValueError("Private key is required")
+        self._private_key = key
+        if self.solana is not None:
+            self.solana.apply_keypair(key)
+            if self.jupiter is not None:
+                self.jupiter.public_key = str(self.solana.public_key)
+            self._record_action(
+                f"Session wallet attached for auto-sign ({str(self.solana.public_key)[:8]}…)"
+            )
+        else:
+            # initialize() has not run yet — key is retained for first SolanaClient build
+            self._record_action("Session wallet stored for auto-sign (pending init)")
+
     def _record_action(self, message: str) -> None:
         self.last_action = message
         self.last_action_time = time.time()

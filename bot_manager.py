@@ -127,24 +127,37 @@ class BotManager:
         return started_at
 
     def set_wallet(self, private_key: str) -> Dict[str, str]:
+        """Store a session private key in memory for live auto-sign.
+
+        Accepts base58 or JSON byte-array keys. Allowed while the bot is
+        running so operators can attach a key mid-session; the keypair is
+        hot-applied to the live TradingBot/SolanaClient for Jupiter swaps
+        (no browser wallet popup). Never logged.
+        """
         private_key = private_key.strip()
         if not private_key:
             raise ValueError("Private key is required")
 
+        # Validate + derive pubkey without retaining the temp client.
         client = SolanaClient(private_key=private_key)
         pubkey = str(client.public_key)
 
         with self._lock:
-            if self._status == "running":
-                raise RuntimeError("Stop the bot before changing wallet")
             self._private_key = private_key
             self._public_key = pubkey
+            bot = self._bot
+            if bot is not None:
+                bot.apply_session_key(private_key)
 
-        return {"public_key": pubkey}
+        return {
+            "public_key": pubkey,
+            "auto_sign": True,
+            "session_only": True,
+        }
 
     def clear_wallet(self):
         with self._lock:
-            if self._status == "running":
+            if self._status in ("running", "starting"):
                 raise RuntimeError("Stop the bot before clearing wallet")
             self._private_key = None
             self._public_key = None
@@ -730,6 +743,7 @@ class BotManager:
             "live_tradeable_balance_sol": tradeable_balance,
             "balance_simulated": dry_run,
             "min_fund_sol": Config.MIN_FUND_SOL,
+            "min_paper_fund_sol": Config.MIN_PAPER_FUND_SOL,
             "max_wallet_trade_pct": Config.MAX_WALLET_TRADE_PCT,
             "computed_trade_size_sol": computed_trade_size,
             "paper_trade_size_sol": RiskManager().compute_trade_size(0, dry_run=True),
@@ -737,7 +751,10 @@ class BotManager:
             "funding_ok": (
                 (paper_balance if dry_run else wallet_balance) is not None
                 and (
-                    (paper_balance if dry_run else wallet_balance) >= Config.MIN_FUND_SOL
+                    (
+                        (paper_balance if dry_run else wallet_balance)
+                        >= (Config.MIN_PAPER_FUND_SOL if dry_run else Config.MIN_FUND_SOL)
+                    )
                     or RiskManager.min_fund_waived()
                 )
             ),
@@ -1208,7 +1225,8 @@ class BotManager:
                 "balance": balance,
                 "simulated": True,
                 "target_balance": paper_session_manager.get_target_balance(),
-                "min_fund_sol": Config.MIN_FUND_SOL,
+                "min_fund_sol": Config.MIN_PAPER_FUND_SOL,
+                "min_paper_fund_sol": Config.MIN_PAPER_FUND_SOL,
                 "min_fund_waiver_active": RiskManager.min_fund_waived(),
             }
         balance = self.get_balance()
