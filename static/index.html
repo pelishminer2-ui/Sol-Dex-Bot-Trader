@@ -1645,6 +1645,7 @@
     let liveStartFeeEnabled = true;
     let paperStartingBalanceSol = 0.75;
     let paperRunningBalance = null;
+    let paperBalanceTouched = false;
     let minPaperBalanceSol = 0.75;
     let maxPaperBalanceSol = 5.0;
     let liveTradeableBalanceSol = 0.75;
@@ -2088,7 +2089,7 @@
       el.value = best;
     }
 
-    function updatePaperBalanceControls(paperTrade) {
+    function updatePaperBalanceControls(paperTrade, forceSelect = false) {
       const panel = document.getElementById("paperBalancePanel");
       const livePanel = document.getElementById("liveTradeablePanel");
       const input = document.getElementById("paperBalanceInput");
@@ -2096,7 +2097,10 @@
       panel.style.display = paperTrade ? "block" : "none";
       if (livePanel) livePanel.style.display = paperTrade ? "none" : "block";
       if (paperTrade) {
-        setPaperBalanceSelect(paperStartingBalanceSol);
+        // Do not clobber a pending user selection on status/config polls.
+        if (forceSelect || !paperBalanceTouched) {
+          setPaperBalanceSelect(paperStartingBalanceSol);
+        }
       } else {
         const liveInput = document.getElementById("liveTradeableInput");
         if (liveInput) {
@@ -2107,8 +2111,8 @@
       }
     }
 
-    function updateStrategyBalanceStatus(paperTrade, status) {
-      updatePaperBalanceControls(paperTrade);
+    function updateStrategyBalanceStatus(paperTrade, status, forceSelect = false) {
+      updatePaperBalanceControls(paperTrade, forceSelect);
       const simEl = document.getElementById("paperSimulatedBalanceDisplay");
       const startEl = document.getElementById("paperStartingBalanceDisplay");
       const walletEl = document.getElementById("liveWalletBalanceDisplay");
@@ -2752,21 +2756,29 @@
         }
       }
 
-      if (s.balance_sol != null || s.balance_simulated || s.wallet_balance_sol != null) {
-        displayBalanceForMode(
-          s.balance_sol,
-          isPaperTrade(s) || s.balance_simulated,
-          s.balance_simulated,
-          s
-        );
-      } else if (isPaperTrade(s) || document.getElementById("paperTradeToggle").checked) {
-        displayBalanceForMode(paperRunningBalance ?? paperStartingBalanceSol, true, true, s);
-      }
+      // Apply server paper balances BEFORE any UI redraw so the dropdown
+      // cannot snap back to the stale JS default (0.75).
       if (s.paper_simulated_balance_sol != null) {
         paperRunningBalance = s.paper_simulated_balance_sol;
       }
       if (s.paper_target_balance_sol != null) {
         paperStartingBalanceSol = s.paper_target_balance_sol;
+      }
+      const preferPaperUi =
+        document.getElementById("paperTradeToggle").checked
+        || isPaperTrade(s)
+        || s.balance_simulated;
+      if (s.balance_sol != null || s.balance_simulated || s.wallet_balance_sol != null) {
+        displayBalanceForMode(
+          preferPaperUi
+            ? (s.paper_simulated_balance_sol ?? s.balance_sol)
+            : s.balance_sol,
+          preferPaperUi,
+          preferPaperUi || s.balance_simulated,
+          s
+        );
+      } else if (preferPaperUi) {
+        displayBalanceForMode(paperRunningBalance ?? paperStartingBalanceSol, true, true, s);
       }
       if (s.live_tradeable_balance_sol != null) {
         liveTradeableBalanceSol = s.live_tradeable_balance_sol;
@@ -2775,10 +2787,7 @@
           liveInput.value = liveTradeableBalanceSol.toFixed(2);
         }
       }
-      updateStrategyBalanceStatus(
-        isPaperTrade(s) || document.getElementById("paperTradeToggle").checked,
-        s
-      );
+      updateStrategyBalanceStatus(preferPaperUi, s);
       if (s.min_fund_sol != null) minFundSol = s.min_fund_sol;
       minFundWaiverActive = s.min_fund_waiver_active === true || s.min_fund_waived === true;
       if (s.max_wallet_trade_pct != null) backendMaxWalletTradePct = s.max_wallet_trade_pct;
@@ -3099,7 +3108,7 @@
       if (cfg.max_live_tradeable_balance_sol != null) {
         maxLiveTradeableBalanceSol = cfg.max_live_tradeable_balance_sol;
       }
-      if (document.getElementById("paperTradeToggle").checked) {
+      if (document.getElementById("paperTradeToggle").checked && !paperBalanceTouched) {
         setPaperBalanceSelect(paperStartingBalanceSol);
       }
       const liveInput = document.getElementById("liveTradeableInput");
@@ -3740,6 +3749,10 @@
       } catch (e) { alert("Error: " + e.message); }
     });
 
+    bindChange("paperBalanceInput", () => {
+      paperBalanceTouched = true;
+    });
+
     bindClick("btnSetPaperBalance", async () => {
       const input = document.getElementById("paperBalanceInput");
       const amount = parseFloat(input.value);
@@ -3754,13 +3767,19 @@
         });
         if (r.paper_target_balance_sol != null) {
           paperStartingBalanceSol = r.paper_target_balance_sol;
-          setPaperBalanceSelect(paperStartingBalanceSol);
         }
         if (r.paper_simulated_balance_sol != null) {
           paperRunningBalance = r.paper_simulated_balance_sol;
-          displayBalanceForMode(r.paper_simulated_balance_sol, true, true, r);
         }
-        updateStrategyBalanceStatus(true, r);
+        paperBalanceTouched = false;
+        setPaperBalanceSelect(paperStartingBalanceSol);
+        displayBalanceForMode(
+          paperRunningBalance ?? paperStartingBalanceSol,
+          true,
+          true,
+          r
+        );
+        updateStrategyBalanceStatus(true, r, true);
         updateComputedTradeSize(paperRunningBalance ?? paperStartingBalanceSol, true);
         updateFundingUI(paperRunningBalance ?? paperStartingBalanceSol, true);
         logActivity("Paper balance set to " + paperStartingBalanceSol.toFixed(2) + " SOL");
@@ -3774,13 +3793,19 @@
         const r = await api("/api/paper/balance/reset", { method: "POST", body: "{}" });
         if (r.paper_target_balance_sol != null) {
           paperStartingBalanceSol = r.paper_target_balance_sol;
-          setPaperBalanceSelect(paperStartingBalanceSol);
         }
         if (r.paper_simulated_balance_sol != null) {
           paperRunningBalance = r.paper_simulated_balance_sol;
-          displayBalanceForMode(r.paper_simulated_balance_sol, true, true, r);
         }
-        updateStrategyBalanceStatus(true, r);
+        paperBalanceTouched = false;
+        setPaperBalanceSelect(paperStartingBalanceSol);
+        displayBalanceForMode(
+          paperRunningBalance ?? paperStartingBalanceSol,
+          true,
+          true,
+          r
+        );
+        updateStrategyBalanceStatus(true, r, true);
         updateComputedTradeSize(paperRunningBalance ?? paperStartingBalanceSol, true);
         updateFundingUI(paperRunningBalance ?? paperStartingBalanceSol, true);
         logActivity("Paper balance reset to " + paperStartingBalanceSol.toFixed(2) + " SOL");
@@ -4254,6 +4279,7 @@
       try {
         const stopResult = await api("/api/bot/stop", { method: "POST", body: "{}" });
         if (stopResult.paper_balance_reset_on_stop) {
+          paperBalanceTouched = false;
           if (stopResult.paper_simulated_balance_sol != null) {
             paperRunningBalance = stopResult.paper_simulated_balance_sol;
           }

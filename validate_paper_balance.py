@@ -114,9 +114,9 @@ def test_entry_attempt_triggers_bot_stop():
 
         with patch.object(Config, "MIN_SOL_RESERVE", 0.02):
             with patch.object(Config, "TRADE_SIZE_SOL", 0.05):
-                paper_session_manager.set_target_balance(0.10)
+                paper_session_manager.set_target_balance(0.75)
                 paper_session_manager.start_session()
-                paper_session_manager.record_buy(0.09)
+                paper_session_manager.record_buy(0.74)
                 result = await bot._execute_entry(candidate, 1.0, 0.01)
                 assert result is False
                 bot._stop_for_paper_balance_depletion.assert_awaited_once()
@@ -280,14 +280,19 @@ def test_set_and_reset_paper_balance():
     _reset_manager()
     paper_session_manager.set_target_balance(1.25)
     assert abs(paper_session_manager.get_target_balance() - 1.25) < 1e-9
+    assert abs(paper_session_manager.get_simulated_balance() - 1.25) < 1e-9
 
     paper_session_manager.start_session()
     paper_session_manager.record_buy(0.05)
     assert abs(paper_session_manager.get_simulated_balance() - 1.20) < 1e-9
 
+    # Mid-session Set should apply immediately to the running wallet.
+    paper_session_manager.set_target_balance(2.0)
+    assert abs(paper_session_manager.get_simulated_balance() - 2.0) < 1e-9
+
     reset_to = paper_session_manager.reset_balance()
-    assert abs(reset_to - 1.25) < 1e-9
-    assert abs(paper_session_manager.get_simulated_balance() - 1.25) < 1e-9
+    assert abs(reset_to - 2.0) < 1e-9
+    assert abs(paper_session_manager.get_simulated_balance() - 2.0) < 1e-9
     print("PASS: set and reset paper balance")
 
 

@@ -54,11 +54,19 @@ class PaperSessionManager:
             return self._target_balance_sol
 
     def set_target_balance(self, amount: float) -> float:
-        """Set the configured paper balance (persists; used on session start / reset)."""
+        """Set the configured paper balance (persists; used on session start / reset).
+
+        Also applies the new amount to the running/last simulated wallet so Set
+        takes effect immediately in the UI (not only after Reset / next Start).
+        """
         normalized = normalize_paper_balance_sol(amount)
         with self._lock:
             self._target_balance_sol = normalized
             Config.PAPER_SIMULATED_BALANCE_SOL = normalized
+            if self._session.active:
+                self._session.simulated_balance = normalized
+            elif self._last_session.start_time is not None:
+                self._last_session.simulated_balance = normalized
         self._persist()
         return normalized
 
