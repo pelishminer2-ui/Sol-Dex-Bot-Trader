@@ -648,6 +648,11 @@ def test_paper_simulated_balance_bounds():
     assert normalize_paper_balance_sol(0.75) == 0.75
     assert normalize_paper_balance_sol(MIN_PAPER_SIMULATED_BALANCE_SOL) == MIN_PAPER_SIMULATED_BALANCE_SOL
     try:
+        normalize_paper_balance_sol(0.5)
+        raise AssertionError("expected ValueError for balance below minimum")
+    except ValueError:
+        pass
+    try:
         normalize_paper_balance_sol(0.05)
         raise AssertionError("expected ValueError for balance below minimum")
     except ValueError:

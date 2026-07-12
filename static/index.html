@@ -832,11 +832,22 @@
               <td>
                 <div id="paperBalancePanel">
                   <div class="setup-inline" style="margin-top:0.25rem">
-                    <input type="number" id="paperBalanceInput" min="0.1" max="5" step="0.01" value="0.75" aria-label="Paper balance SOL" style="width:5.5rem">
+                    <select id="paperBalanceInput" aria-label="Paper balance SOL">
+                      <option value="0.75" selected>0.75 SOL</option>
+                      <option value="1.00">1.00 SOL</option>
+                      <option value="1.50">1.50 SOL</option>
+                      <option value="2.00">2.00 SOL</option>
+                      <option value="2.50">2.50 SOL</option>
+                      <option value="3.00">3.00 SOL</option>
+                      <option value="3.50">3.50 SOL</option>
+                      <option value="4.00">4.00 SOL</option>
+                      <option value="4.50">4.50 SOL</option>
+                      <option value="5.00">5.00 SOL</option>
+                    </select>
                     <button class="btn-secondary" type="button" id="btnSetPaperBalance">Set</button>
                     <button class="btn-secondary" type="button" id="btnResetPaperBalance">Reset</button>
                   </div>
-                  <p class="compact-hint">0.1–5 SOL · resets when you Stop Bot</p>
+                  <p class="compact-hint">0.75–5 SOL · resets when you Stop Bot</p>
                 </div>
                 <div id="liveTradeablePanel" style="display:none">
                   <div class="setup-inline" style="margin-top:0.25rem">
@@ -1634,7 +1645,7 @@
     let liveStartFeeEnabled = true;
     let paperStartingBalanceSol = 0.75;
     let paperRunningBalance = null;
-    let minPaperBalanceSol = 0.1;
+    let minPaperBalanceSol = 0.75;
     let maxPaperBalanceSol = 5.0;
     let liveTradeableBalanceSol = 0.75;
     let minLiveTradeableBalanceSol = 0.75;
@@ -2054,6 +2065,29 @@
       return paperRunningBalance ?? paperStartingBalanceSol;
     }
 
+    function setPaperBalanceSelect(amount) {
+      const el = document.getElementById("paperBalanceInput");
+      if (!el || !el.options || !el.options.length) return;
+      const n = Number(amount);
+      if (!Number.isFinite(n)) return;
+      const target = n.toFixed(2);
+      const exact = Array.from(el.options).find((o) => o.value === target);
+      if (exact) {
+        el.value = target;
+        return;
+      }
+      let best = el.options[0].value;
+      let bestDiff = Infinity;
+      for (const o of el.options) {
+        const d = Math.abs(Number(o.value) - n);
+        if (d < bestDiff) {
+          bestDiff = d;
+          best = o.value;
+        }
+      }
+      el.value = best;
+    }
+
     function updatePaperBalanceControls(paperTrade) {
       const panel = document.getElementById("paperBalancePanel");
       const livePanel = document.getElementById("liveTradeablePanel");
@@ -2062,9 +2096,7 @@
       panel.style.display = paperTrade ? "block" : "none";
       if (livePanel) livePanel.style.display = paperTrade ? "none" : "block";
       if (paperTrade) {
-        input.min = String(minPaperBalanceSol);
-        input.max = String(maxPaperBalanceSol);
-        input.value = paperStartingBalanceSol.toFixed(2);
+        setPaperBalanceSelect(paperStartingBalanceSol);
       } else {
         const liveInput = document.getElementById("liveTradeableInput");
         if (liveInput) {
@@ -3067,9 +3099,8 @@
       if (cfg.max_live_tradeable_balance_sol != null) {
         maxLiveTradeableBalanceSol = cfg.max_live_tradeable_balance_sol;
       }
-      const paperInput = document.getElementById("paperBalanceInput");
-      if (paperInput && document.getElementById("paperTradeToggle").checked) {
-        paperInput.value = paperStartingBalanceSol.toFixed(2);
+      if (document.getElementById("paperTradeToggle").checked) {
+        setPaperBalanceSelect(paperStartingBalanceSol);
       }
       const liveInput = document.getElementById("liveTradeableInput");
       if (liveInput && !document.getElementById("paperTradeToggle").checked) {
@@ -3713,7 +3744,7 @@
       const input = document.getElementById("paperBalanceInput");
       const amount = parseFloat(input.value);
       if (!Number.isFinite(amount) || amount < minPaperBalanceSol || amount > maxPaperBalanceSol) {
-        alert("Enter a paper balance between " + minPaperBalanceSol + " and " + maxPaperBalanceSol + " SOL.");
+        alert("Select a paper balance between " + minPaperBalanceSol + " and " + maxPaperBalanceSol + " SOL.");
         return;
       }
       try {
@@ -3723,7 +3754,7 @@
         });
         if (r.paper_target_balance_sol != null) {
           paperStartingBalanceSol = r.paper_target_balance_sol;
-          input.value = paperStartingBalanceSol.toFixed(2);
+          setPaperBalanceSelect(paperStartingBalanceSol);
         }
         if (r.paper_simulated_balance_sol != null) {
           paperRunningBalance = r.paper_simulated_balance_sol;
@@ -3743,7 +3774,7 @@
         const r = await api("/api/paper/balance/reset", { method: "POST", body: "{}" });
         if (r.paper_target_balance_sol != null) {
           paperStartingBalanceSol = r.paper_target_balance_sol;
-          document.getElementById("paperBalanceInput").value = paperStartingBalanceSol.toFixed(2);
+          setPaperBalanceSelect(paperStartingBalanceSol);
         }
         if (r.paper_simulated_balance_sol != null) {
           paperRunningBalance = r.paper_simulated_balance_sol;
