@@ -18,6 +18,43 @@ if (-not (Test-Path $Python)) {
     $Python = (Get-Command python -ErrorAction Stop).Source
 }
 
+function Get-AppVersion {
+    $vf = Join-Path $InstallerDir "version.txt"
+    if (Test-Path $vf) {
+        $v = (Get-Content -Raw $vf).Trim()
+        if ($v) { return $v }
+    }
+    return "1.0.1"
+}
+
+function Write-BuildStamp {
+    param([string]$Version)
+    $now = Get-Date
+    # Compact stamp avoids ISCC /D tokenization issues with spaces
+    $stamp = $now.ToString("yyyy-MM-dd'T'HH:mm:sszzz")
+    $dateOnly = $now.ToString("yyyy-MM-dd")
+    $timeOnly = $now.ToString("HH:mm:ss")
+    $infoPath = Join-Path $InstallerDir "BUILD_INFO.txt"
+    $outDir = Join-Path $InstallerDir "output"
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $body = @"
+Sol Dex Bot Trader
+Version: $Version
+Built: $stamp
+BuildDate: $dateOnly
+BuildTime: $timeOnly
+"@
+    Set-Content -Path $infoPath -Value $body -Encoding UTF8
+    Copy-Item -Force $infoPath (Join-Path $outDir "BUILD_INFO.txt")
+    return [pscustomobject]@{
+        Version = $Version
+        Stamp = $stamp
+        Date = $dateOnly
+        Time = $timeOnly
+        Path = $infoPath
+    }
+}
+
 function Find-ISCC {
     $candidates = @(
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -89,10 +126,15 @@ function Ensure-ISCC {
 
 Push-Location $Root
 try {
+    $AppVersion = Get-AppVersion
+    $Build = Write-BuildStamp -Version $AppVersion
+
     Write-Host "== Sol Dex Bot Trader installer build ==" -ForegroundColor Cyan
     Write-Host "Root: $Root"
     Write-Host "Python: $Python"
     Write-Host "Installer dir: $InstallerDir"
+    Write-Host "Version: $($Build.Version)"
+    Write-Host "Build stamp: $($Build.Stamp)"
     Write-Host "Expected setup.exe: $(Join-Path $InstallerDir 'output\setup.exe')"
 
     Write-Host ""
@@ -124,6 +166,9 @@ try {
     if (-not $SkipPyInstaller) {
         Write-Host ""
         Write-Host "[3/4] PyInstaller freeze..."
+        if (-not (Test-Path (Join-Path $InstallerDir "BUILD_INFO.txt"))) {
+            throw "BUILD_INFO.txt missing — build stamp step failed"
+        }
         $DistPath = Join-Path $InstallerDir "build\app"
         $WorkPath = Join-Path $InstallerDir "build\pyi-work"
         New-Item -ItemType Directory -Force -Path $DistPath, $WorkPath | Out-Null
@@ -157,18 +202,32 @@ try {
         }
         Write-Host "Using ISCC: $Iscc"
         New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+        # Refresh stamp immediately before Inno so setup.exe VersionInfo matches compile time
+        $Build = Write-BuildStamp -Version $AppVersion
+        Write-Host "Inno VersionInfo stamp: $($Build.Stamp)"
         # ISCC resolves OutputDir relative to the .iss file location
-        & $Iscc (Join-Path $InstallerDir "setup.iss")
+        & $Iscc `
+            "/DMyAppVersion=$($Build.Version)" `
+            "/DMyAppBuildDate=$($Build.Date)" `
+            "/DMyAppBuildTime=$($Build.Time)" `
+            ("/DMyAppBuildStamp=" + $Build.Stamp) `
+            (Join-Path $InstallerDir "setup.iss")
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed" }
         $Setup = Join-Path $OutDir "setup.exe"
         if (-not (Test-Path $Setup)) { throw "setup.exe not produced at $Setup" }
-        # Re-copy PDF after Inno in case OutputDir was cleaned; keep end-user PDF in output/
+        # Re-copy PDF + BUILD_INFO after Inno; keep end-user artifacts in output/
         Copy-Item -Force $PdfInstaller $PdfOutput
-        $sizeMb = [math]::Round((Get-Item $Setup).Length / 1MB, 1)
+        Copy-Item -Force (Join-Path $InstallerDir "BUILD_INFO.txt") (Join-Path $OutDir "BUILD_INFO.txt")
+        Copy-Item -Force (Join-Path $InstallerDir "version.txt") (Join-Path $OutDir "version.txt")
+        $setupItem = Get-Item $Setup
+        $sizeMb = [math]::Round($setupItem.Length / 1MB, 1)
         Write-Host ""
         Write-Host ("DONE: {0} ({1} MB)" -f $Setup, $sizeMb) -ForegroundColor Green
+        Write-Host ("File timestamp: {0}" -f $setupItem.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"))
+        Write-Host ("Version: {0}  Built: {1}" -f $Build.Version, $Build.Stamp)
         Write-Host ("PDF:  {0}" -f $PdfOutput)
         Write-Host ("PDF:  {0}" -f $PdfDocs)
+        Write-Host ("BUILD_INFO: {0}" -f (Join-Path $OutDir "BUILD_INFO.txt"))
     } else {
         Write-Host ""
         Write-Host "[4/4] Skipping Inno Setup"

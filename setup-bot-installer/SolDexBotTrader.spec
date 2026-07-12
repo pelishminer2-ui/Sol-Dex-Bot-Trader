@@ -42,6 +42,8 @@ datas = [
     (str(ROOT / "presets"), "presets"),
     (str(ROOT / ".env.example"), "."),
     (str(SPECDIR / "Sol-Dex-Bot-Trader-User-Guide.pdf"), "docs"),
+    (str(SPECDIR / "version.txt"), "."),
+    (str(SPECDIR / "BUILD_INFO.txt"), "."),
 ]
 
 # Include optional branding assets if present

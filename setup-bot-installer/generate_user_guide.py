@@ -8,6 +8,7 @@ Writes:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from reportlab.lib import colors
@@ -40,6 +41,19 @@ FEE_WALLET = "8TdLLnveaK5iFD6dmVU7qfw8V14cM7CyCcHiZfgcRQMi"
 FEE_SOL = "0.025"
 INSTALL_DIR = r"%LOCALAPPDATA%\Programs\Sol Dex Bot Trader\\"
 DASHBOARD_URL = "http://127.0.0.1:5000"
+VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
+
+
+def _app_version() -> str:
+    try:
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.1"
+    except OSError:
+        return "1.0.1"
+
+
+def _guide_built_stamp() -> str:
+    """Local wall-clock stamp embedded on the PDF cover (rebuild refreshes this)."""
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 BRAND = colors.HexColor("#0f2744")
 ACCENT = colors.HexColor("#1a6b8a")
@@ -174,6 +188,12 @@ def build_story(styles) -> list:
 
     story.append(Paragraph("Sol Dex Bot Trader", styles["title"]))
     story.append(Paragraph("End-User Guide — Install, Console, Wallet, Operate, Safety", styles["subtitle"]))
+    story.append(
+        Paragraph(
+            f"Version {_app_version()}  ·  Guide built {_guide_built_stamp()}",
+            styles["subtitle"],
+        )
+    )
 
     story.append(
         _callout(
@@ -539,7 +559,9 @@ def build_story(styles) -> list:
     )
     story.append(
         Paragraph(
-            "Sol Dex Bot Trader — local use only · Regenerable via setup-bot-installer/generate_user_guide.py",
+            f"Sol Dex Bot Trader v{_app_version()} — local use only · "
+            f"Guide built {_guide_built_stamp()} · "
+            "Regenerable via setup-bot-installer/generate_user_guide.py",
             styles["footer"],
         )
     )
@@ -553,7 +575,8 @@ def _add_page_number(canvas, doc):
     canvas.drawCentredString(
         letter[0] / 2.0,
         0.5 * inch,
-        f"Sol Dex Bot Trader User Guide  ·  page {doc.page}  ·  Gains not guaranteed — invest at your own risk",
+        f"Sol Dex Bot Trader User Guide v{_app_version()}  ·  page {doc.page}  ·  "
+        "Gains not guaranteed — invest at your own risk",
     )
     canvas.restoreState()
 
@@ -563,6 +586,7 @@ def main() -> None:
     ASSETS.mkdir(parents=True, exist_ok=True)
     OUT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     styles = _styles()
+    print(f"Guide version {_app_version()} — built {_guide_built_stamp()}")
 
     # Build story fresh per output — reportlab flowables are single-use.
     for out in (OUT_DOCS, OUT_INSTALLER, OUT_OUTPUT):
