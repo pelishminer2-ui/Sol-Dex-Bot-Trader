@@ -851,11 +851,22 @@
                 </div>
                 <div id="liveTradeablePanel" style="display:none">
                   <div class="setup-inline" style="margin-top:0.25rem">
-                    <input type="number" id="liveTradeableInput" min="0.75" max="10" step="0.01" value="0.75" aria-label="Tradeable cap SOL" style="width:5.5rem">
-                    <button class="btn-secondary" type="button" id="btnSetLiveTradeable">Set Cap</button>
+                    <select id="liveTradeableInput" aria-label="Tradeable cap SOL">
+                      <option value="0.75" selected>0.75 SOL</option>
+                      <option value="1.00">1.00 SOL</option>
+                      <option value="1.50">1.50 SOL</option>
+                      <option value="2.00">2.00 SOL</option>
+                      <option value="2.50">2.50 SOL</option>
+                      <option value="3.00">3.00 SOL</option>
+                      <option value="3.50">3.50 SOL</option>
+                      <option value="4.00">4.00 SOL</option>
+                      <option value="4.50">4.50 SOL</option>
+                      <option value="5.00">5.00 SOL</option>
+                    </select>
+                    <button class="btn-secondary" type="button" id="btnSetLiveTradeable">Set</button>
                     <button class="btn-secondary" type="button" id="btnResetLiveTradeable">Reset</button>
                   </div>
-                  <p class="compact-hint">Cap 0.75–10 SOL</p>
+                  <p class="compact-hint">0.75–5 SOL · caps live trade sizing</p>
                 </div>
               </td>
             </tr>
@@ -1649,8 +1660,9 @@
     let minPaperBalanceSol = 0.75;
     let maxPaperBalanceSol = 5.0;
     let liveTradeableBalanceSol = 0.75;
+    let liveTradeableTouched = false;
     let minLiveTradeableBalanceSol = 0.75;
-    let maxLiveTradeableBalanceSol = 10.0;
+    let maxLiveTradeableBalanceSol = 5.0;
     let walletBalanceSol = null;
     let backendMaxWalletTradePct = 0.75;
     let minSolReserve = 0.02;
@@ -2089,6 +2101,29 @@
       el.value = best;
     }
 
+    function setLiveTradeableSelect(amount) {
+      const el = document.getElementById("liveTradeableInput");
+      if (!el || !el.options || !el.options.length) return;
+      const n = Number(amount);
+      if (!Number.isFinite(n)) return;
+      const target = n.toFixed(2);
+      const exact = Array.from(el.options).find((o) => o.value === target);
+      if (exact) {
+        el.value = target;
+        return;
+      }
+      let best = el.options[0].value;
+      let bestDiff = Infinity;
+      for (const o of el.options) {
+        const d = Math.abs(Number(o.value) - n);
+        if (d < bestDiff) {
+          bestDiff = d;
+          best = o.value;
+        }
+      }
+      el.value = best;
+    }
+
     function updatePaperBalanceControls(paperTrade, forceSelect = false) {
       const panel = document.getElementById("paperBalancePanel");
       const livePanel = document.getElementById("liveTradeablePanel");
@@ -2101,13 +2136,8 @@
         if (forceSelect || !paperBalanceTouched) {
           setPaperBalanceSelect(paperStartingBalanceSol);
         }
-      } else {
-        const liveInput = document.getElementById("liveTradeableInput");
-        if (liveInput) {
-          liveInput.min = String(minLiveTradeableBalanceSol);
-          liveInput.max = String(maxLiveTradeableBalanceSol);
-          liveInput.value = liveTradeableBalanceSol.toFixed(2);
-        }
+      } else if (forceSelect || !liveTradeableTouched) {
+        setLiveTradeableSelect(liveTradeableBalanceSol);
       }
     }
 
@@ -2782,10 +2812,6 @@
       }
       if (s.live_tradeable_balance_sol != null) {
         liveTradeableBalanceSol = s.live_tradeable_balance_sol;
-        const liveInput = document.getElementById("liveTradeableInput");
-        if (liveInput && !document.getElementById("paperTradeToggle").checked) {
-          liveInput.value = liveTradeableBalanceSol.toFixed(2);
-        }
       }
       updateStrategyBalanceStatus(preferPaperUi, s);
       if (s.min_fund_sol != null) minFundSol = s.min_fund_sol;
@@ -3111,11 +3137,8 @@
       if (document.getElementById("paperTradeToggle").checked && !paperBalanceTouched) {
         setPaperBalanceSelect(paperStartingBalanceSol);
       }
-      const liveInput = document.getElementById("liveTradeableInput");
-      if (liveInput && !document.getElementById("paperTradeToggle").checked) {
-        liveInput.value = liveTradeableBalanceSol.toFixed(2);
-        liveInput.min = String(minLiveTradeableBalanceSol);
-        liveInput.max = String(maxLiveTradeableBalanceSol);
+      if (!document.getElementById("paperTradeToggle").checked && !liveTradeableTouched) {
+        setLiveTradeableSelect(liveTradeableBalanceSol);
       }
       if (cfg.max_wallet_trade_pct != null) backendMaxWalletTradePct = cfg.max_wallet_trade_pct;
       if (cfg.min_sol_reserve != null) minSolReserve = cfg.min_sol_reserve;
@@ -3753,6 +3776,10 @@
       paperBalanceTouched = true;
     });
 
+    bindChange("liveTradeableInput", () => {
+      liveTradeableTouched = true;
+    });
+
     bindClick("btnSetPaperBalance", async () => {
       const input = document.getElementById("paperBalanceInput");
       const amount = parseFloat(input.value);
@@ -3818,7 +3845,7 @@
       const input = document.getElementById("liveTradeableInput");
       const amount = parseFloat(input.value);
       if (!Number.isFinite(amount) || amount < minLiveTradeableBalanceSol || amount > maxLiveTradeableBalanceSol) {
-        alert("Enter a tradeable balance between " + minLiveTradeableBalanceSol + " and " + maxLiveTradeableBalanceSol + " SOL.");
+        alert("Select a tradeable balance between " + minLiveTradeableBalanceSol + " and " + maxLiveTradeableBalanceSol + " SOL.");
         return;
       }
       try {
@@ -3828,12 +3855,14 @@
         });
         if (r.live_tradeable_balance_sol != null) {
           liveTradeableBalanceSol = r.live_tradeable_balance_sol;
-          input.value = liveTradeableBalanceSol.toFixed(2);
         }
         if (r.wallet_balance_sol != null) {
           walletBalanceSol = r.wallet_balance_sol;
         }
+        liveTradeableTouched = false;
+        setLiveTradeableSelect(liveTradeableBalanceSol);
         displayBalanceForMode(r.effective_balance_sol, false, false, r);
+        updateStrategyBalanceStatus(false, r, true);
         updateComputedTradeSize(effectiveBalanceForSizing(false, r), false, r);
         updateFundingUI(walletBalanceSol, false);
         logActivity("Tradeable balance set to " + liveTradeableBalanceSol.toFixed(2) + " SOL");
@@ -3850,12 +3879,14 @@
         });
         if (r.live_tradeable_balance_sol != null) {
           liveTradeableBalanceSol = r.live_tradeable_balance_sol;
-          document.getElementById("liveTradeableInput").value = liveTradeableBalanceSol.toFixed(2);
         }
         if (r.wallet_balance_sol != null) {
           walletBalanceSol = r.wallet_balance_sol;
         }
+        liveTradeableTouched = false;
+        setLiveTradeableSelect(liveTradeableBalanceSol);
         displayBalanceForMode(r.effective_balance_sol, false, false, r);
+        updateStrategyBalanceStatus(false, r, true);
         updateComputedTradeSize(effectiveBalanceForSizing(false, r), false, r);
         updateFundingUI(walletBalanceSol, false);
         logActivity("Tradeable balance reset to " + liveTradeableBalanceSol.toFixed(2) + " SOL");

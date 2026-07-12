@@ -137,6 +137,33 @@ try {
     Write-Host "Build stamp: $($Build.Stamp)"
     Write-Host "Expected setup.exe: $(Join-Path $InstallerDir 'output\setup.exe')"
 
+    # Fail fast if packaging would miss the live/paper balance dropdown UX.
+    $DashHtml = Join-Path $Root "static\index.html"
+    $ConfigPy = Join-Path $Root "config.py"
+    if (-not (Test-Path $DashHtml)) { throw "Missing dashboard: $DashHtml" }
+    if (-not (Test-Path $ConfigPy)) { throw "Missing config: $ConfigPy" }
+    $html = Get-Content -Raw -Path $DashHtml
+    $cfg = Get-Content -Raw -Path $ConfigPy
+    foreach ($marker in @(
+        'id="paperBalanceInput"',
+        'id="liveTradeableInput"',
+        'liveTradeableTouched',
+        'paperBalanceTouched',
+        'setLiveTradeableSelect',
+        'value="5.00"'
+    )) {
+        if ($html -notlike "*$marker*") {
+            throw "Dashboard missing required marker '$marker' in $DashHtml"
+        }
+    }
+    if ($html -match 'type="number"\s+id="liveTradeableInput"') {
+        throw "Live tradeable control is still a number input; expected <select> dropdown in $DashHtml"
+    }
+    if ($cfg -notmatch 'MAX_LIVE_TRADEABLE_BALANCE_SOL\s*=\s*5\.0') {
+        throw "config.py must set MAX_LIVE_TRADEABLE_BALANCE_SOL = 5.0 (found in $ConfigPy)"
+    }
+    Write-Host "Preflight OK: repo-root static/index.html + config.py include 0.75-5 SOL live/paper dropdowns" -ForegroundColor Green
+
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."
     & $Python -m pip install --upgrade pip | Out-Null

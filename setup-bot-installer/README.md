@@ -62,6 +62,19 @@ Uses a Windows container when available; otherwise documents the host build path
 
 Developer `launch.ps1` at the repo root is unchanged.
 
+## Packaging sources (no stale copies)
+
+`SolDexBotTrader.spec` always packages from the **repo root** (parent of this folder):
+
+| Packaged | Source |
+|----------|--------|
+| Dashboard UI | `../static/` (includes `index.html` live+paper 0.75–5 SOL dropdowns) |
+| Python modules (`config.py`, bot, …) | repo root via `pathex` |
+| `.env.example` | `../.env.example` |
+| Presets | `../presets/` |
+
+There is **no** `setup-bot-installer/static/` tree. `build.ps1` preflights the live/paper dropdown markers before PyInstaller. After UI/config changes, re-run `.\build.bat` (or `.\build.ps1`) so `output\setup.exe` picks them up.
+
 ## Large binaries
 
 `output\setup.exe` and PyInstaller `build\` trees are gitignored by default (often >50MB). Ship via GitHub Releases or local copy. Rebuild with `build.ps1` after code changes.

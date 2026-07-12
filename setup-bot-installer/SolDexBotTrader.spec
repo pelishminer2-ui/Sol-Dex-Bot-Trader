@@ -4,8 +4,15 @@
 import sys
 from pathlib import Path
 
+# SPECPATH is the directory containing this .spec (setup-bot-installer/).
+# Repo root is the parent — always package live dashboard/static/config from there
+# (no stale copies under setup-bot-installer/).
 SPECDIR = Path(SPECPATH).resolve()
 ROOT = SPECDIR.parent
+assert (ROOT / "static" / "index.html").is_file(), (
+    f"Expected dashboard at {ROOT / 'static' / 'index.html'}"
+)
+assert (ROOT / "config.py").is_file(), f"Expected config at {ROOT / 'config.py'}"
 
 block_cipher = None
 
@@ -35,9 +42,11 @@ hiddenimports = [
     "paper_session",
     "pnl_tracker",
     "tax_export",
+    "live_tradeable_balance",
 ]
 
 datas = [
+    # Live copies from repo root on every build.bat / build.ps1 run.
     (str(ROOT / "static"), "static"),
     (str(ROOT / "presets"), "presets"),
     (str(ROOT / ".env.example"), "."),
