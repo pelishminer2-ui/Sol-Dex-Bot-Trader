@@ -1,15 +1,15 @@
-; Sol Dex Bot Trader — Inno Setup script
+﻿; Sol Dex Bot Trader — Inno Setup script
 ; Compile with: ISCC.exe setup.iss
 ; Prefer: .\build.ps1 from this folder (stamps build date/time automatically)
 ;
 ; Optional defines from build.ps1:
-;   /DMyAppVersion=1.0.4
+;   /DMyAppVersion=1.0.5
 ;   /DMyAppBuildDate=2026-07-12
 ;   /DMyAppBuildTime=18:00:00
 ;   /DMyAppBuildStamp=2026-07-12T18:00:00-04:00
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.4"
+  #define MyAppVersion "1.0.5"
 #endif
 #ifndef MyAppBuildDate
   #define MyAppBuildDate GetDateTimeString('yyyy-mm-dd', '-', ':')
@@ -46,7 +46,10 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
+; Close the running bot before file removal (Add/Remove Programs)
 CloseApplications=yes
+CloseApplicationsFilter=SolDexBotTrader.exe
+RestartApplications=no
 VersionInfoVersion={#MyAppVersion}.0
 VersionInfoProductVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
@@ -80,3 +83,29 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+; Force-stop before Inno deletes files (covers tray / locked DLLs CloseApplications may miss)
+[UninstallRun]
+Filename: "{cmd}"; Parameters: "/C taskkill /IM SolDexBotTrader.exe /F /T >nul 2>&1 & ping -n 2 127.0.0.1 >nul"; RunOnceId: "StopSolDexBotTrader"; Flags: runhidden waituntilterminated
+
+; Runtime leftovers under {app} (logs, .env, state JSON, data\, presets copies, etc.)
+; Packaged bot writes only under the install directory (next to the exe) — not a separate AppData product tree.
+; Icons / Start Menu group / uninstall registry key are removed by Inno automatically.
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\logs"
+Type: filesandordirs; Name: "{app}\data"
+Type: filesandordirs; Name: "{app}\presets"
+Type: filesandordirs; Name: "{app}\docs"
+Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\*.log"
+Type: files; Name: "{app}\*.json"
+Type: files; Name: "{app}\*.jsonl"
+Type: files; Name: "{app}\.env"
+Type: files; Name: "{app}\.env.*"
+Type: files; Name: "{app}\BUILD_INFO.txt"
+Type: files; Name: "{app}\version.txt"
+Type: files; Name: "{app}\Stop-SolDexBot.bat"
+Type: files; Name: "{app}\{#MyAppExeName}"
+Type: dirifempty; Name: "{app}"
+; Final sweep: any remaining files/dirs left under {app} after the above
+Type: filesandordirs; Name: "{app}"
