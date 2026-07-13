@@ -3,13 +3,13 @@
 ; Prefer: .\build.ps1 from this folder (stamps build date/time automatically)
 ;
 ; Optional defines from build.ps1:
-;   /DMyAppVersion=1.0.8
+;   /DMyAppVersion=1.0.9
 ;   /DMyAppBuildDate=2026-07-12
 ;   /DMyAppBuildTime=18:00:00
 ;   /DMyAppBuildStamp=2026-07-12T18:00:00-04:00
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.8"
+  #define MyAppVersion "1.0.9"
 #endif
 #ifndef MyAppBuildDate
   #define MyAppBuildDate GetDateTimeString('yyyy-mm-dd', '-', ':')
@@ -81,8 +81,9 @@ Name: "{group}\User Guide (PDF)"; Filename: "{app}\docs\Sol-Dex-Bot-Trader-User-
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
-; Intentionally no [Run] postinstall launch — setup finishes without starting SolDexBotTrader.exe.
-; User starts the app from the Start Menu / Desktop shortcut when ready.
+; Finish-page checkbox (unchecked by default) — user may optionally launch after install.
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent unchecked
 
 ; Force-stop before Inno deletes files (covers tray / locked DLLs CloseApplications may miss)
 [UninstallRun]

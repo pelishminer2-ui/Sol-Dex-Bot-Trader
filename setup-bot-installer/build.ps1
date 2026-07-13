@@ -203,13 +203,15 @@ try {
     }
     $SetupIss = Join-Path $InstallerDir "setup.iss"
     $iss = Get-Content -Raw -Path $SetupIss
-    if ($iss -match '(?im)^\s*Filename:.*MyAppExeName.*Flags:.*postinstall') {
-        throw "setup.iss must NOT auto-launch the app after install (remove [Run] postinstall Launch entry)"
+    # Installer Finish page: optional Launch checkbox (unchecked by default).
+    # Agent/build must NOT Start-Process SolDexBotTrader.exe after build — leave app closed.
+    if ($iss -notmatch '(?im)\[Run\]') {
+        throw "setup.iss must have [Run] with optional Launch checkbox on Finish page"
     }
-    if ($iss -match '(?im)\[Run\][\s\S]*?postinstall') {
-        throw "setup.iss [Run] still has postinstall — installer must finish without starting the app"
+    if ($iss -notmatch '(?im)Filename:.*MyAppExeName.*Flags:.*postinstall.*unchecked') {
+        throw "setup.iss [Run] Launch entry must use Flags: ... postinstall ... unchecked (optional, off by default)"
     }
-    Write-Host "Preflight OK: wallet Connect + no postinstall auto-launch + session key retention + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
+    Write-Host "Preflight OK: wallet Connect + optional unchecked Launch checkbox + session key retention + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."
@@ -315,6 +317,7 @@ try {
     }
 
     Write-Host ""
+    Write-Host "Build complete — SolDexBotTrader.exe was NOT started (leave app closed after build/fix)."
     Write-Host "Maintainer notes: see setup-bot-installer\README.md"
     Write-Host "Truth stamp: setup-bot-installer\BUILD_INFO.txt (and output\BUILD_INFO.txt)"
 }

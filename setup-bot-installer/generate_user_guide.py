@@ -46,9 +46,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.8"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.9"
     except OSError:
-        return "1.0.8"
+        return "1.0.9"
 
 
 def _guide_built_stamp() -> str:
@@ -214,8 +214,11 @@ def build_story(styles) -> list:
         Paragraph(
             "Run <b>setup.exe</b>. Accept the prompts and finish the wizard. "
             "You do <b>not</b> need PowerShell scripts or <font face='Courier'>.bat</font> files. "
-            "<b>Setup does not auto-launch the app when install finishes</b> — "
-            "start <b>Sol Dex Bot Trader</b> yourself from the Start Menu or Desktop shortcut. "
+            "On the Finish page, an optional <b>Launch Sol Dex Bot Trader</b> checkbox appears "
+            "(off by default) — check it only if you want to start the app immediately. "
+            "Otherwise start from the Start Menu or Desktop shortcut when ready. "
+            "Maintainer note: rebuilding with <font face='Courier'>build.bat</font> / "
+            "<font face='Courier'>build.ps1</font> does <b>not</b> auto-start the app after the build finishes. "
             "On launch, the app starts the local server and opens your browser to "
             f"<font face='Courier'>{DASHBOARD_URL}</font>.",
             styles["body"],
@@ -235,7 +238,8 @@ def build_story(styles) -> list:
     story.extend(_img("install-flow.png", width=6.3 * inch))
     story.append(
         Paragraph(
-            "Install flow: setup.exe → install folder → (manual start) → background app (tray) → browser dashboard.",
+            "Install flow: setup.exe → optional Finish Launch checkbox → "
+            "background app (tray) → browser dashboard (or start later from Start Menu / Desktop).",
             styles["caption"],
         )
     )
@@ -260,7 +264,7 @@ def build_story(styles) -> list:
                 ListItem(
                     Paragraph(
                         "Start Menu and optional Desktop shortcut: <b>Sol Dex Bot Trader</b> "
-                        "(use these after setup — the installer does not start the app for you)",
+                        "(or check the optional Finish-page Launch checkbox)",
                         styles["bullet"],
                     )
                 ),
