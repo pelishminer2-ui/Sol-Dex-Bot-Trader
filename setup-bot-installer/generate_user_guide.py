@@ -673,6 +673,7 @@ def _write_pdf(out: Path, styles) -> None:
     """Write via temp file then replace — avoids WinError 22 / locks on direct overwrite."""
     import shutil
     import tempfile
+    import time
 
     out.parent.mkdir(parents=True, exist_ok=True)
     story = build_story(styles)
@@ -691,12 +692,23 @@ def _write_pdf(out: Path, styles) -> None:
             author="Sol Dex Bot Trader",
         )
         doc.build(story, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
-        try:
-            if out.exists():
-                out.unlink()
-        except OSError:
-            pass
-        shutil.move(str(tmp_path), str(out))
+        last_err: OSError | None = None
+        for attempt in range(8):
+            try:
+                if out.exists():
+                    try:
+                        out.unlink()
+                    except OSError:
+                        # Destination locked — overwrite in place via copy.
+                        shutil.copy2(str(tmp_path), str(out))
+                        break
+                shutil.copy2(str(tmp_path), str(out))
+                break
+            except OSError as e:
+                last_err = e
+                time.sleep(0.35 * (attempt + 1))
+        else:
+            raise PermissionError(f"Could not write PDF to {out}: {last_err}") from last_err
     finally:
         if tmp_path.exists():
             try:
