@@ -158,6 +158,8 @@ try {
         'id="btnConnectPhantom"',
         'id="btnConnectSolflare"',
         'wallet_connect.js',
+        'onWalletConnectClick',
+        'phantomBtn.disabled = false',
         'sessionWalletPubkey',
         'survives Paper Trade'
     )) {
@@ -167,6 +169,10 @@ try {
     }
     $WalletJs = Join-Path $Root "static\wallet_connect.js"
     if (-not (Test-Path $WalletJs)) { throw "Missing wallet connect module: $WalletJs" }
+    $walletJsText = Get-Content -Raw -Path $WalletJs
+    if ($walletJsText -notlike "*onlyIfTrusted: false*") {
+        throw "wallet_connect.js must call connect({ onlyIfTrusted: false }) so the extension popup appears"
+    }
     $FeePy = Join-Path $Root "live_start_fee.py"
     $fee = Get-Content -Raw -Path $FeePy
     if ($fee -notlike "*_is_blockhash_error*" -or $fee -notlike "*_fetch_fresh_blockhash*") {
@@ -195,7 +201,15 @@ try {
     if ($bm -notlike "*session_public_key*" -or $bm -notlike "*wallet_ephemeral*") {
         throw "bot_manager status must expose session_public_key and wallet_ephemeral"
     }
-    Write-Host "Preflight OK: wallet Connect + session key retention + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
+    $SetupIss = Join-Path $InstallerDir "setup.iss"
+    $iss = Get-Content -Raw -Path $SetupIss
+    if ($iss -match '(?im)^\s*Filename:.*MyAppExeName.*Flags:.*postinstall') {
+        throw "setup.iss must NOT auto-launch the app after install (remove [Run] postinstall Launch entry)"
+    }
+    if ($iss -match '(?im)\[Run\][\s\S]*?postinstall') {
+        throw "setup.iss [Run] still has postinstall — installer must finish without starting the app"
+    }
+    Write-Host "Preflight OK: wallet Connect + no postinstall auto-launch + session key retention + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."

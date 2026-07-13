@@ -6,9 +6,9 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <!-- cache-sync: 2026-07-12T18:40:00-04:00 wallet-connect-phantom-solflare -->
+  <!-- cache-sync: 2026-07-12T21:20:00-04:00 wallet-connect-user-gesture -->
   <title>Solana Mover Trading Bot</title>
-  <script src="/static/wallet_connect.js"></script>
+  <script src="/static/wallet_connect.js?v=force-popup-2"></script>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#14f195">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1823,15 +1823,21 @@
         : { phantom: null, solflare: null };
       const phantomBtn = document.getElementById("btnConnectPhantom");
       const solflareBtn = document.getElementById("btnConnectSolflare");
+      // Never disable these — disabled buttons cannot fire click, so connect() never runs.
+      // Missing extension: still clickable → shows Install Phantom / Install Solflare.
       if (phantomBtn) {
-        phantomBtn.disabled = !providers.phantom;
-        phantomBtn.title = providers.phantom ? "Connect Phantom" : "Phantom not installed";
-        phantomBtn.textContent = providers.phantom ? "Phantom" : "Phantom (not installed)";
+        phantomBtn.disabled = false;
+        phantomBtn.title = providers.phantom
+          ? "Connect Phantom (opens extension approval)"
+          : "Install Phantom — extension not detected yet";
+        phantomBtn.textContent = providers.phantom ? "Phantom" : "Install Phantom";
       }
       if (solflareBtn) {
-        solflareBtn.disabled = !providers.solflare;
-        solflareBtn.title = providers.solflare ? "Connect Solflare" : "Solflare not installed";
-        solflareBtn.textContent = providers.solflare ? "Solflare" : "Solflare (not installed)";
+        solflareBtn.disabled = false;
+        solflareBtn.title = providers.solflare
+          ? "Connect Solflare (opens extension approval)"
+          : "Install Solflare — extension not detected yet";
+        solflareBtn.textContent = providers.solflare ? "Solflare" : "Install Solflare";
       }
       if (connectedExtension && connectedExtension.pubkey) {
         if (connectBtn) connectBtn.hidden = true;
@@ -1860,7 +1866,7 @@
             "Export your base58 private key, paste it below, and click <strong>Set Wallet</strong> so Live fee + trades can auto-sign.";
         } else {
           hint.innerHTML =
-            "Use <strong>Connect</strong> (upper right) for Phantom/Solflare, then paste your exported base58 key and click <strong>Set Wallet</strong> for server auto-sign. Session key survives Paper Trade on/off.";
+            "Use <strong>Connect</strong> (upper right) for Phantom/Solflare — the extension approval popup must appear. Then paste your exported base58 key and click <strong>Set Wallet</strong> for server auto-sign.";
         }
       }
     }
@@ -1870,7 +1876,10 @@
         alert("Wallet connect module failed to load. Hard-refresh (Ctrl+Shift+R).");
         return;
       }
+      const menu = document.getElementById("walletConnectMenu");
+      if (menu) menu.hidden = true;
       try {
+        // connectProvider always uses onlyIfTrusted:false → extension popup.
         const result = await window.SolDexWalletConnect.connectProvider(name);
         connectedExtension = { provider: result.provider, pubkey: result.pubkey };
         syncHeaderWalletUI();
@@ -1886,8 +1895,64 @@
         updateQuickStartSteps(lastBotStatus || {});
         updateStartButtonState(lastBotStatus);
       } catch (e) {
-        alert("Connect failed: " + (e.message || e));
+        const msg = (e && e.message) || String(e);
+        if (e && e.code === "provider_missing") {
+          const url = e.installUrl ||
+            (name === "phantom"
+              ? (window.SolDexWalletConnect.PHANTOM_INSTALL || "https://phantom.app/download")
+              : (window.SolDexWalletConnect.SOLFLARE_INSTALL || "https://solflare.com/download"));
+          alert(msg + "\n\nOpen: " + url);
+          try { window.open(url, "_blank", "noopener"); } catch (_) {}
+        } else {
+          alert("Connect failed: " + msg);
+        }
+        syncHeaderWalletUI();
       }
+    }
+
+    /**
+     * Connect button: sync detect only (no await before connect — keeps user gesture).
+     * One wallet → connect() immediately; both → chooser; none → install guidance.
+     */
+    function onWalletConnectClick(ev) {
+      if (ev) {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+      }
+      if (!window.SolDexWalletConnect) {
+        alert("Wallet connect module failed to load. Hard-refresh (Ctrl+Shift+R).");
+        return;
+      }
+      const menu = document.getElementById("walletConnectMenu");
+      const providers = window.SolDexWalletConnect.detectProviders();
+      syncHeaderWalletUI();
+      const hasP = !!providers.phantom;
+      const hasS = !!providers.solflare;
+      if (hasP && !hasS) {
+        if (menu) menu.hidden = true;
+        // Do not await here — start connect in this click turn.
+        void connectBrowserWallet("phantom");
+        return;
+      }
+      if (hasS && !hasP) {
+        if (menu) menu.hidden = true;
+        void connectBrowserWallet("solflare");
+        return;
+      }
+      if (hasP && hasS) {
+        if (!menu) return;
+        menu.hidden = !menu.hidden;
+        syncHeaderWalletUI();
+        return;
+      }
+      if (menu) menu.hidden = false;
+      syncHeaderWalletUI();
+      alert(
+        "No Solana wallet extension detected.\n\n" +
+        "Open this dashboard in Chrome/Edge/Brave with Phantom or Solflare installed " +
+        "(extensions do not work inside some embedded browsers).\n\n" +
+        "Phantom: " + (window.SolDexWalletConnect.PHANTOM_INSTALL || "https://phantom.app/download") + "\n" +
+        "Solflare: " + (window.SolDexWalletConnect.SOLFLARE_INSTALL || "https://solflare.com/download")
+      );
     }
 
     async function disconnectBrowserWallet() {
@@ -4195,19 +4260,20 @@
       updateStartButtonState(lastBotStatus);
     });
 
-    bindClick("btnWalletConnect", () => {
-      const menu = document.getElementById("walletConnectMenu");
-      if (!menu) return;
-      menu.hidden = !menu.hidden;
-      syncHeaderWalletUI();
+    bindClick("btnWalletConnect", (ev) => {
+      onWalletConnectClick(ev);
     });
-    bindClick("btnConnectPhantom", () => {
-      document.getElementById("walletConnectMenu").hidden = true;
-      connectBrowserWallet("phantom");
+    bindClick("btnConnectPhantom", (ev) => {
+      if (ev) {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+      }
+      void connectBrowserWallet("phantom");
     });
-    bindClick("btnConnectSolflare", () => {
-      document.getElementById("walletConnectMenu").hidden = true;
-      connectBrowserWallet("solflare");
+    bindClick("btnConnectSolflare", (ev) => {
+      if (ev) {
+        try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+      }
+      void connectBrowserWallet("solflare");
     });
     bindClick("btnWalletDisconnect", () => {
       disconnectBrowserWallet();
@@ -4218,14 +4284,26 @@
       if (!wrap || !menu || menu.hidden) return;
       if (!wrap.contains(ev.target)) menu.hidden = true;
     });
-    // Restore prior extension connect from localStorage (pubkey only — not the private key).
-    if (window.SolDexWalletConnect) {
+    // Restore prior extension session: prefer silent eager reconnect (no popup).
+    // Do not treat localStorage alone as connected — that hid Connect without calling connect().
+    (async function restoreExtensionWallet() {
+      if (!window.SolDexWalletConnect) {
+        syncHeaderWalletUI();
+        return;
+      }
       const stored = window.SolDexWalletConnect.loadStored();
-      if (stored && stored.pubkey) {
-        connectedExtension = { provider: stored.provider, pubkey: stored.pubkey };
+      if (stored && stored.pubkey && stored.provider && window.SolDexWalletConnect.tryEagerReconnect) {
+        const eager = await window.SolDexWalletConnect.tryEagerReconnect(stored.provider);
+        if (eager && eager.pubkey) {
+          connectedExtension = { provider: eager.provider, pubkey: eager.pubkey };
+        } else {
+          // Stale stored pubkey — keep Connect visible so user can trigger the popup.
+          window.SolDexWalletConnect.clearStored();
+          connectedExtension = null;
+        }
       }
       syncHeaderWalletUI();
-    }
+    })();
 
     bindChange("entryPct", () => {
       entryMomentumTouched = true;

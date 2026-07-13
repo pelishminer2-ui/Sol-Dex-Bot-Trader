@@ -2,7 +2,7 @@
 
 Build **setup.exe** from this folder. End users only run `setup.exe`; they never need `launch.ps1` / `.bat`.
 
-Current product version is in `version.txt` (now **1.0.6**). Each `build.ps1` run stamps local date/time into:
+Current product version is in `version.txt` (now **1.0.8**). Each `build.ps1` run stamps local date/time into:
 
 - `BUILD_INFO.txt` (shipped with the app + copied to `output\`)
 - Inno `VersionInfo*` / `AppVerName` on `output\setup.exe`
@@ -56,6 +56,7 @@ Uses a Windows container when available; otherwise documents the host build path
 ## What the installed app does
 
 - Start Menu / Desktop shortcut → `SolDexBotTrader.exe` (windowed — **no CMD console**)
+- **Installer does not auto-launch** the app when setup finishes — start it from the shortcut
 - Starts the local Flask GUI on `http://127.0.0.1:5000` in the background
 - System tray icon: Open Dashboard / Open Logs Folder / Quit
 - Opens the default browser to the dashboard

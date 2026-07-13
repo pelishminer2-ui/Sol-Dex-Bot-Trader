@@ -46,9 +46,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.6"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.8"
     except OSError:
-        return "1.0.6"
+        return "1.0.8"
 
 
 def _guide_built_stamp() -> str:
@@ -214,16 +214,28 @@ def build_story(styles) -> list:
         Paragraph(
             "Run <b>setup.exe</b>. Accept the prompts and finish the wizard. "
             "You do <b>not</b> need PowerShell scripts or <font face='Courier'>.bat</font> files. "
-            "When installation completes (or when you launch from the Start Menu / Desktop shortcut), "
-            "the app starts the local server and opens your <b>default browser</b> to "
+            "<b>Setup does not auto-launch the app when install finishes</b> — "
+            "start <b>Sol Dex Bot Trader</b> yourself from the Start Menu or Desktop shortcut. "
+            "On launch, the app starts the local server and opens your browser to "
             f"<font face='Courier'>{DASHBOARD_URL}</font>.",
             styles["body"],
+        )
+    )
+    story.append(
+        _callout(
+            "<b>Browser for Connect:</b> Open the dashboard in <b>Chrome</b>, <b>Edge</b>, or <b>Brave</b> "
+            "with the <b>Phantom</b> or <b>Solflare</b> extension installed. "
+            "Wallet extensions do <b>not</b> work in some embedded / in-app browsers "
+            "(the Connect approval popup will not appear).",
+            styles,
+            bg=WARN_BG,
+            border=colors.HexColor("#856404"),
         )
     )
     story.extend(_img("install-flow.png", width=6.3 * inch))
     story.append(
         Paragraph(
-            "Install flow: setup.exe → install folder → background app (tray) → browser dashboard.",
+            "Install flow: setup.exe → install folder → (manual start) → background app (tray) → browser dashboard.",
             styles["caption"],
         )
     )
@@ -247,7 +259,8 @@ def build_story(styles) -> list:
                 ),
                 ListItem(
                     Paragraph(
-                        "Start Menu and optional Desktop shortcut: <b>Sol Dex Bot Trader</b>",
+                        "Start Menu and optional Desktop shortcut: <b>Sol Dex Bot Trader</b> "
+                        "(use these after setup — the installer does not start the app for you)",
                         styles["bullet"],
                     )
                 ),
@@ -373,14 +386,57 @@ def build_story(styles) -> list:
     )
     story.append(
         Paragraph(
-            "Use the dashboard <b>Connect</b> button (upper right) for <b>Phantom</b> or <b>Solflare</b> "
-            "to verify your extension wallet. Live trading still needs your wallet’s <b>base58 private key</b> "
-            "(or JSON byte array) so the bot can auto-sign Jupiter swaps on the server (no popup per trade). "
-            "After Connect, export the key, paste it, and click <b>Set Wallet</b>. The session key stays in "
-            "server memory and is <b>not cleared</b> when you uncheck Paper Trade, Stop, or Force Reset. "
-            "You can set or update the key even while the bot is running. Paper mode does not require a key. "
-            "Never share your private key with anyone.",
+            "<b>Live trading requires two steps</b> — Connect (extension) then Set Wallet (base58 key). "
+            "Paper mode does not require a key.",
             styles["body"],
+        )
+    )
+    story.append(
+        ListFlowable(
+            [
+                ListItem(
+                    Paragraph(
+                        "<b>1. Connect (upper right):</b> Click <b>Connect</b>. "
+                        "Approve in the <b>Phantom</b> or <b>Solflare</b> extension popup "
+                        "(the approval window must appear). "
+                        "Use <b>Chrome / Edge / Brave</b> with the extension installed — "
+                        "embedded browsers often block extension popups.",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>2. Set Wallet (base58):</b> Export your wallet’s <b>base58 private key</b> "
+                        "(or JSON byte array) from Phantom/Solflare, paste it into the Wallet Key field, "
+                        "and click <b>Set Wallet</b>. This is <b>required</b> for server auto-sign.",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>3. Auto-sign after Set Wallet:</b> Live start fee and Jupiter swaps "
+                        "are signed on the server — <b>no extension popup per trade</b>.",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>4. Session key retention:</b> The key stays in server memory and is "
+                        "<b>not cleared</b> when you uncheck <b>Paper Trade</b>, Stop, or Force Reset. "
+                        "You can set or update the key even while the bot is running.",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Security:</b> Never share your private key with anyone. "
+                        "Prefer keeping it in memory only; use Save to .env only on a trusted personal PC.",
+                        styles["bullet"],
+                    )
+                ),
+            ],
+            bulletType="bullet",
+            start="•",
         )
     )
 
