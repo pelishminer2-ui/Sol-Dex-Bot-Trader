@@ -8,6 +8,7 @@ Writes:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -668,18 +669,19 @@ def _add_page_number(canvas, doc):
     canvas.restoreState()
 
 
-def main() -> None:
-    DOCS.mkdir(parents=True, exist_ok=True)
-    ASSETS.mkdir(parents=True, exist_ok=True)
-    OUT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    styles = _styles()
-    print(f"Guide version {_app_version()} — built {_guide_built_stamp()}")
+def _write_pdf(out: Path, styles) -> None:
+    """Write via temp file then replace — avoids WinError 22 / locks on direct overwrite."""
+    import shutil
+    import tempfile
 
-    # Build story fresh per output — reportlab flowables are single-use.
-    for out in (OUT_DOCS, OUT_INSTALLER, OUT_OUTPUT):
-        story = build_story(styles)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    story = build_story(styles)
+    fd, tmp_name = tempfile.mkstemp(suffix=".pdf", prefix="soldex_guide_")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
         doc = SimpleDocTemplate(
-            str(out),
+            str(tmp_path),
             pagesize=letter,
             leftMargin=0.75 * inch,
             rightMargin=0.75 * inch,
@@ -689,7 +691,31 @@ def main() -> None:
             author="Sol Dex Bot Trader",
         )
         doc.build(story, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
-        print(f"Wrote {out} ({out.stat().st_size} bytes)")
+        try:
+            if out.exists():
+                out.unlink()
+        except OSError:
+            pass
+        shutil.move(str(tmp_path), str(out))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+    print(f"Wrote {out} ({out.stat().st_size} bytes)")
+
+
+def main() -> None:
+    DOCS.mkdir(parents=True, exist_ok=True)
+    ASSETS.mkdir(parents=True, exist_ok=True)
+    OUT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    styles = _styles()
+    print(f"Guide version {_app_version()} — built {_guide_built_stamp()}")
+
+    # Build story fresh per output — reportlab flowables are single-use.
+    for out in (OUT_DOCS, OUT_INSTALLER, OUT_OUTPUT):
+        _write_pdf(out, styles)
 
 
 if __name__ == "__main__":
