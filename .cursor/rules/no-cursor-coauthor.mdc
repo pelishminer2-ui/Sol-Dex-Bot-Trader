@@ -1,0 +1,11 @@
+---
+description: Never attribute commits to Cursor as co-author
+alwaysApply: true
+---
+
+# No Cursor co-author on commits
+
+- Never add `Co-authored-by: Cursor` (or `cursoragent@cursor.com`, or any Cursor co-author trailer) to commit messages.
+- Commit author remains the repo user only (`pelishminer2-ui` / configured user.name).
+- Do not amend or rewrite history solely to strip old Cursor trailers unless the user explicitly asks to purge history (that needs force-push).
+- If Cursor IDE auto-appends a co-author trailer, strip it from the message before committing when you control the message text.

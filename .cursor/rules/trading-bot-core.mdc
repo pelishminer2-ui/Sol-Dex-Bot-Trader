@@ -35,5 +35,6 @@ alwaysApply: true
 ### Ops
 - Local-only git, no push unless asked
 - User commits when they say COMMIT
+- Never add `Co-authored-by: Cursor` (or any Cursor co-author trailer) to commits
 - Restart server after config/code changes
 - Regime entry-tuning revert: old bottom line recorded in `data/regime_tuning_revert.json` + `presets/pre_regime_tuning_bookmark.json`. Roll back with `restore_regime_tuning.bat` (sets `SOL_MIN_CHANGE_1H_PCT=-1.0`, `SOL_TREND_QUALITY_OVERRIDE_ENABLED=false`) then restart Flask.
