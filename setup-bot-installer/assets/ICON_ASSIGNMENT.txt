@@ -1,4 +1,4 @@
-Sol Dex Bot Trader — Windows icon assignment (v1.1.1+)
+Sol Dex Bot Trader — Windows icon assignment (v1.1.2+)
 
 Desktop shortcut icon:
   Source PNG: icon-desktop-pelish.png  (Pelish Crypto medallion — rich detail at large size)

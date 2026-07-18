@@ -309,12 +309,16 @@ try {
         Write-Host "[4/4] Skipping Inno Setup"
     }
 
-    # build.bat is a thin wrapper whose content rarely changes; touch it so Explorer
+    # build.bat / build.ps1 content rarely changes; touch mtimes so Explorer
     # "Date modified" tracks the last successful build (real stamp is BUILD_INFO.txt).
-    $BatPath = Join-Path $InstallerDir "build.bat"
-    if (Test-Path $BatPath) {
-        (Get-Item $BatPath).LastWriteTime = Get-Date
+    $nowTouch = Get-Date
+    foreach ($name in @("build.bat", "build.ps1")) {
+        $p = Join-Path $InstallerDir $name
+        if (Test-Path $p) {
+            (Get-Item $p).LastWriteTime = $nowTouch
+        }
     }
+
 
     Write-Host ""
     Write-Host "Build complete — SolDexBotTrader.exe was NOT started (leave app closed after build/fix)."

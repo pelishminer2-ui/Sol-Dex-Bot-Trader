@@ -3,7 +3,7 @@
 ; Prefer: .\build.ps1 from this folder (stamps build date/time automatically)
 ;
 ; Optional defines from build.ps1:
-;   /DMyAppVersion=1.1.1
+;   /DMyAppVersion=1.1.2
 ;   /DMyAppBuildDate=2026-07-18
 ;   /DMyAppBuildTime=14:00:00
 ;   /DMyAppBuildStamp=2026-07-18T14:00:00-04:00
@@ -13,7 +13,7 @@
 ;   Desktop shortcut:  assets\icon-desktop-pelish.ico (Pelish Crypto medallion)
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.1"
+  #define MyAppVersion "1.1.2"
 #endif
 #ifndef MyAppBuildDate
   #define MyAppBuildDate GetDateTimeString('yyyy-mm-dd', '-', ':')
@@ -24,6 +24,7 @@
 #ifndef MyAppBuildStamp
   #define MyAppBuildStamp MyAppBuildDate + " " + MyAppBuildTime
 #endif
+
 
 #define MyAppName "Sol Dex Bot Trader"
 #define MyAppPublisher "Sol Dex Bot Trader"
