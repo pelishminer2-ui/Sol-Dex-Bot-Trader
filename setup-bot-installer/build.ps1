@@ -24,7 +24,7 @@ function Get-AppVersion {
         $v = (Get-Content -Raw $vf).Trim()
         if ($v) { return $v }
     }
-    return "1.0.1"
+    return "1.1.2"
 }
 
 function Write-BuildStamp {
@@ -311,9 +311,16 @@ try {
 
     # build.bat / build.ps1 content rarely changes; touch mtimes so Explorer
     # "Date modified" tracks the last successful build (real stamp is BUILD_INFO.txt).
+    # Also align BUILD_INFO.txt mtimes with setup.exe so all three match in Explorer.
     $nowTouch = Get-Date
-    foreach ($name in @("build.bat", "build.ps1")) {
-        $p = Join-Path $InstallerDir $name
+    $touchList = @(
+        (Join-Path $InstallerDir "build.bat"),
+        (Join-Path $InstallerDir "build.ps1"),
+        (Join-Path $InstallerDir "BUILD_INFO.txt"),
+        (Join-Path $OutDir "BUILD_INFO.txt"),
+        (Join-Path $OutDir "setup.exe")
+    )
+    foreach ($p in $touchList) {
         if (Test-Path $p) {
             (Get-Item $p).LastWriteTime = $nowTouch
         }

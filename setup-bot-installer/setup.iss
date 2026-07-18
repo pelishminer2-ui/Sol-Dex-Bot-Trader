@@ -2,11 +2,11 @@
 ; Compile with: ISCC.exe setup.iss
 ; Prefer: .\build.ps1 from this folder (stamps build date/time automatically)
 ;
-; Optional defines from build.ps1:
+; Optional defines from build.ps1 (values stamped at compile time):
 ;   /DMyAppVersion=1.1.2
-;   /DMyAppBuildDate=2026-07-18
-;   /DMyAppBuildTime=14:00:00
-;   /DMyAppBuildStamp=2026-07-18T14:00:00-04:00
+;   /DMyAppBuildDate=yyyy-mm-dd
+;   /DMyAppBuildTime=HH:mm:ss
+;   /DMyAppBuildStamp=yyyy-mm-ddTHH:mm:sszzz
 ;
 ; Icons (see assets/ICON_ASSIGNMENT.txt):
 ;   Taskbar/app/Setup: assets\icon-taskbar-cats.ico   (Cats of Crypto)
