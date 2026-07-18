@@ -1,0 +1,15 @@
+Sol Dex Bot Trader — Windows icon assignment (v1.1.1+)
+
+Desktop shortcut icon:
+  Source PNG: icon-desktop-pelish.png  (Pelish Crypto medallion — rich detail at large size)
+  ICO:        icon-desktop-pelish.ico  (16/32/48/256)
+  Used by:    Inno Setup [Icons] desktop shortcut IconFilename
+
+App / taskbar / Setup.exe / Start Menu / tray:
+  Source PNG: icon-taskbar-cats.png    (Cats of Crypto — cleaner circle, readable when small)
+  ICO:        icon-taskbar-cats.ico    (16/32/48/256)
+  Used by:    Inno SetupIconFile, Start Menu shortcut, PyInstaller EXE icon=, pystray tray image
+
+Copies also live under:
+  static/assets/icon-desktop-pelish.{png,ico}
+  static/assets/icon-taskbar-cats.{png,ico}

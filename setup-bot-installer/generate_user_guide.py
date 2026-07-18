@@ -47,9 +47,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.0"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.1"
     except OSError:
-        return "1.1.0"
+        return "1.1.1"
 
 
 def _guide_built_stamp() -> str:
@@ -265,7 +265,9 @@ def build_story(styles) -> list:
                 ListItem(
                     Paragraph(
                         "Start Menu and optional Desktop shortcut: <b>Sol Dex Bot Trader</b> "
-                        "(or check the optional Finish-page Launch checkbox)",
+                        "(or check the optional Finish-page Launch checkbox). "
+                        "Desktop shortcut uses the <b>Pelish Crypto</b> medallion icon; "
+                        "the app / taskbar / tray use the <b>Cats of Crypto</b> icon.",
                         styles["bullet"],
                     )
                 ),

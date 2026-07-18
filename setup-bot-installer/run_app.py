@@ -77,8 +77,21 @@ def _setup_file_logging(work: Path) -> Path:
 
 
 def _tray_icon_image():
-    """Simple branded icon generated at runtime (no external .ico required)."""
+    """Cats of Crypto taskbar asset when bundled; geometric fallback otherwise."""
     from PIL import Image, ImageDraw
+
+    candidates = [
+        _app_root() / "static" / "assets" / "icon-taskbar-cats.png",
+        _writable_root() / "icon-taskbar-cats.ico",
+        Path(__file__).resolve().parent / "assets" / "icon-taskbar-cats.png",
+    ]
+    for path in candidates:
+        try:
+            if path.is_file():
+                img = Image.open(path).convert("RGBA")
+                return img.resize((64, 64), Image.Resampling.LANCZOS)
+        except OSError:
+            pass
 
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))

@@ -2,7 +2,7 @@
 
 Build **setup.exe** from this folder. End users only run `setup.exe`; they never need `launch.ps1` / `.bat`.
 
-Current product version is in `version.txt` (now **1.0.9**). Each `build.ps1` run stamps local date/time into:
+Current product version is in `version.txt` (now **1.1.1**). Each `build.ps1` run stamps local date/time into:
 
 - `BUILD_INFO.txt` (shipped with the app + copied to `output\`)
 - Inno `VersionInfo*` / `AppVerName` on `output\setup.exe`
@@ -59,7 +59,8 @@ Uses a Windows container when available; otherwise documents the host build path
 - Finish page has an optional **Launch** checkbox (**unchecked by default**) — user chooses whether to start
 - `build.ps1` / `build.bat` do **not** auto-start the app after a successful build (leave it closed)
 - Starts the local Flask GUI on `http://127.0.0.1:5000` in the background
-- System tray icon: Open Dashboard / Open Logs Folder / Quit
+- System tray icon: Open Dashboard / Open Logs Folder / Quit (Cats of Crypto artwork)
+- Desktop shortcut (optional task): Pelish Crypto medallion ICO; Setup/exe/taskbar/Start Menu: Cats of Crypto ICO (`assets/ICON_ASSIGNMENT.txt`)
 - Opens the default browser to the dashboard
 - Logs to `<install>\logs\soldexbot.log`
 - Start Menu **Stop Sol Dex Bot Trader** → `Stop-SolDexBot.bat` (or `taskkill /IM SolDexBotTrader.exe /F`)

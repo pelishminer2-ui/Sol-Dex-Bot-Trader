@@ -97,12 +97,14 @@ exe = EXE(
     upx=True,
     # Windowed / GUI subsystem — no CMD console that must stay open.
     # Logging goes to <install>\logs\soldexbot.log; tray Quit stops the process.
+    # Taskbar / exe icon: Cats of Crypto (see assets/ICON_ASSIGNMENT.txt).
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(SPECDIR / "assets" / "icon-taskbar-cats.ico"),
 )
 
 coll = COLLECT(
