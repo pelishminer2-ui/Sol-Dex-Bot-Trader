@@ -1545,7 +1545,22 @@ class MomentumStrategy:
         )
         self.positions.append(position)
         self.record_trade_cooldown(candidate.mint)
+        self._persist_positions()
         return position
+
+    def restore_positions(self, positions: List[Position]) -> int:
+        """Replace in-memory book with restored positions (startup resume)."""
+        self.positions = list(positions)
+        return len(self.positions)
+
+    def _persist_positions(self) -> None:
+        try:
+            from position_store import save_open_positions
+
+            dry_run = getattr(self, "_persist_dry_run", True)
+            save_open_positions(self.positions, dry_run=bool(dry_run))
+        except Exception as exc:
+            logger.error("Open-position persist failed: %s", exc)
 
     def apply_dca_to_position(
         self,
@@ -1581,6 +1596,7 @@ class MomentumStrategy:
             position.size_sol,
             position.remaining_token_amount_raw,
         )
+        self._persist_positions()
 
     def apply_partial_tp(
         self,
@@ -1612,6 +1628,7 @@ class MomentumStrategy:
         all_levels_hit = len(position.tp_levels_hit) >= position.tp_level_count
         if position.remaining_token_amount_raw <= 0 or all_levels_hit:
             return self.close_position(position, exit_price, SignalType.SELL_TP_PARTIAL)
+        self._persist_positions()
         return None
 
     def close_position(self, position: Position, exit_price: float, reason: SignalType) -> TradeProfile:
@@ -1639,4 +1656,5 @@ class MomentumStrategy:
             pnl_pct,
             hold_duration,
         )
+        self._persist_positions()
         return profile

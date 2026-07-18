@@ -1,5 +1,5 @@
 ﻿Sol Dex Bot Trader
-Version: 1.0.9
-Built: 2026-07-12T21:34:54-04:00
-BuildDate: 2026-07-12
-BuildTime: 21:34:54
+Version: 1.1.0
+Built: 2026-07-18T13:58:33-04:00
+BuildDate: 2026-07-18
+BuildTime: 13:58:33

@@ -3,13 +3,13 @@
 ; Prefer: .\build.ps1 from this folder (stamps build date/time automatically)
 ;
 ; Optional defines from build.ps1:
-;   /DMyAppVersion=1.0.9
-;   /DMyAppBuildDate=2026-07-12
-;   /DMyAppBuildTime=18:00:00
-;   /DMyAppBuildStamp=2026-07-12T18:00:00-04:00
+;   /DMyAppVersion=1.1.0
+;   /DMyAppBuildDate=2026-07-18
+;   /DMyAppBuildTime=14:00:00
+;   /DMyAppBuildStamp=2026-07-18T14:00:00-04:00
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.9"
+  #define MyAppVersion "1.1.0"
 #endif
 #ifndef MyAppBuildDate
   #define MyAppBuildDate GetDateTimeString('yyyy-mm-dd', '-', ':')

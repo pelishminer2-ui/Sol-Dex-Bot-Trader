@@ -1875,7 +1875,22 @@ class Config:
 
     DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
     CLOSE_ON_STOP = os.getenv("CLOSE_ON_STOP", "false").lower() in ("1", "true", "yes")
-    PAPER_SESSION_HOURS = float(os.getenv("PAPER_SESSION_HOURS", "24"))
+    # 0 = continuous paper session (no auto-stop). Set e.g. 24 for a timed test window.
+    PAPER_SESSION_HOURS = float(os.getenv("PAPER_SESSION_HOURS", "0"))
+    # Prevent Windows sleep while the server/bot is running (optional; default on).
+    WINDOWS_KEEP_AWAKE = os.getenv("WINDOWS_KEEP_AWAKE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # After Flask/process restart, auto-resume trading if runtime state says running.
+    AUTO_RESUME_ON_START = os.getenv("AUTO_RESUME_ON_START", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     _paper_balance_raw = float(
         os.getenv(
             "PAPER_SIMULATED_BALANCE_SOL", str(DEFAULT_PAPER_SIMULATED_BALANCE_SOL)
@@ -2029,6 +2044,11 @@ class Config:
     )
     BOT_RUNTIME_STATE_PATH = str(
         resolve_data_path(os.getenv("BOT_RUNTIME_STATE_PATH", "bot_runtime_state.json"))
+    )
+    OPEN_POSITIONS_STATE_PATH = str(
+        resolve_data_path(
+            os.getenv("OPEN_POSITIONS_STATE_PATH", "data/open_positions.json")
+        )
     )
     REENTRY_RETRY_STATE_PATH = str(
         resolve_data_path(
@@ -2618,6 +2638,9 @@ class Config:
             "dry_run": cls.DRY_RUN,
             "paper_trade": cls.DRY_RUN,
             "paper_session_hours": cls.PAPER_SESSION_HOURS,
+            "paper_session_unlimited": cls.PAPER_SESSION_HOURS <= 0,
+            "windows_keep_awake": cls.WINDOWS_KEEP_AWAKE,
+            "auto_resume_on_start": cls.AUTO_RESUME_ON_START,
             "paper_simulated_balance_sol": cls.PAPER_SIMULATED_BALANCE_SOL,
             "min_paper_simulated_balance_sol": MIN_PAPER_SIMULATED_BALANCE_SOL,
             "max_paper_simulated_balance_sol": MAX_PAPER_SIMULATED_BALANCE_SOL,

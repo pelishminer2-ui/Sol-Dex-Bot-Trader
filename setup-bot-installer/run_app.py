@@ -4,6 +4,9 @@ Runs as a background GUI-subsystem process with:
   - File logging under the install dir (logs/soldexbot.log)
   - System tray icon (Open Dashboard / Quit)
   - Auto-open browser to the local dashboard
+  - Outer supervisor: restart Flask if the server thread dies (unless user Quit)
+  - Optional Windows keep-awake for long runs
+  - Auto-resume open trades after restart
 
 Stop via tray Quit, Start Menu "Stop Sol Dex Bot Trader", or:
   taskkill /IM SolDexBotTrader.exe /F
@@ -151,22 +154,54 @@ def main() -> None:
         log_path,
     )
 
+    try:
+        from keep_awake import request_keep_awake, release_keep_awake
+
+        request_keep_awake()
+    except Exception:
+        logger.debug("keep_awake unavailable", exc_info=True)
+
+        def release_keep_awake() -> None:  # type: ignore[misc]
+            return None
+
     from werkzeug.serving import make_server
 
-    server = make_server(host, port, flask_app.app, threaded=True)
-    server_thread = threading.Thread(
-        target=server.serve_forever,
-        name="flask-server",
-        daemon=True,
-    )
-    server_thread.start()
+    user_quit = threading.Event()
+    server_holder: dict = {"server": None, "thread": None}
 
-    # Wait briefly for bind, then open browser.
+    def _start_server() -> None:
+        server = make_server(host, port, flask_app.app, threaded=True)
+        server_thread = threading.Thread(
+            target=server.serve_forever,
+            name="flask-server",
+            daemon=True,
+        )
+        server_holder["server"] = server
+        server_holder["thread"] = server_thread
+        server_thread.start()
+
+    def _shutdown_server() -> None:
+        server = server_holder.get("server")
+        if server is None:
+            return
+        try:
+            server.shutdown()
+        except Exception:
+            logger.exception("Error during Flask shutdown")
+        server_holder["server"] = None
+
+    _start_server()
+
+    # Wait briefly for bind, then open browser + auto-resume open trades.
     for _ in range(50):
         if flask_app._bot_status_reachable(host, port):
             break
         time.sleep(0.1)
     flask_app._schedule_browser_open()
+    try:
+        flask_app.schedule_auto_resume()
+    except Exception:
+        logger.debug("schedule_auto_resume unavailable", exc_info=True)
 
     shutdown_once = threading.Event()
 
@@ -174,11 +209,36 @@ def main() -> None:
         if shutdown_once.is_set():
             return
         shutdown_once.set()
+        user_quit.set()
         logger.info("Shutting down Sol Dex Bot Trader...")
+        _shutdown_server()
         try:
-            server.shutdown()
+            release_keep_awake()
         except Exception:
-            logger.exception("Error during Flask shutdown")
+            pass
+
+    def _supervisor_loop() -> None:
+        """Restart Flask if the server thread dies unexpectedly (not on Quit)."""
+        while not user_quit.is_set():
+            thread = server_holder.get("thread")
+            if thread is not None and not thread.is_alive() and not user_quit.is_set():
+                logger.error("Flask server thread died — restarting (supervisor)")
+                try:
+                    _start_server()
+                    for _ in range(50):
+                        if flask_app._bot_status_reachable(host, port):
+                            break
+                        time.sleep(0.1)
+                    try:
+                        flask_app.schedule_auto_resume(delay_sec=1.0)
+                    except Exception:
+                        logger.exception("Auto-resume after supervisor restart failed")
+                except Exception:
+                    logger.exception("Supervisor failed to restart Flask")
+                    time.sleep(5.0)
+            time.sleep(2.0)
+
+    threading.Thread(target=_supervisor_loop, name="flask-supervisor", daemon=True).start()
 
     def _run_tray() -> None:
         try:
@@ -190,7 +250,7 @@ def main() -> None:
                 "Stop with: taskkill /IM SolDexBotTrader.exe /F"
             )
             try:
-                while server_thread.is_alive():
+                while not user_quit.is_set():
                     time.sleep(1.0)
             except KeyboardInterrupt:
                 _shutdown()
@@ -236,7 +296,8 @@ def main() -> None:
     finally:
         # Ensure process exits even if daemon thread lingers.
         time.sleep(0.3)
-        if server_thread.is_alive():
+        thread = server_holder.get("thread")
+        if thread is not None and thread.is_alive():
             logger.warning("Server thread still alive — forcing exit")
             os._exit(0)
 

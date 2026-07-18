@@ -131,6 +131,7 @@ class TradingBot:
         self._stop_alert_state: dict[str, str] = {}
         self.price_feed = PriceFeed()
         self.strategy = MomentumStrategy()
+        self.strategy._persist_dry_run = self.dry_run
         self.similarity = SimilarityScorer()
         self.setup_learner = SetupLearner()
         self.risk = RiskManager()
@@ -351,6 +352,71 @@ class TradingBot:
         self.market_regime_snapshot = update_market_regime(
             self.sol_trend_snapshot, []
         )
+
+        await self._restore_persisted_positions()
+
+    async def _restore_persisted_positions(self) -> None:
+        """Reload open books from disk and continue exit monitoring.
+
+        Paper: restore simulated positions as stored.
+        Live: reconcile remaining token qty against wallet; drop if gone.
+        Exit rules (SL / instant profit / 15m / forced) are unchanged.
+        """
+        from position_store import load_open_positions, save_open_positions
+
+        stored = load_open_positions(dry_run=self.dry_run)
+        if not stored:
+            return
+
+        restored: List[Position] = []
+        for pos in stored:
+            if self.dry_run:
+                restored.append(pos)
+                continue
+            if not self.solana:
+                restored.append(pos)
+                continue
+            try:
+                wallet_raw = await self.solana.get_token_balance_raw(pos.mint)
+            except Exception as exc:
+                logger.warning(
+                    "Resume reconcile failed for %s: %s — keeping stored qty",
+                    pos.symbol,
+                    exc,
+                )
+                restored.append(pos)
+                continue
+            if wallet_raw <= 0:
+                logger.warning(
+                    "Resume: wallet has 0 tokens for %s (%s) — dropping from book",
+                    pos.symbol,
+                    pos.mint[:8],
+                )
+                continue
+            if wallet_raw != pos.remaining_token_amount_raw:
+                logger.info(
+                    "Resume: reconciling %s token qty %d -> %d (wallet)",
+                    pos.symbol,
+                    pos.remaining_token_amount_raw,
+                    wallet_raw,
+                )
+                pos.remaining_token_amount_raw = wallet_raw
+                pos.token_amount_raw = wallet_raw
+            restored.append(pos)
+
+        count = self.strategy.restore_positions(restored)
+        save_open_positions(restored, dry_run=self.dry_run)
+        if count:
+            symbols = ", ".join(p.symbol for p in restored)
+            mode = "paper" if self.dry_run else "live"
+            msg = f"Resumed {count} open {mode} position(s): {symbols}"
+            logger.info(msg)
+            self._record_action(msg)
+            if not self.dry_run and not self._private_key and not Config.SOLANA_PRIVATE_KEY:
+                logger.warning(
+                    "Live positions restored for monitoring, but no session key — "
+                    "re-Set Wallet (or set SOLANA_PRIVATE_KEY) before exits can sign"
+                )
 
     def _update_scan_zero_streaks(
         self,
@@ -2684,6 +2750,16 @@ class TradingBot:
                             )
 
                     await self._monitor_all_open_positions()
+                    # Peak/trough and partial updates land here — keep disk book fresh.
+                    try:
+                        from position_store import save_open_positions
+
+                        save_open_positions(
+                            self.strategy.get_open_positions(),
+                            dry_run=self.dry_run,
+                        )
+                    except Exception:
+                        logger.exception("Failed to persist open positions after monitor")
 
                     if not self.should_run():
                         break

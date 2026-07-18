@@ -47,11 +47,20 @@ class PnlTracker:
         self._last_session = PnlSession()
         self._load()
 
-    def start_session(self, mode: str) -> None:
+    def start_session(self, mode: str, *, resume: bool = False) -> None:
         now = self._clock()
         with self._lock:
+            if resume and self._session.active and self._session.mode == mode:
+                self._persist()
+                return
             if self._session.active:
                 self._last_session = self._snapshot(self._session, active=False)
+            if resume and self._last_session.mode == mode and self._last_session.started_at:
+                # Reactivate prior session totals after a crash/restart.
+                self._session = self._snapshot(self._last_session, active=True)
+                self._session.mode = mode
+                self._persist()
+                return
             self._session = PnlSession(mode=mode, started_at=now, active=True)
             self._persist()
 

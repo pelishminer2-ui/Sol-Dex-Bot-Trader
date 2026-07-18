@@ -256,6 +256,23 @@ def _schedule_browser_open() -> None:
     threading.Timer(1.0, _open).start()
 
 
+def schedule_auto_resume(delay_sec: float = 2.0) -> None:
+    """After Flask is up, resume trading if runtime/open-position state requires it."""
+
+    def _resume() -> None:
+        try:
+            from keep_awake import request_keep_awake
+
+            request_keep_awake()
+            result = bot_manager.try_auto_resume()
+            if result:
+                logging.getLogger(__name__).info("Auto-resume result: %s", result)
+        except Exception:
+            logging.getLogger(__name__).exception("Auto-resume scheduling failed")
+
+    threading.Timer(max(0.5, float(delay_sec)), _resume).start()
+
+
 def _get_lan_ip() -> str | None:
     """Best-effort local LAN address for display when bound to all interfaces."""
     try:
@@ -911,4 +928,5 @@ if __name__ == "__main__":
         f"{'=' * 60}\n"
     )
     _schedule_browser_open()
+    schedule_auto_resume()
     app.run(host=HOST, port=PORT, debug=False, use_reloader=False, threaded=True)

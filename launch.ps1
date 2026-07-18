@@ -433,10 +433,9 @@ function Register-SessionCleanup {
     if ($script:SessionCleanupRegistered) { return }
     $script:SessionCleanupRegistered = $true
 
+    # Continuous-run: never stop Flask from launcher cleanup / Ctrl+C.
+    # Use stop.bat (or tray Quit) for intentional shutdown.
     $cleanup = {
-        if ($script:SessionMode -and $script:WeStartedServer -and -not $script:ServerStopped) {
-            Stop-BotServerIfOwned -WeStarted $true -Quiet
-        }
         Release-LaunchLock
     }
     $script:SessionCleanup = $cleanup
@@ -597,11 +596,34 @@ try {
     Write-Host '[OK] Dashboard ready.'
     Open-DashboardBrowser -Url $BaseUrl
 
+    # Keep Flask alive for long runs: spawn watchdog if not already monitoring.
+    $WatchdogPy = Join-Path $ProjectRoot "watchdog.py"
+    if ((Test-Path $WatchdogPy) -and (Test-Path $Python)) {
+        $wdRunning = $false
+        try {
+            $wdProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue
+            foreach ($proc in $wdProcs) {
+                if ($proc.CommandLine -and ($proc.CommandLine -like "*watchdog.py*")) {
+                    $wdRunning = $true
+                    break
+                }
+            }
+        } catch { }
+        if (-not $wdRunning) {
+            Write-Host '[..] Starting watchdog (auto-restart Flask if it dies)...'
+            $env:SOLANA_LAUNCHED_BY = "launcher"
+            Start-Process -FilePath $Python -ArgumentList "`"$WatchdogPy`"" -WorkingDirectory $ProjectRoot -WindowStyle Hidden
+        } else {
+            Write-Host '[OK] Watchdog already running.'
+        }
+    }
+
     if ($SessionMode) {
         Show-SessionBanner -Url $BaseUrl -WeStarted $started
         Wait-BrowserSessionEnd -ListenPort $Port
-        Stop-BotServerIfOwned -WeStarted $started
-        Write-Host '[OK] Session ended.'
+        # Continuous-run: leave the server up when the browser closes.
+        # Use stop.bat to shut down Flask intentionally.
+        Write-Host '[OK] Browser session ended — server left running (stop.bat to shut down).'
         Write-Host ''
     } else {
         Write-Host ''
@@ -611,16 +633,17 @@ try {
             Write-Host 'Connected to an already-running server.'
         }
         Write-Host "Dashboard: $BaseUrl"
+        Write-Host 'Server stays up until stop.bat (watchdog restarts it if it crashes).'
         Write-Host ''
     }
 } catch {
     Write-Host "[ERROR] $($_.Exception.Message)"
     exit 1
 } finally {
+    # Detach / continuous: never kill the server from launcher cleanup.
+    # Only release our launch lock; stop.bat / tray Quit own shutdown.
     if ($script:SessionCleanupRegistered) {
-        & $script:SessionCleanup
-    } elseif ($SessionMode -and $script:WeStartedServer -and -not $script:ServerStopped) {
-        Stop-BotServerIfOwned -WeStarted $true -Quiet
+        # Override: release lock only — do not stop server on browser/window close.
         Release-LaunchLock
     } else {
         Release-LaunchLock

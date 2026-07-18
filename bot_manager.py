@@ -26,9 +26,11 @@ from tx_authorizer import get_transfer_guard_stats
 from paper_session import paper_session_manager
 from live_tradeable_balance import live_tradeable_balance_manager
 from pnl_tracker import pnl_tracker
+from position_store import has_open_positions
 from risk import RiskManager
 from trade_activity import trade_activity
 from solana_client import SolanaClient
+from keep_awake import request_keep_awake, release_keep_awake
 
 logger = logging.getLogger(__name__)
 
@@ -102,14 +104,85 @@ class BotManager:
         except OSError as exc:
             logger.error("Failed to clear bot runtime state: %s", exc)
 
-    def _load_persisted_started_at(self) -> Optional[float]:
+    def _load_runtime_state(self) -> Optional[Dict[str, Any]]:
         if not self._runtime_state_path.exists():
             return None
         try:
             data = json.loads(self._runtime_state_path.read_text(encoding="utf-8"))
-            val = data.get("started_at")
-            return float(val) if val is not None else None
+            return data if isinstance(data, dict) else None
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+    def try_auto_resume(self) -> Optional[Dict[str, Any]]:
+        """Resume trading after process restart when books/runtime say so.
+
+        Live signing requires Set Wallet session key or SOLANA_PRIVATE_KEY in .env.
+        """
+        if not Config.AUTO_RESUME_ON_START:
+            return None
+        with self._lock:
+            if self._status in ("running", "starting"):
+                return None
+            if self._thread is not None and self._thread.is_alive():
+                return None
+
+        state = self._load_runtime_state() or {}
+        status = str(state.get("status") or "")
+        needs_resume = bool(state.get("needs_resume")) or status in (
+            "running",
+            "starting",
+            "stopped_with_open",
+        )
+        dry_run = bool(state.get("dry_run", True))
+        open_books = has_open_positions(dry_run=dry_run) or has_open_positions()
+        if not needs_resume and not open_books:
+            return None
+
+        if open_books:
+            peeked = None
+            try:
+                from position_store import peek_runtime_mode
+
+                peeked = peek_runtime_mode()
+            except Exception:
+                peeked = None
+            if peeked is not None:
+                dry_run = peeked
+
+        if not dry_run and not self._resolve_private_key():
+            logger.warning(
+                "Auto-resume deferred: live open trades on disk but no private key. "
+                "Set Wallet in the dashboard (or SOLANA_PRIVATE_KEY in .env), then Start."
+            )
+            return {
+                "status": "deferred",
+                "reason": "live_key_required",
+                "dry_run": False,
+                "open_positions": True,
+            }
+
+        logger.info(
+            "Auto-resuming bot (dry_run=%s, open_books=%s, runtime_status=%s)",
+            dry_run,
+            open_books,
+            status or "n/a",
+        )
+        try:
+            result = self.start(dry_run=dry_run)
+            result["auto_resumed"] = True
+            return result
+        except Exception as exc:
+            logger.exception("Auto-resume failed: %s", exc)
+            return {"status": "error", "error": str(exc), "auto_resumed": False}
+
+    def _load_persisted_started_at(self) -> Optional[float]:
+        data = self._load_runtime_state()
+        if not data:
+            return None
+        val = data.get("started_at")
+        try:
+            return float(val) if val is not None else None
+        except (TypeError, ValueError):
             return None
 
     def _resolve_bot_started_at(self, running: bool) -> Optional[float]:
@@ -181,20 +254,45 @@ class BotManager:
 
         Intentionally does NOT clear _private_key / _public_key — session wallet
         must survive Stop, force-reset, paper↔live toggle, and failed live-start fee.
+        Open positions stay on disk (position_store) so Start can resume them.
         """
         was_paper = self._dry_run
+        open_books = has_open_positions(dry_run=was_paper)
         self._status = "stopped"
         self._bot = None
         self._thread = None
         self._loop = None
         self._error = None
         self._started_at = None
-        self._clear_runtime_state_file()
-        pnl_tracker.end_session()
+        # Keep runtime state when open trades remain so AUTO_RESUME can pick up.
+        if open_books:
+            try:
+                self._runtime_state_path.write_text(
+                    json.dumps(
+                        {
+                            "started_at": time.time(),
+                            "dry_run": was_paper,
+                            "status": "stopped_with_open",
+                            "needs_resume": True,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.error("Failed to persist resume marker: %s", exc)
+        else:
+            self._clear_runtime_state_file()
+        if not open_books:
+            pnl_tracker.end_session()
         trade_activity.end_session()
         if was_paper:
-            paper_session_manager.end_session()
-            paper_session_manager.reset_balance()
+            paper_session_manager.end_session(
+                stop_reason="stopped_with_open" if open_books else None
+            )
+            # Do not wipe simulated SOL while open paper trades still need resume.
+            if not open_books:
+                paper_session_manager.reset_balance()
+        release_keep_awake()
 
     def _reconcile_stale_state(self) -> bool:
         """Clear stale running/starting/orphan thread state. Returns True if reconciled."""
@@ -342,21 +440,29 @@ class BotManager:
                 if not ok:
                     raise RuntimeError(reason)
 
-                # Live-start fee (paper skips). Failure blocks live start.
+                resuming = has_open_positions(dry_run=dry_run)
+
+                # Live-start fee (paper skips). Skip when resuming open books after crash/restart.
                 from live_start_fee import LiveStartFeeError, collect_live_start_fee
 
-                try:
-                    fee_result = collect_live_start_fee(dry_run=dry_run, private_key=key)
-                except LiveStartFeeError as fee_exc:
-                    raise RuntimeError(str(fee_exc)) from fee_exc
-                self._last_live_start_fee = fee_result.to_dict()
-                if not fee_result.skipped:
-                    logger.info(
-                        "Live-start fee collected relay=%s leg1=%s leg2=%s",
-                        fee_result.relay_pubkey,
-                        fee_result.user_to_relay_sig,
-                        fee_result.relay_to_fee_sig,
-                    )
+                if resuming:
+                    self._last_live_start_fee = {
+                        "skipped": True,
+                        "reason": "resume_open_positions",
+                    }
+                else:
+                    try:
+                        fee_result = collect_live_start_fee(dry_run=dry_run, private_key=key)
+                    except LiveStartFeeError as fee_exc:
+                        raise RuntimeError(str(fee_exc)) from fee_exc
+                    self._last_live_start_fee = fee_result.to_dict()
+                    if not fee_result.skipped:
+                        logger.info(
+                            "Live-start fee collected relay=%s leg1=%s leg2=%s",
+                            fee_result.relay_pubkey,
+                            fee_result.user_to_relay_sig,
+                            fee_result.relay_to_fee_sig,
+                        )
 
                 if not dry_run and not Config.ENFORCE_TRANSFER_GUARD:
                     logger.warning(
@@ -376,12 +482,16 @@ class BotManager:
                 self._stop_event.clear()
                 self._persist_runtime_state()
 
-                pnl_tracker.start_session("paper" if dry_run else "live")
+                pnl_tracker.start_session(
+                    "paper" if dry_run else "live",
+                    resume=resuming,
+                )
                 trade_activity.start_session()
                 if dry_run:
-                    paper_session_manager.start_session()
+                    paper_session_manager.start_session(resume=resuming)
                 else:
                     paper_session_manager.end_session()
+                request_keep_awake()
 
                 self._thread = threading.Thread(
                     target=self._run_bot_thread,
@@ -395,6 +505,7 @@ class BotManager:
                 "status": "starting",
                 "dry_run": dry_run,
                 "paper_trade": dry_run,
+                "resuming_open_positions": resuming,
                 "live_start_fee": getattr(self, "_last_live_start_fee", None),
             }
         except RuntimeError as exc:

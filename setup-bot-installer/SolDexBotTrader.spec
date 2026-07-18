@@ -43,6 +43,8 @@ hiddenimports = [
     "pnl_tracker",
     "tax_export",
     "live_tradeable_balance",
+    "position_store",
+    "keep_awake",
     "pystray",
     "pystray._win32",
     "PIL",

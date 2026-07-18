@@ -34,7 +34,12 @@ def test_session_starts_on_paper_bot_start():
             stats = paper_session_manager.get_session_stats()
             assert stats["paper_session_active"] is True
             assert stats["paper_session_started_at"] is not None
-            assert stats["paper_session_remaining_sec"] > 0
+            # Default PAPER_SESSION_HOURS=0 => continuous (unlimited).
+            if Config.PAPER_SESSION_HOURS <= 0:
+                assert stats.get("paper_session_unlimited") is True
+                assert stats["paper_session_remaining_sec"] is None
+            else:
+                assert stats["paper_session_remaining_sec"] > 0
             bot_manager.stop()
     print("PASS: session starts on paper bot start")
 
@@ -112,16 +117,24 @@ def test_expired_session_triggers_stop():
 
 def test_live_mode_ignores_paper_session():
     _reset_manager()
+
+    class _Fee:
+        skipped = True
+
+        def to_dict(self):
+            return {"skipped": True}
+
     with patch.object(bot_manager, "_status", "stopped"):
         with patch.object(bot_manager, "_run_bot_thread"):
             with patch.object(bot_manager, "_resolve_private_key", return_value="fake-key"):
                 with patch.object(bot_manager, "get_balance", return_value=1.0):
-                    bot_manager.start(dry_run=False)
-                    assert paper_session_manager.is_active() is False
-                    stats = bot_manager.get_status()
-                    assert stats["paper_session_active"] is False
-                    assert stats["paper_session_started_at"] is None
-                    bot_manager.stop()
+                    with patch("live_start_fee.collect_live_start_fee", return_value=_Fee()):
+                        bot_manager.start(dry_run=False)
+                        assert paper_session_manager.is_active() is False
+                        stats = bot_manager.get_status()
+                        assert stats["paper_session_active"] is False
+                        assert stats["paper_session_started_at"] is None
+                        bot_manager.stop()
     print("PASS: live mode ignores paper session timer")
 
 

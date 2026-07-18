@@ -47,9 +47,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.0.9"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.0"
     except OSError:
-        return "1.0.9"
+        return "1.1.0"
 
 
 def _guide_built_stamp() -> str:
@@ -374,6 +374,22 @@ def build_story(styles) -> list:
             border=colors.HexColor("#856404"),
         )
     )
+    story.append(Paragraph("Long-run reliability &amp; auto-resume", styles["h2"]))
+    story.append(
+        Paragraph(
+            "The app is designed to run continuously until you Quit. "
+            "Paper sessions default to <b>continuous</b> (no 24h auto-stop; optional "
+            "<font face='Courier'>PAPER_SESSION_HOURS</font> timed window). "
+            "Open paper and live trades are saved to disk on every open/update/close. "
+            "If Flask or the process restarts, open books are reloaded and exit monitoring "
+            "continues (stop-loss, instant profit, and 15-minute rules are unchanged). "
+            "Live signing uses the in-memory Set Wallet key (ephemeral) or "
+            "<font face='Courier'>SOLANA_PRIVATE_KEY</font> in <font face='Courier'>.env</font> — "
+            "re-Set Wallet after a full restart if you rely on the dashboard key only. "
+            "Windows keep-awake and a Flask supervisor/watchdog help prevent sleep and silent exits.",
+            styles["body"],
+        )
+    )
 
     story.append(PageBreak())
 
@@ -690,6 +706,8 @@ def _write_pdf(out: Path, styles) -> None:
             bottomMargin=0.75 * inch,
             title="Sol Dex Bot Trader User Guide",
             author="Sol Dex Bot Trader",
+            creator=f"Sol Dex Bot Trader v{_app_version()}",
+            subject=f"User guide built {_guide_built_stamp()}",
         )
         doc.build(story, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
         last_err: OSError | None = None

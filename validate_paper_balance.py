@@ -191,14 +191,19 @@ def test_entry_allowed_when_balance_drops_below_min_fund():
     print("PASS: entry allowed when balance drops below MIN_FUND_SOL during session")
 
 
-def test_paper_session_hours_default_24():
-    assert Config.PAPER_SESSION_HOURS == 24
-    mgr = PaperSessionManager()
-    with patch.object(Config, "PAPER_SESSION_HOURS", 24):
+def test_paper_session_hours_default_continuous():
+    # Code default is 0 (continuous). Local .env may override — pin for this test.
+    with patch.object(Config, "PAPER_SESSION_HOURS", 0):
+        mgr = PaperSessionManager()
         mgr.start_session()
-        remaining = mgr.remaining_sec()
+        assert mgr.is_unlimited() is True
+        assert mgr.is_session_expired() is False
+    with patch.object(Config, "PAPER_SESSION_HOURS", 24):
+        mgr2 = PaperSessionManager()
+        mgr2.start_session()
+        remaining = mgr2.remaining_sec()
         assert abs(remaining - 24 * 3600) < 1.0
-    print("PASS: paper session defaults to 24 hours")
+    print("PASS: paper session defaults to continuous (0 hours)")
 
 
 def test_min_fund_waived_after_paper_buy():
@@ -388,7 +393,7 @@ def main():
     test_min_fund_waived_after_paper_buy()
     test_journal_live_trade_waives_paper_restart()
     test_paper_bot_start_with_waiver_below_min_fund()
-    test_paper_session_hours_default_24()
+    test_paper_session_hours_default_continuous()
     test_balance_depletion_ends_session_preserves_stats()
     test_entry_attempt_triggers_bot_stop()
     test_status_api_includes_balance_fields()

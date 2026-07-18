@@ -1289,10 +1289,10 @@
 
           <div class="card paper-session-panel" id="paperSessionPanel">
             <div class="pnl-header">
-              <h2>Paper Session — 24h Test</h2>
+              <h2>Paper Session</h2>
               <span id="paperSessionBadge" class="badge badge-dry">PAPER</span>
             </div>
-            <p class="compact-hint" style="margin-bottom:0.5rem">24h paper test — resets on new session. Not in live tax records.</p>
+            <p class="compact-hint" style="margin-bottom:0.5rem">Paper session runs until you Stop (optional timed limit via PAPER_SESSION_HOURS). Open trades resume after restart. Not in live tax records.</p>
             <div class="row" style="margin-bottom:0.75rem; flex-wrap:wrap; gap:1rem">
               <div>
                 <div class="stat-label">Session Status</div>
@@ -2242,6 +2242,7 @@
     }
 
     let paperSessionCountdownActive = false;
+    let paperSessionUnlimited = false;
     let paperCountdownTimer = null;
     let paperRemainingAtSync = 0;
     let paperSyncedAtMs = 0;
@@ -2259,6 +2260,10 @@
     function tickPaperSessionCountdown() {
       if (!paperSessionCountdownActive) {
         document.getElementById("paperSessionRemaining").textContent = "—";
+        return;
+      }
+      if (paperSessionUnlimited) {
+        document.getElementById("paperSessionRemaining").textContent = "Continuous";
         return;
       }
       const elapsedSec = (serverNowMs() - paperSyncedAtMs) / 1000;
@@ -2305,12 +2310,19 @@
         paperSessionStatusLabel(status, s.paper_stop_reason);
 
       paperSessionCountdownActive = status === "active";
+      paperSessionUnlimited = !!(s.paper_session_unlimited || s.paper_session_remaining_sec == null);
       if (paperSessionCountdownActive) {
-        paperRemainingAtSync = Math.max(0, s.paper_session_remaining_sec || 0);
-        paperSyncedAtMs = serverNowMs();
-        tickPaperSessionCountdown();
+        if (paperSessionUnlimited) {
+          paperRemainingAtSync = 0;
+          document.getElementById("paperSessionRemaining").textContent = "Continuous";
+        } else {
+          paperRemainingAtSync = Math.max(0, s.paper_session_remaining_sec || 0);
+          paperSyncedAtMs = serverNowMs();
+          tickPaperSessionCountdown();
+        }
       } else {
         paperRemainingAtSync = 0;
+        paperSessionUnlimited = false;
         const remainingEl = document.getElementById("paperSessionRemaining");
         if (status === "ended" && s.paper_stop_reason === "balance_depleted") {
           remainingEl.textContent = "Balance depleted";

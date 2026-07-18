@@ -139,6 +139,9 @@ class PaperSessionManager:
     def _duration_sec(self) -> float:
         return max(float(Config.PAPER_SESSION_HOURS), 0.0) * 3600.0
 
+    def is_unlimited(self) -> bool:
+        return self._duration_sec() <= 0
+
     @staticmethod
     def _copy_session(session: PaperSession, active: bool) -> PaperSession:
         return PaperSession(
@@ -150,9 +153,34 @@ class PaperSessionManager:
             last_trade_at=session.last_trade_at,
         )
 
-    def start_session(self) -> None:
+    def start_session(self, *, resume: bool = False) -> None:
+        """Start a paper session.
+
+        resume=True reactivates the prior session (or keeps the active one)
+        without wiping simulated balance — used when restoring open positions
+        after a process restart.
+        """
         now = self._clock()
         with self._lock:
+            if resume and self._session.active:
+                self._persist()
+                return
+            if resume and (
+                self._session.start_time is not None or self._last_session.start_time is not None
+            ):
+                base = self._session if self._session.start_time is not None else self._last_session
+                self._session = PaperSession(
+                    start_time=base.start_time or now,
+                    active=True,
+                    simulated_balance=base.simulated_balance
+                    if base.simulated_balance > 0
+                    else self._target_balance_sol,
+                    stop_reason=None,
+                    trade_count=base.trade_count,
+                    last_trade_at=base.last_trade_at,
+                )
+                self._persist()
+                return
             self._session = PaperSession(
                 start_time=now,
                 active=True,
@@ -250,7 +278,8 @@ class PaperSessionManager:
                 return 0.0
             duration = self._duration_sec()
             if duration <= 0:
-                return 0.0
+                # Unlimited sessions: expose a large sentinel for UI countdown skip.
+                return float("inf")
             return max(0.0, duration - (self._clock() - self._session.start_time))
 
     def record_paper_pnl(self, pnl_sol: float, symbol: str = "") -> None:
@@ -403,12 +432,17 @@ class PaperSessionManager:
 
     def _stats_from(self, session: PaperSession, active: bool) -> dict:
         remaining = self.remaining_sec() if active else 0.0
+        if remaining == float("inf"):
+            remaining_out = None
+        else:
+            remaining_out = remaining
         pnl = self._paper_pnl_fields()
         stats = {
             "paper_session_active": active,
             "paper_session_status": self._session_status_label(session, active),
             "paper_session_started_at": session.start_time,
-            "paper_session_remaining_sec": remaining,
+            "paper_session_remaining_sec": remaining_out,
+            "paper_session_unlimited": self.is_unlimited() and active,
             "paper_simulated_balance_sol": session.simulated_balance,
             "paper_target_balance_sol": self._target_balance_sol,
             "paper_stop_reason": session.stop_reason,
@@ -432,6 +466,7 @@ class PaperSessionManager:
                 "paper_session_status": "not_started",
                 "paper_session_started_at": None,
                 "paper_session_remaining_sec": 0.0,
+                "paper_session_unlimited": False,
                 "paper_simulated_balance_sol": self._target_balance_sol,
                 "paper_target_balance_sol": self._target_balance_sol,
                 "paper_stop_reason": None,
