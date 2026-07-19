@@ -563,6 +563,28 @@
       align-items: center;
       font-size: 0.82rem;
     }
+    .paper-quote-currency {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.85rem;
+      align-items: center;
+      margin: 0.15rem 0 0.35rem;
+      font-size: 0.78rem;
+      color: var(--text);
+    }
+    .paper-quote-currency label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      cursor: pointer;
+      user-select: none;
+      font-weight: 500;
+    }
+    .paper-quote-currency input[type="radio"] {
+      width: auto;
+      margin: 0;
+      accent-color: var(--accent, #3b82f6);
+    }
     .setup-balance-display {
       font-weight: 600;
       font-size: 0.95rem;
@@ -925,8 +947,17 @@
               </td>
               <td>
                 <div id="paperBalancePanel">
+                  <div class="paper-quote-currency" role="radiogroup" aria-label="Paper quote currency">
+                    <label><input type="radio" name="paperQuoteCurrency" value="usdc" id="paperQuoteUsdc"> USDC</label>
+                    <label><input type="radio" name="paperQuoteCurrency" value="usdt" id="paperQuoteUsdt"> USDT</label>
+                    <label><input type="radio" name="paperQuoteCurrency" value="sol" id="paperQuoteSol" checked> Solana</label>
+                  </div>
+                  <label id="stableQuoteSolWsolRow" class="paper-quote-currency" style="display:none;margin-top:0">
+                    <input type="checkbox" id="stableQuoteTradeSolWsol">
+                    Trade SOL/WSOL when daily +$5
+                  </label>
                   <div class="setup-inline" style="margin-top:0.25rem">
-                    <select id="paperBalanceInput" aria-label="Paper balance SOL">
+                    <select id="paperBalanceInput" aria-label="Paper balance amount">
                       <option value="0.75">0.75 SOL</option>
                       <option value="1.00">1.00 SOL</option>
                       <option value="1.50">1.50 SOL</option>
@@ -941,7 +972,8 @@
                     <button class="btn-secondary" type="button" id="btnSetPaperBalance">Set</button>
                     <button class="btn-secondary" type="button" id="btnResetPaperBalance">Reset</button>
                   </div>
-                  <p class="compact-hint">0.75-5 SOL · start needs >=2.00 · resets when you Stop Bot</p>
+                  <p class="compact-hint" id="paperBalanceHint">0.75-5 SOL · start needs >=2.00 · resets when you Stop Bot</p>
+                  <p class="compact-hint" id="paperBalanceConversion" style="display:none"></p>
                 </div>
                 <div id="liveTradeablePanel" style="display:none">
                   <div class="setup-inline" style="margin-top:0.25rem">
@@ -1752,6 +1784,10 @@
     let paperStartingBalanceSol = 2.00;
     let paperRunningBalance = null;
     let paperBalanceTouched = false;
+    let paperQuoteCurrency = "sol";
+    let stableQuoteTradeSolWsol = false;
+    let latestSolPriceUsd = null;
+    let liveStableQuoteEnabled = false;
     let minPaperBalanceSol = 0.75;
     let maxPaperBalanceSol = 5.0;
     let liveTradeableBalanceSol = 0.75;
@@ -2385,6 +2421,123 @@
       return paperRunningBalance ?? paperStartingBalanceSol;
     }
 
+    function normalizePaperQuoteCurrency(value) {
+      const v = String(value || "").trim().toLowerCase();
+      if (v === "usdc" || v === "usdt" || v === "sol") return v;
+      return "sol";
+    }
+
+    function paperQuoteLabel(currency) {
+      const c = normalizePaperQuoteCurrency(currency);
+      if (c === "usdc") return "USDC";
+      if (c === "usdt") return "USDT";
+      return "SOL";
+    }
+
+    function solToStableUsd(solAmount, solPrice) {
+      const sol = Number(solAmount);
+      const px = Number(solPrice);
+      if (!Number.isFinite(sol) || !Number.isFinite(px) || px <= 0) return null;
+      return sol * px;
+    }
+
+    function formatUsdAmount(amount) {
+      if (!Number.isFinite(amount)) return "—";
+      return "$" + amount.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    }
+
+    function formatPaperAmountLabel(solAmount, currency, solPrice) {
+      const sol = Number(solAmount);
+      const solTxt = Number.isFinite(sol) ? sol.toFixed(2) : "—";
+      const c = normalizePaperQuoteCurrency(currency);
+      if (c === "sol") return solTxt + " SOL";
+      const usd = solToStableUsd(sol, solPrice);
+      const unit = paperQuoteLabel(c);
+      if (usd == null) return solTxt + " SOL-eq (" + unit + ")";
+      return "~" + formatUsdAmount(usd) + " " + unit;
+    }
+
+    function getSelectedPaperQuoteCurrency() {
+      const checked = document.querySelector('input[name="paperQuoteCurrency"]:checked');
+      if (checked) return normalizePaperQuoteCurrency(checked.value);
+      return normalizePaperQuoteCurrency(paperQuoteCurrency);
+    }
+
+    function setPaperQuoteCurrencyUI(currency) {
+      paperQuoteCurrency = normalizePaperQuoteCurrency(currency);
+      const el = document.querySelector(
+        'input[name="paperQuoteCurrency"][value="' + paperQuoteCurrency + '"]'
+      );
+      if (el) el.checked = true;
+    }
+
+    function updatePaperBalanceOptionLabels() {
+      const el = document.getElementById("paperBalanceInput");
+      if (!el || !el.options) return;
+      const currency = getSelectedPaperQuoteCurrency();
+      for (const opt of el.options) {
+        opt.textContent = formatPaperAmountLabel(opt.value, currency, latestSolPriceUsd);
+      }
+    }
+
+    function updatePaperBalanceHint() {
+      const hint = document.getElementById("paperBalanceHint");
+      const conv = document.getElementById("paperBalanceConversion");
+      const solWsolRow = document.getElementById("stableQuoteSolWsolRow");
+      const solWsolCb = document.getElementById("stableQuoteTradeSolWsol");
+      if (!hint) return;
+      const currency = getSelectedPaperQuoteCurrency();
+      if (solWsolRow) {
+        solWsolRow.style.display = (currency === "usdc" || currency === "usdt") ? "inline-flex" : "none";
+      }
+      if (solWsolCb) solWsolCb.checked = !!stableQuoteTradeSolWsol;
+      const minFundUsd = solToStableUsd(minPaperFundSol, latestSolPriceUsd);
+      if (currency === "sol") {
+        hint.textContent =
+          "0.75-5 SOL · start needs >=" + minPaperFundSol.toFixed(2) +
+          " · resets when you Stop Bot";
+      } else {
+        const unit = paperQuoteLabel(currency);
+        const fundTxt = minFundUsd != null
+          ? ("~" + formatUsdAmount(minFundUsd) + " " + unit)
+          : (minPaperFundSol.toFixed(2) + " SOL-eq");
+        hint.textContent =
+          "0.75-5 SOL-equivalent in " + unit +
+          " · start needs >=" + minPaperFundSol.toFixed(2) + " SOL (" + fundTxt + ")" +
+          " · wallet simulated in SOL · resets when you Stop Bot";
+        if (stableQuoteTradeSolWsol) {
+          hint.textContent += " · WSOL when SOL 24h day ≥ +$5";
+        }
+        if (!liveStableQuoteEnabled) {
+          hint.textContent += " · live stables gated (paper only)";
+        }
+      }
+      if (conv) {
+        if (currency === "sol" || latestSolPriceUsd == null) {
+          conv.style.display = "none";
+          conv.textContent = "";
+        } else {
+          const selected = document.getElementById("paperBalanceInput");
+          const solAmt = selected ? parseFloat(selected.value) : paperStartingBalanceSol;
+          const usd = solToStableUsd(solAmt, latestSolPriceUsd);
+          conv.style.display = "block";
+          conv.textContent =
+            "SOL " + formatUsdAmount(latestSolPriceUsd) +
+            " · selected ≈ " +
+            (usd != null ? formatUsdAmount(usd) : "—") +
+            " " + paperQuoteLabel(currency);
+        }
+      }
+    }
+
+    function refreshPaperQuoteCurrencyDisplay() {
+      updatePaperBalanceOptionLabels();
+      updatePaperBalanceHint();
+    }
+
     function setPaperBalanceSelect(amount) {
       const el = document.getElementById("paperBalanceInput");
       if (!el || !el.options || !el.options.length) return;
@@ -2394,6 +2547,7 @@
       const exact = Array.from(el.options).find((o) => o.value === target);
       if (exact) {
         el.value = target;
+        refreshPaperQuoteCurrencyDisplay();
         return;
       }
       let best = el.options[0].value;
@@ -2406,6 +2560,7 @@
         }
       }
       el.value = best;
+      refreshPaperQuoteCurrencyDisplay();
     }
 
     function setLiveTradeableSelect(amount) {
@@ -2458,8 +2613,18 @@
         const simulated = status && status.paper_simulated_balance_sol != null
           ? status.paper_simulated_balance_sol
           : (paperRunningBalance ?? paperStartingBalanceSol);
-        if (simEl) simEl.textContent = simulated.toFixed(2) + " SOL";
-        if (startEl) startEl.textContent = paperStartingBalanceSol.toFixed(2) + " SOL";
+        const currency = getSelectedPaperQuoteCurrency();
+        if (simEl) {
+          simEl.textContent = currency === "sol"
+            ? simulated.toFixed(2) + " SOL"
+            : formatPaperAmountLabel(simulated, currency, latestSolPriceUsd) +
+              " (" + simulated.toFixed(2) + " SOL)";
+        }
+        if (startEl) {
+          startEl.textContent = currency === "sol"
+            ? paperStartingBalanceSol.toFixed(2) + " SOL"
+            : formatPaperAmountLabel(paperStartingBalanceSol, currency, latestSolPriceUsd);
+        }
       } else {
         const wallet = status && status.wallet_balance_sol != null
           ? status.wallet_balance_sol
@@ -2489,13 +2654,26 @@
           ? balance
           : (paperRunningBalance ?? paperStartingBalanceSol);
         if (label) label.textContent = "Paper Balance";
-        if (el) el.textContent = simBal.toFixed(2) + " SOL (simulated)";
+        if (el) {
+          const currency = getSelectedPaperQuoteCurrency();
+          if (currency === "sol") {
+            el.textContent = Number(simBal).toFixed(2) + " SOL (simulated)";
+          } else {
+            el.textContent =
+              formatPaperAmountLabel(simBal, currency, latestSolPriceUsd) +
+              " · " + Number(simBal).toFixed(2) + " SOL (simulated)";
+          }
+        }
         currentBalance = simBal;
         if (paperConfiguredLabel) {
           paperConfiguredLabel.style.display = "block";
-          paperConfiguredLabel.innerHTML = 'Configured: <span id="paperStartingBalance">' + paperStartingBalanceSol.toFixed(2) + ' SOL</span>';
+          paperConfiguredLabel.innerHTML =
+            'Configured: <span id="paperStartingBalance">' +
+            formatPaperAmountLabel(paperStartingBalanceSol, getSelectedPaperQuoteCurrency(), latestSolPriceUsd) +
+            '</span>';
         }
         updateStrategyBalanceStatus(true, status);
+        refreshPaperQuoteCurrencyDisplay();
         return;
       }
       if (label) label.textContent = "Wallet Balance";
@@ -3102,6 +3280,22 @@
 
       // Apply server paper balances BEFORE any UI redraw so the dropdown
       // cannot snap back to the stale JS default (0.75).
+      if (s.sol_price_usd != null && Number(s.sol_price_usd) > 0) {
+        latestSolPriceUsd = Number(s.sol_price_usd);
+      }
+      if (s.paper_quote_currency != null) {
+        setPaperQuoteCurrencyUI(s.paper_quote_currency);
+      }
+      if (s.stable_quote_trade_sol_wsol != null) {
+        stableQuoteTradeSolWsol = !!s.stable_quote_trade_sol_wsol;
+      } else if (s.config && s.config.stable_quote_trade_sol_wsol != null) {
+        stableQuoteTradeSolWsol = !!s.config.stable_quote_trade_sol_wsol;
+      }
+      if (s.config && s.config.live_stable_quote_enabled != null) {
+        liveStableQuoteEnabled = !!s.config.live_stable_quote_enabled;
+      } else if (s.live_stable_quote_enabled != null) {
+        liveStableQuoteEnabled = !!s.live_stable_quote_enabled;
+      }
       if (s.paper_simulated_balance_sol != null) {
         paperRunningBalance = s.paper_simulated_balance_sol;
       }
@@ -3432,6 +3626,15 @@
       } else if (cfg.paper_simulated_balance_sol != null) {
         paperStartingBalanceSol = cfg.paper_simulated_balance_sol;
       }
+      if (cfg.paper_quote_currency != null) {
+        setPaperQuoteCurrencyUI(cfg.paper_quote_currency);
+      }
+      if (cfg.stable_quote_trade_sol_wsol != null) {
+        stableQuoteTradeSolWsol = !!cfg.stable_quote_trade_sol_wsol;
+      }
+      if (cfg.live_stable_quote_enabled != null) {
+        liveStableQuoteEnabled = !!cfg.live_stable_quote_enabled;
+      }
       if (cfg.min_paper_simulated_balance_sol != null) {
         minPaperBalanceSol = cfg.min_paper_simulated_balance_sol;
       }
@@ -3452,6 +3655,8 @@
       }
       if (document.getElementById("paperTradeToggle").checked && !paperBalanceTouched) {
         setPaperBalanceSelect(paperStartingBalanceSol);
+      } else {
+        refreshPaperQuoteCurrencyDisplay();
       }
       if (!document.getElementById("paperTradeToggle").checked && !liveTradeableTouched) {
         setLiveTradeableSelect(liveTradeableBalanceSol);
@@ -4121,15 +4326,80 @@
 
     bindChange("paperBalanceInput", () => {
       paperBalanceTouched = true;
+      refreshPaperQuoteCurrencyDisplay();
     });
 
     bindChange("liveTradeableInput", () => {
       liveTradeableTouched = true;
     });
 
+    document.querySelectorAll('input[name="paperQuoteCurrency"]').forEach((radio) => {
+      radio.addEventListener("change", async () => {
+        const currency = getSelectedPaperQuoteCurrency();
+        paperQuoteCurrency = currency;
+        refreshPaperQuoteCurrencyDisplay();
+        const preferPaper =
+          document.getElementById("paperTradeToggle") &&
+          document.getElementById("paperTradeToggle").checked;
+        if (preferPaper) {
+          displayBalanceForMode(
+            paperRunningBalance ?? paperStartingBalanceSol,
+            true,
+            true,
+            { paper_simulated_balance_sol: paperRunningBalance ?? paperStartingBalanceSol }
+          );
+        }
+        try {
+          const r = await api("/api/paper/balance", {
+            method: "POST",
+            body: JSON.stringify({
+              quote_currency: currency,
+              trade_sol_wsol: stableQuoteTradeSolWsol,
+            }),
+          });
+          if (r.paper_quote_currency != null) {
+            setPaperQuoteCurrencyUI(r.paper_quote_currency);
+          }
+          if (r.stable_quote_trade_sol_wsol != null) {
+            stableQuoteTradeSolWsol = !!r.stable_quote_trade_sol_wsol;
+          }
+          refreshPaperQuoteCurrencyDisplay();
+          logActivity("Paper quote currency set to " + paperQuoteLabel(currency));
+        } catch (e) {
+          console.warn("Failed to persist paper quote currency:", e);
+        }
+      });
+    });
+
+    bindChange("stableQuoteTradeSolWsol", async () => {
+      const cb = document.getElementById("stableQuoteTradeSolWsol");
+      stableQuoteTradeSolWsol = !!(cb && cb.checked);
+      refreshPaperQuoteCurrencyDisplay();
+      try {
+        const r = await api("/api/paper/balance", {
+          method: "POST",
+          body: JSON.stringify({ trade_sol_wsol: stableQuoteTradeSolWsol }),
+        });
+        if (r.stable_quote_trade_sol_wsol != null) {
+          stableQuoteTradeSolWsol = !!r.stable_quote_trade_sol_wsol;
+        }
+        refreshPaperQuoteCurrencyDisplay();
+        logActivity(
+          stableQuoteTradeSolWsol
+            ? "Enabled Trade SOL/WSOL when daily +$5"
+            : "Disabled Trade SOL/WSOL when daily +$5"
+        );
+      } catch (e) {
+        console.warn("Failed to persist SOL/WSOL day-gate option:", e);
+      }
+    });
+
     bindClick("btnSetPaperBalance", async () => {
       const input = document.getElementById("paperBalanceInput");
       const amount = parseFloat(input.value);
+      const currency = getSelectedPaperQuoteCurrency();
+      const solWsolCb = document.getElementById("stableQuoteTradeSolWsol");
+      if (solWsolCb) stableQuoteTradeSolWsol = !!solWsolCb.checked;
       if (!Number.isFinite(amount) || amount < minPaperBalanceSol || amount > maxPaperBalanceSol) {
         alert("Select a paper balance between " + minPaperBalanceSol + " and " + maxPaperBalanceSol + " SOL.");
         return;
@@ -4137,13 +4407,23 @@
       try {
         const r = await api("/api/paper/balance", {
           method: "POST",
-          body: JSON.stringify({ amount }),
+          body: JSON.stringify({
+            amount,
+            quote_currency: currency,
+            trade_sol_wsol: stableQuoteTradeSolWsol,
+          }),
         });
         if (r.paper_target_balance_sol != null) {
           paperStartingBalanceSol = r.paper_target_balance_sol;
         }
         if (r.paper_simulated_balance_sol != null) {
           paperRunningBalance = r.paper_simulated_balance_sol;
+        }
+        if (r.paper_quote_currency != null) {
+          setPaperQuoteCurrencyUI(r.paper_quote_currency);
+        }
+        if (r.stable_quote_trade_sol_wsol != null) {
+          stableQuoteTradeSolWsol = !!r.stable_quote_trade_sol_wsol;
         }
         paperBalanceTouched = false;
         setPaperBalanceSelect(paperStartingBalanceSol);
@@ -4156,7 +4436,12 @@
         updateStrategyBalanceStatus(true, r, true);
         updateComputedTradeSize(paperRunningBalance ?? paperStartingBalanceSol, true);
         updateFundingUI(paperRunningBalance ?? paperStartingBalanceSol, true);
-        logActivity("Paper balance set to " + paperStartingBalanceSol.toFixed(2) + " SOL");
+        const label = formatPaperAmountLabel(
+          paperStartingBalanceSol,
+          getSelectedPaperQuoteCurrency(),
+          latestSolPriceUsd
+        );
+        logActivity("Paper balance set to " + label + " (" + paperStartingBalanceSol.toFixed(2) + " SOL)");
       } catch (e) {
         alert("Error: " + e.message);
       }
@@ -4171,6 +4456,9 @@
         if (r.paper_simulated_balance_sol != null) {
           paperRunningBalance = r.paper_simulated_balance_sol;
         }
+        if (r.paper_quote_currency != null) {
+          setPaperQuoteCurrencyUI(r.paper_quote_currency);
+        }
         paperBalanceTouched = false;
         setPaperBalanceSelect(paperStartingBalanceSol);
         displayBalanceForMode(
@@ -4182,7 +4470,12 @@
         updateStrategyBalanceStatus(true, r, true);
         updateComputedTradeSize(paperRunningBalance ?? paperStartingBalanceSol, true);
         updateFundingUI(paperRunningBalance ?? paperStartingBalanceSol, true);
-        logActivity("Paper balance reset to " + paperStartingBalanceSol.toFixed(2) + " SOL");
+        const label = formatPaperAmountLabel(
+          paperStartingBalanceSol,
+          getSelectedPaperQuoteCurrency(),
+          latestSolPriceUsd
+        );
+        logActivity("Paper balance reset to " + label + " (" + paperStartingBalanceSol.toFixed(2) + " SOL)");
       } catch (e) {
         alert("Error: " + e.message);
       }

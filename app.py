@@ -601,10 +601,34 @@ def paper_session():
 @app.route("/api/paper/balance", methods=["POST"])
 def paper_balance_set():
     data = request.get_json(silent=True) or {}
-    if "amount" not in data:
-        return jsonify({"ok": False, "error": "amount is required"}), 400
+    quote_currency = data.get("quote_currency")
+    trade_sol_wsol = data.get("trade_sol_wsol")
+    if trade_sol_wsol is not None:
+        trade_sol_wsol = bool(trade_sol_wsol)
+    if "amount" not in data and quote_currency is None and trade_sol_wsol is None:
+        return jsonify(
+            {"ok": False, "error": "amount, quote_currency, or trade_sol_wsol is required"}
+        ), 400
     try:
-        result = bot_manager.set_paper_balance(float(data["amount"]))
+        if "amount" in data:
+            result = bot_manager.set_paper_balance(
+                float(data["amount"]),
+                quote_currency=quote_currency,
+                trade_sol_wsol=trade_sol_wsol,
+            )
+        elif quote_currency is not None:
+            result = bot_manager.set_paper_quote_currency(
+                str(quote_currency),
+                trade_sol_wsol=trade_sol_wsol,
+            )
+        else:
+            paper_session_manager.set_trade_sol_wsol(bool(trade_sol_wsol))
+            result = {
+                "stable_quote_trade_sol_wsol": paper_session_manager.get_trade_sol_wsol(),
+                "paper_quote_currency": paper_session_manager.get_quote_currency(),
+                "paper_target_balance_sol": paper_session_manager.get_target_balance(),
+                "paper_simulated_balance_sol": paper_session_manager.get_simulated_balance(),
+            }
         return jsonify({"ok": True, **result})
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -722,6 +746,8 @@ def get_config():
     cfg = Config.to_dict()
     cfg["paper_target_balance_sol"] = paper_session_manager.get_target_balance()
     cfg["paper_simulated_balance_sol"] = paper_session_manager.get_simulated_balance()
+    cfg["paper_quote_currency"] = paper_session_manager.get_quote_currency()
+    cfg["stable_quote_trade_sol_wsol"] = paper_session_manager.get_trade_sol_wsol()
     from live_tradeable_balance import live_tradeable_balance_manager
 
     cfg["live_tradeable_balance_sol"] = live_tradeable_balance_manager.get_balance()

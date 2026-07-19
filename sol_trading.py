@@ -23,6 +23,8 @@ from config import (
     is_jitosol_trade_mint,
     is_wsol_trade_mint,
     sol_trading_enabled,
+    stable_quote_sol_wsol_entries_allowed,
+    stable_quote_sol_wsol_path_active,
 )
 from market_regime import REGIME_COLD, detect_market_regime
 from price_feed import PriceFeed
@@ -39,6 +41,50 @@ logger = logging.getLogger(__name__)
 
 def sol_instant_exit_threshold() -> float:
     return Config.SOL_TRADE_INSTANT_EXIT_PCT
+
+
+def sol_day_usd_gain_from_snapshot(sol_snapshot: Optional[dict]) -> Optional[float]:
+    """Absolute USD 24h move for SOL from DexScreener price + h24 %."""
+    snap = sol_snapshot or {}
+    price = snap.get("sol_price_usd")
+    h24 = snap.get("sol_trend_24h_pct")
+    if price is None or h24 is None:
+        return None
+    try:
+        price_f = float(price)
+        h24_f = float(h24)
+    except (TypeError, ValueError):
+        return None
+    if price_f <= 0:
+        return None
+    return day_usd_gain_from_h24(price_f, h24_f)
+
+
+def stable_quote_wsol_entry_qualifies(sol_snapshot: Optional[dict]) -> bool:
+    """True when SOL 24h absolute USD gain is at least the configured +$5 gate."""
+    if not stable_quote_sol_wsol_path_active():
+        return False
+    gain = sol_day_usd_gain_from_snapshot(sol_snapshot)
+    if gain is None:
+        return False
+    return gain >= float(Config.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD)
+
+
+def stable_quote_wsol_entry_skip_reason(sol_snapshot: Optional[dict]) -> Optional[str]:
+    if not stable_quote_sol_wsol_path_active():
+        return "stable-quote SOL/WSOL path off"
+    gain = sol_day_usd_gain_from_snapshot(sol_snapshot)
+    min_gain = float(Config.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD)
+    if gain is None:
+        return "SOL/WSOL: no 24h day-USD data"
+    if gain < min_gain:
+        return f"SOL/WSOL: day USD {gain:+.2f} < +${min_gain:.2f}"
+    return None
+
+
+def stable_quote_wsol_entry_rule_summary() -> str:
+    min_gain = float(Config.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD)
+    return f"buy WSOL when SOL 24h day gain >= +${min_gain:.2f}"
 
 
 def _wsol_price_usd(sol_snapshot: Optional[dict]) -> Optional[float]:
@@ -440,6 +486,165 @@ def merge_sol_trade_watchlist(
     mint = Config.SOL_TRADE_MINT
     filtered = [c for c in watchlist if c.mint != mint]
     candidate = fetch_sol_trade_candidate(price_feed, sol_snapshot=sol_snapshot)
+    if candidate:
+        return [candidate] + filtered
+    return filtered
+
+
+def probe_stable_quote_wsol_status(
+    price_feed: PriceFeed,
+    *,
+    sol_snapshot: Optional[dict] = None,
+    held_mints: Optional[Set[str]] = None,
+    dry_run: bool = True,
+) -> Dict:
+    """Status for USDC/USDT optional WSOL path (24h day-USD +$5 gate)."""
+    path_on = stable_quote_sol_wsol_path_active()
+    entries_ok = stable_quote_sol_wsol_entries_allowed(dry_run=dry_run)
+    if not path_on:
+        return {
+            "enabled": False,
+            "path_active": False,
+            "entries_allowed": False,
+            "asset_type": "stable_quote_wsol",
+        }
+
+    snap = sol_snapshot or {}
+    day_usd = sol_day_usd_gain_from_snapshot(snap)
+    day_pct = day_pct_gain_from_h24(snap.get("sol_trend_24h_pct"))
+    sol_price = _wsol_price_usd(snap)
+    if sol_price:
+        price_feed.update([SOL_MINT])
+        price_feed.set_dex_price(SOL_MINT, sol_price)
+    qualifies = bool(entries_ok and stable_quote_wsol_entry_qualifies(snap))
+    held = held_mints or set()
+    if SOL_MINT in held:
+        entry_status = "in_position"
+    elif not entries_ok:
+        entry_status = "gated_live"
+    else:
+        entry_status = "eligible" if qualifies else "standby"
+
+    return {
+        "enabled": True,
+        "path_active": True,
+        "entries_allowed": entries_ok,
+        "asset_type": "stable_quote_wsol",
+        "mint": SOL_MINT,
+        "symbol": "WSOL",
+        "label": "WSOL",
+        "price_usd": sol_price,
+        "sol_trend_1h_pct": snap.get("sol_trend_1h_pct"),
+        "sol_trend_4h_pct": snap.get("sol_trend_4h_pct"),
+        "sol_trend_24h_pct": snap.get("sol_trend_24h_pct"),
+        "day_usd_gain": day_usd,
+        "day_pct_gain": day_pct,
+        "min_day_usd_gain": float(Config.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD),
+        "qualifies": qualifies,
+        "entry_status": entry_status,
+        "entry_rule_summary": stable_quote_wsol_entry_rule_summary(),
+        "exit_rule_summary": _memecoin_exit_rule_summary(),
+        "skip_reason": stable_quote_wsol_entry_skip_reason(snap)
+        if not qualifies and entries_ok
+        else (
+            None
+            if entries_ok
+            else "live stable quote routing gated (paper-only until LIVE_STABLE_QUOTE_ENABLED)"
+        ),
+        "quote_currency": Config.PAPER_QUOTE_CURRENCY,
+        "live_stable_quote_enabled": Config.LIVE_STABLE_QUOTE_ENABLED,
+    }
+
+
+def fetch_stable_quote_wsol_candidate(
+    price_feed: PriceFeed,
+    *,
+    status: Optional[Dict] = None,
+    sol_snapshot: Optional[dict] = None,
+    dry_run: bool = True,
+) -> Optional[MoverCandidate]:
+    """Build WSOL candidate for stable-quote day-USD gate (always when path on)."""
+    if not stable_quote_sol_wsol_path_active():
+        return None
+    if status is None:
+        status = probe_stable_quote_wsol_status(
+            price_feed, sol_snapshot=sol_snapshot, dry_run=dry_run
+        )
+    if not status.get("enabled"):
+        return None
+
+    current = status.get("price_usd") or _wsol_price_usd(sol_snapshot)
+    if current is None or current <= 0:
+        return None
+
+    pair = _best_pair_for_mint(SOL_MINT)
+    meta = _pair_metadata(pair, SOL_MINT)
+    day_usd = status.get("day_usd_gain")
+    day_pct = status.get("day_pct_gain")
+    if day_usd is None:
+        day_usd = sol_day_usd_gain_from_snapshot(sol_snapshot)
+    if day_pct is None:
+        snap = sol_snapshot or {}
+        day_pct = day_pct_gain_from_h24(snap.get("sol_trend_24h_pct"))
+
+    logger.info(
+        "Stable-quote WSOL: SOL $%.4f day_usd=%s status=%s",
+        current,
+        f"${day_usd:+.2f}" if day_usd is not None else "?",
+        status.get("entry_status"),
+    )
+    return MoverCandidate(
+        mint=SOL_MINT,
+        symbol="WSOL",
+        name="WSOL (stable-quote SOL exposure)",
+        pair_address=meta["pair_address"],
+        dex=meta["dex"],
+        price_usd=current,
+        liquidity_usd=meta["liquidity_usd"],
+        volume_24h_usd=meta["volume_24h_usd"],
+        momentum_pct=0.0,
+        price_change_5m=meta["price_change_5m"],
+        price_change_1h=meta["price_change_1h"],
+        pool_created_at=meta["pool_created_at"],
+        scanned_at=time.time(),
+        source="stable_quote_sol",
+        day_usd_gain=day_usd,
+        day_pct_gain=day_pct,
+    )
+
+
+def merge_stable_quote_wsol_watchlist(
+    watchlist: List[MoverCandidate],
+    price_feed: PriceFeed,
+    *,
+    sol_snapshot: Optional[dict] = None,
+    dry_run: bool = True,
+) -> List[MoverCandidate]:
+    """Insert stable-quote WSOL candidate when USDC/USDT + option enabled."""
+    if not stable_quote_sol_wsol_path_active():
+        return watchlist
+    filtered = [
+        c
+        for c in watchlist
+        if not (c.mint == SOL_MINT and getattr(c, "source", None) == "stable_quote_sol")
+    ]
+    # Avoid duplicating WSOL if classic ENABLE_SOL_TRADING already injected it.
+    if any(c.mint == SOL_MINT for c in filtered):
+        # Still attach day-USD fields onto existing WSOL for the day gate in strategy.
+        for c in filtered:
+            if c.mint == SOL_MINT:
+                gain = sol_day_usd_gain_from_snapshot(sol_snapshot)
+                pct = day_pct_gain_from_h24((sol_snapshot or {}).get("sol_trend_24h_pct"))
+                if gain is not None:
+                    c.day_usd_gain = gain
+                if pct is not None:
+                    c.day_pct_gain = pct
+                if stable_quote_sol_wsol_path_active():
+                    c.source = "stable_quote_sol"
+        return filtered
+    candidate = fetch_stable_quote_wsol_candidate(
+        price_feed, sol_snapshot=sol_snapshot, dry_run=dry_run
+    )
     if candidate:
         return [candidate] + filtered
     return filtered

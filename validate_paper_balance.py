@@ -20,7 +20,9 @@ from trade_activity import trade_activity
 def _reset_manager() -> None:
     with paper_session_manager._lock:
         paper_session_manager._target_balance_sol = 0.75
+        paper_session_manager._quote_currency = "sol"
         Config.PAPER_SIMULATED_BALANCE_SOL = 0.75
+        Config.PAPER_QUOTE_CURRENCY = "sol"
         paper_session_manager._session = PaperSession()
         paper_session_manager._last_session = PaperSession()
     with pnl_tracker._lock:
@@ -311,9 +313,37 @@ def test_api_set_paper_balance():
     data = resp.get_json()
     assert data["ok"] is True
     assert abs(data["paper_target_balance_sol"] - 2.0) < 1e-9
+    assert data.get("paper_quote_currency") == "sol"
     resp_high = client.post("/api/paper/balance", json={"amount": 6.0})
     assert resp_high.status_code == 400
     print("PASS: POST /api/paper/balance sets target balance and rejects above max")
+
+
+def test_api_set_paper_quote_currency():
+    from app import app
+
+    _reset_manager()
+    client = app.test_client()
+    resp = client.post(
+        "/api/paper/balance",
+        json={"amount": 2.0, "quote_currency": "usdc"},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["paper_quote_currency"] == "usdc"
+    assert abs(data["paper_target_balance_sol"] - 2.0) < 1e-9
+    assert paper_session_manager.get_quote_currency() == "usdc"
+
+    resp_only = client.post("/api/paper/balance", json={"quote_currency": "usdt"})
+    assert resp_only.status_code == 200
+    only = resp_only.get_json()
+    assert only["paper_quote_currency"] == "usdt"
+    assert abs(only["paper_target_balance_sol"] - 2.0) < 1e-9
+
+    resp_bad = client.post("/api/paper/balance", json={"quote_currency": "btc"})
+    assert resp_bad.status_code == 400
+    print("PASS: paper quote currency persists (usdc/usdt) and rejects invalid")
 
 
 def test_api_reset_paper_balance():
@@ -400,6 +430,7 @@ def main():
     test_end_session_idempotent_after_balance_stop()
     test_set_and_reset_paper_balance()
     test_api_set_paper_balance()
+    test_api_set_paper_quote_currency()
     test_api_reset_paper_balance()
     test_paper_balance_reset_on_stop()
     test_restore_config_bookmark_api()

@@ -340,6 +340,23 @@ class MomentumStrategy:
             )
             return SignalType.NONE
         if is_wsol_trade_mint(candidate.mint):
+            from config import stable_quote_sol_wsol_path_active
+            from sol_trading import sol_day_usd_gain_from_snapshot
+
+            # USDC/USDT optional path: absolute +$5 (or configured) 24h day-USD gate.
+            if stable_quote_sol_wsol_path_active():
+                day_gain = getattr(candidate, "day_usd_gain", None)
+                if day_gain is None:
+                    day_gain = sol_day_usd_gain_from_snapshot(sol_trend_snapshot)
+                min_gain = float(Config.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD)
+                if day_gain is not None and day_gain >= min_gain:
+                    logger.info(
+                        "Buy signal (WSOL stable-quote): day_usd_gain=$%.2f price=%.8f",
+                        day_gain,
+                        current_price,
+                    )
+                    return SignalType.BUY
+                return SignalType.NONE
             if momentum is None:
                 return SignalType.NONE
             if momentum >= Config.effective_entry_momentum_pct():
@@ -515,6 +532,29 @@ class MomentumStrategy:
                 return f"one-strike loss block: {candidate.symbol}"
             return f"loss re-entry cooldown: {candidate.symbol}"
         if is_wsol_trade_mint(candidate.mint):
+            from config import stable_quote_sol_wsol_path_active
+            from sol_trading import (
+                sol_day_usd_gain_from_snapshot,
+                stable_quote_wsol_entry_skip_reason,
+            )
+
+            if stable_quote_sol_wsol_path_active():
+                day_gain = getattr(candidate, "day_usd_gain", None)
+                if day_gain is None:
+                    day_gain = sol_day_usd_gain_from_snapshot(sol_trend_snapshot)
+                snap = dict(sol_trend_snapshot or {})
+                # Ensure skip_reason can recompute from snapshot fields when present.
+                return stable_quote_wsol_entry_skip_reason(snap) or (
+                    None
+                    if day_gain is not None
+                    and day_gain >= float(Config.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD)
+                    else (
+                        f"SOL/WSOL: day USD "
+                        f"{day_gain:+.2f} < +${float(Config.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD):.2f}"
+                        if day_gain is not None
+                        else "SOL/WSOL: no 24h day-USD data"
+                    )
+                )
             if momentum is None:
                 return f"no momentum data: {candidate.symbol}"
             if momentum < Config.effective_entry_momentum_pct():

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from config import Config, normalize_paper_balance_sol
+from config import Config, normalize_paper_balance_sol, normalize_paper_quote_currency
 from pnl_tracker import pnl_tracker
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,8 @@ class PaperSessionManager:
         self._clock = clock or time.time
         self._path = Path(Config.PAPER_SESSION_STATE_PATH)
         self._target_balance_sol = Config.PAPER_SIMULATED_BALANCE_SOL
+        self._quote_currency = Config.PAPER_QUOTE_CURRENCY
+        self._trade_sol_wsol = bool(Config.STABLE_QUOTE_TRADE_SOL_WSOL)
         self._session = PaperSession()
         self._last_session = PaperSession()
         self._load()
@@ -53,11 +55,38 @@ class PaperSessionManager:
         with self._lock:
             return self._target_balance_sol
 
+    def get_quote_currency(self) -> str:
+        with self._lock:
+            return self._quote_currency
+
+    def get_trade_sol_wsol(self) -> bool:
+        with self._lock:
+            return self._trade_sol_wsol
+
+    def set_quote_currency(self, currency: str) -> str:
+        """Persist paper display/quote currency (sol | usdc | usdt)."""
+        normalized = normalize_paper_quote_currency(currency)
+        with self._lock:
+            self._quote_currency = normalized
+            Config.PAPER_QUOTE_CURRENCY = normalized
+        self._persist()
+        return normalized
+
+    def set_trade_sol_wsol(self, enabled: bool) -> bool:
+        """Persist optional Trade SOL/WSOL when daily +$5 (USDC/USDT modes)."""
+        flag = bool(enabled)
+        with self._lock:
+            self._trade_sol_wsol = flag
+            Config.STABLE_QUOTE_TRADE_SOL_WSOL = flag
+        self._persist()
+        return flag
+
     def set_target_balance(self, amount: float) -> float:
         """Set the configured paper balance (persists; used on session start / reset).
 
         Also applies the new amount to the running/last simulated wallet so Set
         takes effect immediately in the UI (not only after Reset / next Start).
+        Balance is always stored as SOL-equivalent regardless of quote currency.
         """
         normalized = normalize_paper_balance_sol(amount)
         with self._lock:
@@ -85,6 +114,8 @@ class PaperSessionManager:
         with self._lock:
             payload = {
                 "target_balance_sol": self._target_balance_sol,
+                "quote_currency": self._quote_currency,
+                "trade_sol_wsol": self._trade_sol_wsol,
                 "session": self._session_to_dict(self._session),
                 "last_session": self._session_to_dict(self._last_session),
             }
@@ -109,6 +140,17 @@ class PaperSessionManager:
                     Config.PAPER_SIMULATED_BALANCE_SOL = self._target_balance_sol
                 except (TypeError, ValueError):
                     pass
+            if "quote_currency" in data:
+                try:
+                    self._quote_currency = normalize_paper_quote_currency(
+                        data["quote_currency"]
+                    )
+                    Config.PAPER_QUOTE_CURRENCY = self._quote_currency
+                except (TypeError, ValueError):
+                    pass
+            if "trade_sol_wsol" in data:
+                self._trade_sol_wsol = bool(data["trade_sol_wsol"])
+                Config.STABLE_QUOTE_TRADE_SOL_WSOL = self._trade_sol_wsol
             if "session" in data:
                 self._session = self._dict_to_session(data["session"])
             if "last_session" in data:
@@ -445,6 +487,8 @@ class PaperSessionManager:
             "paper_session_unlimited": self.is_unlimited() and active,
             "paper_simulated_balance_sol": session.simulated_balance,
             "paper_target_balance_sol": self._target_balance_sol,
+            "paper_quote_currency": self._quote_currency,
+            "stable_quote_trade_sol_wsol": self._trade_sol_wsol,
             "paper_stop_reason": session.stop_reason,
             "recent_paper_trades": self.read_session_trades(session.start_time),
         }
@@ -469,6 +513,8 @@ class PaperSessionManager:
                 "paper_session_unlimited": False,
                 "paper_simulated_balance_sol": self._target_balance_sol,
                 "paper_target_balance_sol": self._target_balance_sol,
+                "paper_quote_currency": self._quote_currency,
+                "stable_quote_trade_sol_wsol": self._trade_sol_wsol,
                 "paper_stop_reason": None,
                 "paper_session_profit_sol": 0.0,
                 "paper_session_losses_sol": 0.0,

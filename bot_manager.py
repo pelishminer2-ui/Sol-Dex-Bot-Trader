@@ -381,7 +381,11 @@ class BotManager:
         return self._bot_loop_active(bot)
 
     def is_mint_trade_allowed(self, mint: str) -> bool:
-        """Return True if mint is on the watchlist or in an open position."""
+        """Return True if mint is on the watchlist, open, or stable-quote WSOL allowlist."""
+        from config import is_stable_quote_wsol_mint
+
+        if is_stable_quote_wsol_mint(mint):
+            return True
         with self._lock:
             bot = self._bot
             if not bot:
@@ -673,6 +677,9 @@ class BotManager:
             watchlist_mint_statuses = bot.watchlist_mint_statuses if bot else None
             watchlist_mint_status = bot.watchlist_mint_status if bot else None
             sol_trade_status = bot.sol_trade_status if bot else None
+            stable_quote_sol_status = (
+                getattr(bot, "stable_quote_sol_status", None) if bot else None
+            )
             weth_trade_status = bot.weth_trade_status if bot else None
             if watchlist_mint_statuses is None and Config.watchlist_mint_enabled():
                 from price_feed import PriceFeed
@@ -690,6 +697,18 @@ class BotManager:
                     sol_trade_status = probe_sol_trade_status(PriceFeed())
                 else:
                     sol_trade_status = {"enabled": False}
+            if stable_quote_sol_status is None:
+                from price_feed import PriceFeed
+                from sol_trading import probe_stable_quote_wsol_status
+
+                from config import stable_quote_sol_wsol_path_active
+
+                if stable_quote_sol_wsol_path_active():
+                    stable_quote_sol_status = probe_stable_quote_wsol_status(
+                        PriceFeed(), dry_run=True
+                    )
+                else:
+                    stable_quote_sol_status = {"enabled": False, "path_active": False}
             if weth_trade_status is None:
                 from price_feed import PriceFeed
                 from weth_trading import probe_weth_trade_status
@@ -835,6 +854,7 @@ class BotManager:
             "watchlist_mint_status": watchlist_mint_status,
             "watchlist_mint_statuses": watchlist_mint_statuses or [],
             "sol_trade_status": sol_trade_status,
+            "stable_quote_sol_status": stable_quote_sol_status,
             "weth_trade_status": weth_trade_status,
             "dexscreener_health": dexscreener_health,
             "jupiter_health": jupiter_health,
@@ -874,6 +894,8 @@ class BotManager:
             "computed_trade_size_sol": computed_trade_size,
             "paper_trade_size_sol": RiskManager().compute_trade_size(0, dry_run=True),
             "paper_simulated_balance_sol": paper_balance,
+            "paper_quote_currency": paper_session_manager.get_quote_currency(),
+            "live_stable_quote_enabled": Config.LIVE_STABLE_QUOTE_ENABLED,
             "funding_ok": (
                 (paper_balance if dry_run else wallet_balance) is not None
                 and (
@@ -1370,16 +1392,44 @@ class BotManager:
             "max_live_tradeable_balance_sol": MAX_LIVE_TRADEABLE_BALANCE_SOL,
         }
 
-    def set_paper_balance(self, amount: float) -> Dict[str, Any]:
-        """Set configured paper balance (SOL); persists across restarts."""
+    def set_paper_balance(
+        self,
+        amount: float,
+        quote_currency: Optional[str] = None,
+        trade_sol_wsol: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Set configured paper balance (SOL-equivalent); persists across restarts."""
         from config import normalize_paper_balance_sol
 
+        if quote_currency is not None:
+            paper_session_manager.set_quote_currency(quote_currency)
+        if trade_sol_wsol is not None:
+            paper_session_manager.set_trade_sol_wsol(bool(trade_sol_wsol))
         normalized = paper_session_manager.set_target_balance(
             normalize_paper_balance_sol(amount)
         )
         return {
             "paper_simulated_balance_sol": paper_session_manager.get_simulated_balance(),
             "paper_target_balance_sol": normalized,
+            "paper_quote_currency": paper_session_manager.get_quote_currency(),
+            "stable_quote_trade_sol_wsol": paper_session_manager.get_trade_sol_wsol(),
+        }
+
+    def set_paper_quote_currency(
+        self,
+        currency: str,
+        trade_sol_wsol: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Persist paper display/quote currency without changing SOL balance."""
+        normalized = paper_session_manager.set_quote_currency(currency)
+        if trade_sol_wsol is not None:
+            paper_session_manager.set_trade_sol_wsol(bool(trade_sol_wsol))
+        return {
+            "paper_quote_currency": normalized,
+            "paper_target_balance_sol": paper_session_manager.get_target_balance(),
+            "paper_simulated_balance_sol": paper_session_manager.get_simulated_balance(),
+            "stable_quote_trade_sol_wsol": paper_session_manager.get_trade_sol_wsol(),
+            "live_stable_quote_enabled": Config.LIVE_STABLE_QUOTE_ENABLED,
         }
 
     def reset_paper_balance(self) -> Dict[str, Any]:
@@ -1388,6 +1438,8 @@ class BotManager:
         return {
             "paper_simulated_balance_sol": paper_session_manager.get_simulated_balance(),
             "paper_target_balance_sol": target,
+            "paper_quote_currency": paper_session_manager.get_quote_currency(),
+            "stable_quote_trade_sol_wsol": paper_session_manager.get_trade_sol_wsol(),
         }
 
     def set_live_tradeable_balance(self, amount: float) -> Dict[str, Any]:

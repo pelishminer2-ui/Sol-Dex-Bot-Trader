@@ -167,6 +167,18 @@ MIN_PAPER_SIMULATED_BALANCE_SOL = 0.75
 MAX_PAPER_SIMULATED_BALANCE_SOL = 5.0
 MIN_PAPER_BALANCE_SOL = MIN_PAPER_SIMULATED_BALANCE_SOL
 MAX_PAPER_BALANCE_SOL = MAX_PAPER_SIMULATED_BALANCE_SOL
+# Paper display / quote unit. Simulated wallet is always stored in SOL-equivalent;
+# USDC/USDT only change UI labels + conversion using live SOL/USD.
+DEFAULT_PAPER_QUOTE_CURRENCY = "sol"
+ALLOWED_PAPER_QUOTE_CURRENCIES = ("sol", "usdc", "usdt")
+# Live Jupiter input-mint routing for USDC/USDT is not enabled yet — paper-first.
+DEFAULT_LIVE_STABLE_QUOTE_ENABLED = False
+# When paper/live quote currency is USDC/USDT, optionally trade WSOL on a
+# +$5 (absolute USD) DexScreener 24h day-gain gate. Does not weaken exits.
+DEFAULT_STABLE_QUOTE_TRADE_SOL_WSOL = False
+DEFAULT_STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD = 5.0
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 DEFAULT_LIVE_TRADEABLE_BALANCE_SOL = 0.75
 MIN_LIVE_TRADEABLE_BALANCE_SOL = 0.75
 MAX_LIVE_TRADEABLE_BALANCE_SOL = 5.0
@@ -312,11 +324,56 @@ def is_sol_trade_mint(mint: str) -> bool:
 
 
 def is_wsol_trade_mint(mint: str) -> bool:
-    """True when trading WSOL (1:1 SOL wrap) at memecoin standards."""
-    if not mint or not sol_trading_enabled():
+    """True when trading WSOL (1:1 SOL wrap) at memecoin standards.
+
+    Includes classic ENABLE_SOL_TRADING + SOL_TRADE_MINT=WSOL, and the optional
+    stable-quote path (USDC/USDT + Trade SOL/WSOL when daily +$5).
+    """
+    if not mint or mint.strip() != SOL_MINT:
         return False
-    trade_mint = (Config.SOL_TRADE_MINT or "").strip()
-    return trade_mint == SOL_MINT and mint.strip() == SOL_MINT
+    if sol_trading_enabled() and (Config.SOL_TRADE_MINT or "").strip() == SOL_MINT:
+        return True
+    return stable_quote_sol_wsol_path_active()
+
+
+def stable_quote_sol_wsol_path_active() -> bool:
+    """True when quote currency is USDC/USDT and the SOL/WSOL day-gate option is on."""
+    if not getattr(Config, "STABLE_QUOTE_TRADE_SOL_WSOL", False):
+        return False
+    currency = str(getattr(Config, "PAPER_QUOTE_CURRENCY", "sol") or "sol").lower()
+    return currency in ("usdc", "usdt")
+
+
+def stable_quote_mint() -> Optional[str]:
+    """USDC or USDT mint for Jupiter quote legs when stable-quote mode is active."""
+    currency = str(getattr(Config, "PAPER_QUOTE_CURRENCY", "sol") or "sol").lower()
+    if currency == "usdc":
+        return USDC_MINT
+    if currency == "usdt":
+        return USDT_MINT
+    return None
+
+
+def is_stable_quote_wsol_mint(mint: str) -> bool:
+    """True for native/wrapped SOL (So1111…112) under USDC/USDT quote mode + option."""
+    if not mint or mint.strip() != SOL_MINT:
+        return False
+    return stable_quote_sol_wsol_path_active()
+
+
+def is_stable_wsol_exchange_pair(input_mint: str, output_mint: str) -> bool:
+    """True for Jupiter USDC↔WSOL or USDT↔WSOL (mint So1111…112)."""
+    stables = {USDC_MINT, USDT_MINT}
+    a = (input_mint or "").strip()
+    b = (output_mint or "").strip()
+    return (a in stables and b == SOL_MINT) or (a == SOL_MINT and b in stables)
+
+
+def stable_quote_sol_wsol_entries_allowed(*, dry_run: bool) -> bool:
+    """WSOL↔USDC/USDT is allowed whenever the optional path is on (paper + live)."""
+    # dry_run kept for call-site compatibility; WSOL leg is explicitly allowlisted.
+    _ = dry_run
+    return stable_quote_sol_wsol_path_active()
 
 
 def is_sol_proxy_trade_mint(mint: str) -> bool:
@@ -989,6 +1046,17 @@ def normalize_paper_balance_sol(value: float) -> float:
             f"paper balance must be at most {MAX_PAPER_SIMULATED_BALANCE_SOL} SOL"
         )
     return amount
+
+
+def normalize_paper_quote_currency(value: str) -> str:
+    """Validate paper quote/display currency (sol | usdc | usdt)."""
+    currency = str(value or "").strip().lower()
+    if currency not in ALLOWED_PAPER_QUOTE_CURRENCIES:
+        raise ValueError(
+            "paper quote currency must be one of: "
+            + ", ".join(ALLOWED_PAPER_QUOTE_CURRENCIES)
+        )
+    return currency
 
 
 def normalize_live_tradeable_balance_sol(value: float) -> float:
@@ -1901,6 +1969,29 @@ class Config:
     except ValueError:
         PAPER_SIMULATED_BALANCE_SOL = DEFAULT_PAPER_SIMULATED_BALANCE_SOL
 
+    try:
+        PAPER_QUOTE_CURRENCY = normalize_paper_quote_currency(
+            os.getenv("PAPER_QUOTE_CURRENCY", DEFAULT_PAPER_QUOTE_CURRENCY)
+        )
+    except ValueError:
+        PAPER_QUOTE_CURRENCY = DEFAULT_PAPER_QUOTE_CURRENCY
+
+    LIVE_STABLE_QUOTE_ENABLED = os.getenv(
+        "LIVE_STABLE_QUOTE_ENABLED",
+        "true" if DEFAULT_LIVE_STABLE_QUOTE_ENABLED else "false",
+    ).lower() in ("1", "true", "yes", "on")
+
+    STABLE_QUOTE_TRADE_SOL_WSOL = os.getenv(
+        "STABLE_QUOTE_TRADE_SOL_WSOL",
+        "true" if DEFAULT_STABLE_QUOTE_TRADE_SOL_WSOL else "false",
+    ).lower() in ("1", "true", "yes", "on")
+    STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD = float(
+        os.getenv(
+            "STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD",
+            str(DEFAULT_STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD),
+        )
+    )
+
     _live_tradeable_raw = float(
         os.getenv(
             "LIVE_TRADEABLE_BALANCE_SOL", str(DEFAULT_LIVE_TRADEABLE_BALANCE_SOL)
@@ -2642,6 +2733,11 @@ class Config:
             "windows_keep_awake": cls.WINDOWS_KEEP_AWAKE,
             "auto_resume_on_start": cls.AUTO_RESUME_ON_START,
             "paper_simulated_balance_sol": cls.PAPER_SIMULATED_BALANCE_SOL,
+            "paper_quote_currency": cls.PAPER_QUOTE_CURRENCY,
+            "live_stable_quote_enabled": cls.LIVE_STABLE_QUOTE_ENABLED,
+            "stable_quote_trade_sol_wsol": cls.STABLE_QUOTE_TRADE_SOL_WSOL,
+            "stable_quote_sol_min_daily_gain_usd": cls.STABLE_QUOTE_SOL_MIN_DAILY_GAIN_USD,
+            "allowed_paper_quote_currencies": list(ALLOWED_PAPER_QUOTE_CURRENCIES),
             "min_paper_simulated_balance_sol": MIN_PAPER_SIMULATED_BALANCE_SOL,
             "max_paper_simulated_balance_sol": MAX_PAPER_SIMULATED_BALANCE_SOL,
             "min_paper_balance_sol": MIN_PAPER_BALANCE_SOL,

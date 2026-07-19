@@ -5,7 +5,28 @@ import threading
 import time
 from typing import List, Optional
 
-from config import Config, SOL_MINT, companion_slot_open, effective_stop_loss_pct, instant_profit_exempt_from_min_net_win, is_jitosol_trade_mint, is_sol_trade_mint, is_wbtc_watchlist_mint, is_weth_trade_mint, proxy_companion_slot_open, sol_trading_enabled, stop_loss_applies_for_mint, wbtc_min_net_win_threshold, wbtc_profit_gate_applies, wbtc_companion_slot_open, weth_trading_enabled
+from config import (
+    Config,
+    SOL_MINT,
+    companion_slot_open,
+    effective_stop_loss_pct,
+    instant_profit_exempt_from_min_net_win,
+    is_jitosol_trade_mint,
+    is_sol_trade_mint,
+    is_wbtc_watchlist_mint,
+    is_weth_trade_mint,
+    proxy_companion_slot_open,
+    sol_trading_enabled,
+    stable_quote_sol_wsol_entries_allowed,
+    stable_quote_sol_wsol_path_active,
+    stable_quote_mint,
+    is_stable_quote_wsol_mint,
+    stop_loss_applies_for_mint,
+    wbtc_min_net_win_threshold,
+    wbtc_profit_gate_applies,
+    wbtc_companion_slot_open,
+    weth_trading_enabled,
+)
 from dexscreener_client import get_dexscreener_client
 from jupiter_client import get_jupiter_client
 from jupiter import JupiterExecutor, SwapQuote
@@ -48,7 +69,12 @@ from watchlist_scanner import (
     is_pinned_watchlist_mint,
     probe_all_watchlist_statuses,
 )
-from sol_trading import merge_sol_trade_watchlist, probe_sol_trade_status
+from sol_trading import (
+    merge_sol_trade_watchlist,
+    merge_stable_quote_wsol_watchlist,
+    probe_sol_trade_status,
+    probe_stable_quote_wsol_status,
+)
 from weth_trading import merge_weth_trade_watchlist, probe_weth_trade_status
 
 logger = logging.getLogger(__name__)
@@ -142,6 +168,7 @@ class TradingBot:
         self.watchlist_mint_statuses: List[dict] = []
         self.watchlist_mint_status: Optional[dict] = None
         self.sol_trade_status: Optional[dict] = None
+        self.stable_quote_sol_status: Optional[dict] = None
         self.weth_trade_status: Optional[dict] = None
         self.scan_count: int = 0
         self.scan_in_progress: bool = False
@@ -495,12 +522,37 @@ class TradingBot:
     def _merge_sol_trade_candidate(self) -> None:
         if not sol_trading_enabled():
             self.sol_trade_status = {"enabled": False}
+        else:
+            self._refresh_sol_trade_status()
+            self.watchlist = merge_sol_trade_watchlist(
+                self.watchlist,
+                self.price_feed,
+                sol_snapshot=self.sol_trend_snapshot,
+            )
+        self._merge_stable_quote_wsol_candidate()
+
+    def _refresh_stable_quote_wsol_status(self) -> None:
+        if not stable_quote_sol_wsol_path_active():
+            self.stable_quote_sol_status = {"enabled": False, "path_active": False}
             return
-        self._refresh_sol_trade_status()
-        self.watchlist = merge_sol_trade_watchlist(
+        held = {p.mint for p in self.strategy.positions}
+        self.stable_quote_sol_status = probe_stable_quote_wsol_status(
+            self.price_feed,
+            sol_snapshot=self.sol_trend_snapshot,
+            held_mints=held,
+            dry_run=self.dry_run,
+        )
+
+    def _merge_stable_quote_wsol_candidate(self) -> None:
+        if not stable_quote_sol_wsol_path_active():
+            self.stable_quote_sol_status = {"enabled": False, "path_active": False}
+            return
+        self._refresh_stable_quote_wsol_status()
+        self.watchlist = merge_stable_quote_wsol_watchlist(
             self.watchlist,
             self.price_feed,
             sol_snapshot=self.sol_trend_snapshot,
+            dry_run=self.dry_run,
         )
 
     def _refresh_pinned_watchlist_status(self) -> None:
@@ -694,6 +746,27 @@ class TradingBot:
             )
             if sol_candidate:
                 qualified_pinned.append(sol_candidate)
+        if (
+            stable_quote_sol_wsol_entries_allowed(dry_run=self.dry_run)
+            and self.stable_quote_sol_status
+            and self.stable_quote_sol_status.get("qualifies")
+        ):
+            wsol_candidate = next(
+                (
+                    c
+                    for c in self.watchlist
+                    if c.mint == SOL_MINT
+                    and getattr(c, "source", None) == "stable_quote_sol"
+                ),
+                None,
+            )
+            if wsol_candidate is None:
+                wsol_candidate = next(
+                    (c for c in self.watchlist if c.mint == SOL_MINT),
+                    None,
+                )
+            if wsol_candidate and wsol_candidate not in qualified_pinned:
+                qualified_pinned.append(wsol_candidate)
         if weth_trading_enabled() and self.weth_trade_status and self.weth_trade_status.get("qualifies"):
             weth_candidate = next(
                 (c for c in self.watchlist if is_weth_trade_mint(c.mint)),
@@ -718,6 +791,60 @@ class TradingBot:
             return latest
         prices = self.price_feed.update([SOL_MINT])
         return prices.get(SOL_MINT)
+
+    def _stable_quote_mint_for_trade(self, mint: str) -> Optional[str]:
+        """USDC/USDT mint when trading WSOL (So1111…112) under stable-quote mode."""
+        if not is_stable_quote_wsol_mint(mint):
+            return None
+        return stable_quote_mint()
+
+    def _jupiter_buy(
+        self,
+        token_mint: str,
+        sol_amount: float,
+        *,
+        use_cache: bool = True,
+    ):
+        assert self.jupiter
+        quote_mint = self._stable_quote_mint_for_trade(token_mint)
+        if quote_mint:
+            return self.jupiter.buy_token(
+                token_mint,
+                sol_amount,
+                use_cache=use_cache,
+                quote_mint=quote_mint,
+                sol_price_usd=self._sol_price_usd(),
+            )
+        return self.jupiter.buy_token(token_mint, sol_amount, use_cache=use_cache)
+
+    def _jupiter_sell(
+        self,
+        token_mint: str,
+        token_amount_raw: int,
+        *,
+        use_cache: bool = False,
+        allow_high_impact: bool = False,
+    ):
+        assert self.jupiter
+        quote_mint = self._stable_quote_mint_for_trade(token_mint)
+        if quote_mint:
+            return self.jupiter.sell_token(
+                token_mint,
+                token_amount_raw,
+                use_cache=use_cache,
+                allow_high_impact=allow_high_impact,
+                quote_mint=quote_mint,
+                sol_price_usd=self._sol_price_usd(),
+            )
+        return self.jupiter.sell_token(
+            token_mint,
+            token_amount_raw,
+            use_cache=use_cache,
+            allow_high_impact=allow_high_impact,
+        )
+
+    def _quote_sol_flow(self, quote) -> tuple[float, float]:
+        return quote_sol_flow(quote, sol_price_usd=self._sol_price_usd())
 
     def _fetch_mint_liquidity_usd(self, mint: str) -> Optional[float]:
         """Best-pool USD liquidity from DexScreener (cached client)."""
@@ -759,7 +886,7 @@ class TradingBot:
 
         attempts = FORCED_SELL_QUOTE_RETRIES if forced else 1
         for attempt in range(1, attempts + 1):
-            quote = self.jupiter.sell_token(
+            quote = self._jupiter_sell(
                 position.mint,
                 token_raw,
                 use_cache=use_cache and attempt == 1,
@@ -821,7 +948,7 @@ class TradingBot:
 
         if quote is None:
             if exit_signal is None:
-                quote = self.jupiter.sell_token(
+                quote = self._jupiter_sell(
                     position.mint, token_raw, allow_high_impact=forced_exit
                 )
             else:
@@ -860,7 +987,7 @@ class TradingBot:
         token_l1 = int(buy_quote.out_amount * portions[0])
         if token_l1 <= 0:
             return None
-        return self.jupiter.sell_token(mint, token_l1, use_cache=True)
+        return self._jupiter_sell(mint, token_l1, use_cache=True)
 
     def _entry_fee_estimate(
         self, trade_size: float, buy_quote: SwapQuote, sell_preview: Optional[SwapQuote]
@@ -961,7 +1088,7 @@ class TradingBot:
         sol_basis = entry_sol_basis(
             position.size_sol, token_raw, position.initial_token_amount_raw
         )
-        _, sol_out = quote_sol_flow(quote)
+        _, sol_out = self._quote_sol_flow(quote)
         net = sol_out - sol_basis - fees
         effective_threshold = threshold if threshold > 0 else 1e-6
         if net < effective_threshold:
@@ -1127,7 +1254,7 @@ class TradingBot:
 
         jupiter_ok = False
         if can_afford:
-            quote = self.jupiter.buy_token(position.mint, trade_size)
+            quote = self._jupiter_buy(position.mint, trade_size)
             jupiter_ok = quote is not None
         return can_afford, jupiter_ok
 
@@ -1143,7 +1270,7 @@ class TradingBot:
         if sol_basis <= 0:
             return None
         fees = self._preview_sell_fees(position, None)
-        _, sol_out = quote_sol_flow(quote)
+        _, sol_out = self._quote_sol_flow(quote)
         return (sol_out - sol_basis - fees) / sol_basis
 
     def _near_instant_profit_threshold(
@@ -1265,7 +1392,7 @@ class TradingBot:
         *,
         use_cache: bool,
     ) -> tuple[Optional[SwapQuote], Optional[float]]:
-        preview_quote = self.jupiter.sell_token(
+        preview_quote = self._jupiter_sell(
             position.mint,
             token_raw,
             use_cache=use_cache,
@@ -2035,12 +2162,12 @@ class TradingBot:
         if trade_size <= 0:
             return False, "trade size is zero"
 
-        quote = self.jupiter.buy_token(candidate.mint, trade_size)
+        quote = self._jupiter_buy(candidate.mint, trade_size)
         if not quote:
             return False, f"no Jupiter route for {candidate.symbol}"
 
         sell_preview = self._preview_l1_sell_quote(candidate.mint, quote)
-        full_sell_preview = self.jupiter.sell_token(
+        full_sell_preview = self._jupiter_sell(
             candidate.mint, quote.out_amount, use_cache=True
         )
         if full_sell_preview:
@@ -2052,8 +2179,8 @@ class TradingBot:
                     f"{Config.MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT:.1f}%",
                 )
             stop = effective_stop_loss_pct(candidate.mint)
-            sol_in, _ = quote_sol_flow(quote)
-            _, sol_out = quote_sol_flow(full_sell_preview)
+            sol_in, _ = self._quote_sol_flow(quote)
+            _, sol_out = self._quote_sol_flow(full_sell_preview)
             if sol_in > 0 and stop_loss_applies_for_mint(candidate.mint):
                 flat_fees = estimate_round_trip_fees_sol(
                     trade_size, quote.raw, full_sell_preview.raw
@@ -2198,7 +2325,7 @@ class TradingBot:
             Config.MAX_WALLET_TRADE_PCT * 100,
         )
 
-        quote = self.jupiter.buy_token(candidate.mint, trade_size)
+        quote = self._jupiter_buy(candidate.mint, trade_size)
         if not quote:
             if candidate.source == "pumpfun":
                 logger.info(
@@ -2211,7 +2338,7 @@ class TradingBot:
             return False
 
         sell_preview = self._preview_l1_sell_quote(candidate.mint, quote)
-        full_sell_preview = self.jupiter.sell_token(
+        full_sell_preview = self._jupiter_sell(
             candidate.mint, quote.out_amount, use_cache=True
         )
         if full_sell_preview:
@@ -2227,8 +2354,8 @@ class TradingBot:
                 logger.warning("Buy blocked: %s", reason)
                 return False
             stop = effective_stop_loss_pct(candidate.mint)
-            sol_in, _ = quote_sol_flow(quote)
-            _, sol_out = quote_sol_flow(full_sell_preview)
+            sol_in, _ = self._quote_sol_flow(quote)
+            _, sol_out = self._quote_sol_flow(full_sell_preview)
             if sol_in > 0 and stop_loss_applies_for_mint(candidate.mint):
                 flat_fees = estimate_round_trip_fees_sol(
                     trade_size, quote.raw, full_sell_preview.raw
@@ -2330,7 +2457,7 @@ class TradingBot:
             token_raw = await self.solana.get_token_balance_raw(candidate.mint)
 
         sol_price = self._sol_price_usd()
-        sol_in, _ = quote_sol_flow(quote)
+        sol_in, _ = self._quote_sol_flow(quote)
         if sol_in <= 0:
             sol_in = trade_size
         token_ui = estimate_token_ui(
@@ -2425,7 +2552,7 @@ class TradingBot:
             logger.info("DCA blocked: %s", check_reason)
             return False
 
-        quote = self.jupiter.buy_token(position.mint, trade_size)
+        quote = self._jupiter_buy(position.mint, trade_size)
         if not quote:
             logger.info("DCA blocked: no Jupiter route for %s", position.symbol)
             return False
@@ -2473,7 +2600,7 @@ class TradingBot:
                 token_raw = added_raw
 
         sol_price = self._sol_price_usd()
-        sol_in, _ = quote_sol_flow(quote)
+        sol_in, _ = self._quote_sol_flow(quote)
         if sol_in <= 0:
             sol_in = trade_size
         token_ui = estimate_token_ui(

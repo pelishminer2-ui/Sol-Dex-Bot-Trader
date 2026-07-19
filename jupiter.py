@@ -3,10 +3,13 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from config import Config, SOL_MINT
+from config import Config, SOL_MINT, USDC_MINT, USDT_MINT
 from jupiter_client import get_jupiter_client
 
 logger = logging.getLogger(__name__)
+
+STABLE_DECIMALS = 6
+_STABLE_MINTS = frozenset({USDC_MINT, USDT_MINT})
 
 
 @dataclass
@@ -140,7 +143,35 @@ class JupiterExecutor:
         sol_amount: float,
         *,
         use_cache: bool = True,
+        quote_mint: Optional[str] = None,
+        sol_price_usd: Optional[float] = None,
     ) -> Optional[SwapQuote]:
+        """Buy token_mint. Default quote is SOL; for WSOL use USDC/USDT when provided."""
+        qmint = (quote_mint or SOL_MINT).strip()
+        if qmint in _STABLE_MINTS:
+            if not sol_price_usd or sol_price_usd <= 0:
+                logger.warning("Stable-quote buy needs sol_price_usd for %s", token_mint)
+                return None
+            stable_raw = int(float(sol_amount) * float(sol_price_usd) * (10**STABLE_DECIMALS))
+            if stable_raw <= 0:
+                return None
+            quote = self.get_quote(qmint, token_mint, stable_raw, use_cache=use_cache)
+            if not quote or not self.validate_quote(
+                quote, max_impact_pct=Config.effective_max_entry_price_impact_pct()
+            ):
+                return None
+            if self.dry_run:
+                logger.info(
+                    "[PAPER] BUY %s with %.4f SOL-eq (~%.2f stable) via %s… -> %d raw (impact %.3f%%)",
+                    token_mint[:8],
+                    sol_amount,
+                    sol_amount * sol_price_usd,
+                    qmint[:6],
+                    quote.out_amount,
+                    quote.price_impact_pct,
+                )
+            return quote
+
         lamports = int(sol_amount * 1e9)
         quote = self.get_quote(SOL_MINT, token_mint, lamports, use_cache=use_cache)
         if not quote or not self.validate_quote(
@@ -165,12 +196,15 @@ class JupiterExecutor:
         *,
         use_cache: bool = False,
         allow_high_impact: bool = False,
+        quote_mint: Optional[str] = None,
+        sol_price_usd: Optional[float] = None,
     ) -> Optional[SwapQuote]:
         if token_amount_raw <= 0:
             logger.warning("Cannot sell zero token amount")
             return None
+        out_mint = (quote_mint or SOL_MINT).strip()
         quote = self.get_quote(
-            token_mint, SOL_MINT, token_amount_raw, use_cache=use_cache
+            token_mint, out_mint, token_amount_raw, use_cache=use_cache
         )
         if not quote:
             return None
@@ -185,13 +219,29 @@ class JupiterExecutor:
                 quote.price_impact_pct,
             )
         if self.dry_run:
-            logger.info(
-                "[PAPER] SELL %s amount=%d raw -> %.6f SOL (impact %.3f%%)",
-                token_mint,
-                token_amount_raw,
-                quote.sol_out,
-                quote.price_impact_pct,
-            )
+            if out_mint in _STABLE_MINTS:
+                usd_out = quote.out_amount / (10**STABLE_DECIMALS)
+                sol_eq = (
+                    usd_out / sol_price_usd
+                    if sol_price_usd and sol_price_usd > 0
+                    else 0.0
+                )
+                logger.info(
+                    "[PAPER] SELL %s amount=%d raw -> %.2f stable (~%.6f SOL-eq) (impact %.3f%%)",
+                    token_mint[:8],
+                    token_amount_raw,
+                    usd_out,
+                    sol_eq,
+                    quote.price_impact_pct,
+                )
+            else:
+                logger.info(
+                    "[PAPER] SELL %s amount=%d raw -> %.6f SOL (impact %.3f%%)",
+                    token_mint,
+                    token_amount_raw,
+                    quote.sol_out,
+                    quote.price_impact_pct,
+                )
             return quote
         return quote
 

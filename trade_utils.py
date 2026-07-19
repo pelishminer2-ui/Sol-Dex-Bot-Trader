@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from config import SOL_MINT
+from config import SOL_MINT, USDC_MINT, USDT_MINT
 from jupiter import SwapQuote
 
 _ACTION_LABELS = {
@@ -10,6 +10,8 @@ _ACTION_LABELS = {
     "sell": "SELL",
     "sell_partial": "SELL_PARTIAL",
 }
+_STABLE_MINTS = frozenset({USDC_MINT, USDT_MINT})
+STABLE_DECIMALS = 6
 
 
 def format_trade_cli(event: dict) -> str:
@@ -69,10 +71,28 @@ def raw_to_ui(raw: int, decimals: int) -> float:
     return raw / (10**decimals)
 
 
-def quote_sol_flow(quote: SwapQuote) -> tuple[float, float]:
-    """Return (sol_in, sol_out) from a Jupiter quote."""
-    sol_in = lamports_to_sol(quote.in_amount) if quote.input_mint == SOL_MINT else 0.0
-    sol_out = lamports_to_sol(quote.out_amount) if quote.output_mint == SOL_MINT else 0.0
+def quote_sol_flow(
+    quote: SwapQuote,
+    sol_price_usd: Optional[float] = None,
+) -> tuple[float, float]:
+    """Return (sol_in, sol_out) from a Jupiter quote.
+
+    SOL legs use lamports. USDC/USDT legs convert via sol_price_usd when provided
+    so WSOL↔stable paper/live sizing stays SOL-equivalent.
+    """
+    if quote.input_mint == SOL_MINT:
+        sol_in = lamports_to_sol(quote.in_amount)
+    elif quote.input_mint in _STABLE_MINTS and sol_price_usd and sol_price_usd > 0:
+        sol_in = (quote.in_amount / (10**STABLE_DECIMALS)) / float(sol_price_usd)
+    else:
+        sol_in = 0.0
+
+    if quote.output_mint == SOL_MINT:
+        sol_out = lamports_to_sol(quote.out_amount)
+    elif quote.output_mint in _STABLE_MINTS and sol_price_usd and sol_price_usd > 0:
+        sol_out = (quote.out_amount / (10**STABLE_DECIMALS)) / float(sol_price_usd)
+    else:
+        sol_out = 0.0
     return sol_in, sol_out
 
 

@@ -339,7 +339,20 @@ class TxAuthorizer:
 
 def context_from_quote(quote) -> AuthorizedTradeContext:
     """Build authorization context from a Jupiter SwapQuote."""
-    if quote.input_mint == SOL_MINT:
+    from config import USDC_MINT, USDT_MINT
+
+    stables = {USDC_MINT, USDT_MINT}
+    # USDC/USDT → WSOL (So1111…112)
+    if quote.input_mint in stables and quote.output_mint == SOL_MINT:
+        side = "buy"
+        mint = SOL_MINT
+        amount_sol = quote.sol_out
+    # WSOL → USDC/USDT
+    elif quote.input_mint == SOL_MINT and quote.output_mint in stables:
+        side = "sell"
+        mint = SOL_MINT
+        amount_sol = quote.sol_in
+    elif quote.input_mint == SOL_MINT:
         side = "buy"
         mint = quote.output_mint
         amount_sol = quote.sol_in
