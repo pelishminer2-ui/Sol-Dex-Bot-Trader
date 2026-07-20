@@ -24,7 +24,7 @@ function Get-AppVersion {
         $v = (Get-Content -Raw $vf).Trim()
         if ($v) { return $v }
     }
-    return "1.1.2"
+    return "1.1.3"
 }
 
 function Write-BuildStamp {

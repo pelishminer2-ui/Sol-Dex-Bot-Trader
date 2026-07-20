@@ -47,9 +47,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.2"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.3"
     except OSError:
-        return "1.1.2"
+        return "1.1.3"
 
 
 def _guide_built_stamp() -> str:
@@ -515,6 +515,24 @@ def build_story(styles) -> list:
                 ),
                 ListItem(
                     Paragraph(
+                        "<b>Paper quote currency</b> — choose <b>USDC</b>, <b>USDT</b>, or <b>Solana</b> "
+                        "next to Paper Balance. The simulated wallet stays SOL-equivalent; USDC/USDT "
+                        "only change labels and conversion using live SOL/USD. Default is Solana.",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
+                        "<b>Trade SOL/WSOL when daily +$5</b> — when quote is USDC or USDT, an optional "
+                        "checkbox appears. Enable it to allow WSOL "
+                        "(mint <font face='Courier'>So11111111111111111111111111111111111111112</font>) "
+                        "entries when SOL’s DexScreener 24h day gain is at least <b>+$5</b> absolute USD. "
+                        "Does <b>not</b> weaken stop-loss, profit exits, or forced sells.",
+                        styles["bullet"],
+                    )
+                ),
+                ListItem(
+                    Paragraph(
                         "<b>Live</b> — real Jupiter swaps with your funded wallet "
                         f"(<b>{FEE_SOL} SOL</b> fee applies on each Live start — see section 8)",
                         styles["bullet"],
@@ -710,6 +728,7 @@ def _write_pdf(out: Path, styles) -> None:
             author="Sol Dex Bot Trader",
             creator=f"Sol Dex Bot Trader v{_app_version()}",
             subject=f"User guide built {_guide_built_stamp()}",
+            # CreationDate / ModDate: reportlab stamps wall-clock now on build
         )
         doc.build(story, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
         last_err: OSError | None = None
