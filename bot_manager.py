@@ -229,10 +229,19 @@ class BotManager:
         }
 
     def clear_wallet(self):
-        """Explicit clear only — never called by paper/live toggle, stop, or force-reset."""
+        """Clear the session wallet after the bot has stopped."""
         with self._lock:
             if self._status in ("running", "starting"):
                 raise RuntimeError("Stop the bot before clearing wallet")
+            self._private_key = None
+            self._public_key = None
+
+    def clear_session_credentials(self) -> None:
+        """Forget ephemeral Set Wallet key from memory (Stop / Force Reset).
+
+        Does not wipe SOLANA_RPC_URL from .env — UI blanks the RPC field separately.
+        """
+        with self._lock:
             self._private_key = None
             self._public_key = None
 
@@ -253,9 +262,10 @@ class BotManager:
     def _clear_idle_state(self) -> None:
         """Force bot manager to stopped/idle (caller must hold _lock).
 
-        Intentionally does NOT clear _private_key / _public_key — session wallet
-        must survive Stop, force-reset, paper↔live toggle, and failed live-start fee.
-        Open positions stay on disk (position_store) so Start can resume them.
+        Session key clearing is handled by clear_session_credentials() from
+        stop()/force_reset() — not here — so paper↔live toggle and failed
+        live-start fee do not wipe Set Wallet. Open positions stay on disk
+        (position_store) so Start can resume them.
         """
         was_paper = self._dry_run
         open_books = has_open_positions(dry_run=was_paper)
@@ -562,6 +572,7 @@ class BotManager:
             thread = self._thread
             if self._status not in ("running", "starting", "stopping"):
                 if thread is None or not thread.is_alive():
+                    self.clear_session_credentials()
                     return {"status": "stopped"}
                 bot = self._bot
             else:
@@ -578,6 +589,7 @@ class BotManager:
 
         with self._lock:
             if thread is None or self._thread is not thread:
+                self.clear_session_credentials()
                 return {"status": self._status}
 
             if thread.is_alive():
@@ -589,11 +601,13 @@ class BotManager:
                 self._error = (
                     "Bot thread did not stop within timeout; click Stop again or Force Reset"
                 )
+                self.clear_session_credentials()
                 return {"status": "stopping"}
 
             was_paper = self._dry_run
             self._clear_idle_state()
 
+        self.clear_session_credentials()
         result: Dict[str, Any] = {"status": "stopped"}
         if was_paper:
             result.update(
@@ -617,7 +631,9 @@ class BotManager:
             bot.stop()
         if thread and thread.is_alive():
             thread.join(timeout=self.STOP_JOIN_TIMEOUT_SEC)
-        return self.reset_to_idle(force=True)
+        result = self.reset_to_idle(force=True)
+        self.clear_session_credentials()
+        return result
 
     def get_status(self) -> Dict[str, Any]:
         self._reconcile_stale_state()
