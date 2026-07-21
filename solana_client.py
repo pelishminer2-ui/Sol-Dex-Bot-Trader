@@ -68,14 +68,15 @@ class SolanaClient:
         return self.rpc_endpoint
 
     async def get_balance(self) -> float:
-        try:
-            response = await self.client.get_balance(self.public_key)
-            if response.value is not None:
-                return response.value / 1e9
-            return 0.0
-        except Exception as exc:
-            logger.error("Error getting balance: %s", exc)
-            return 0.0
+        """Return SOL balance for this client's pubkey. Raises on RPC failure.
+
+        Callers must not treat RPC errors as a zero-balance wallet — that falsely
+        trips MIN_FUND / live-start fee gates when the UI still shows a funded balance.
+        """
+        response = await self.client.get_balance(self.public_key)
+        if response.value is not None:
+            return response.value / 1e9
+        return 0.0
 
     async def get_token_balance(self, mint: str) -> float:
         try:

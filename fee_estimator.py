@@ -602,10 +602,12 @@ def preview_round_trip_with_jupiter(
     if not buy or buy.get("error"):
         return {}
 
-    portions = Config.TAKE_PROFIT_PORTIONS
+    # Empty ladder (Steady Trade / Best Win instant-exit presets) → full-size sell preview.
+    legs = _effective_sell_legs()
+    sell_portion = float(legs[0][0]) if legs else 1.0
     try:
-        token_l1 = int(int(buy.get("outAmount") or 0) * portions[0])
-    except (TypeError, ValueError):
+        token_l1 = int(int(buy.get("outAmount") or 0) * sell_portion)
+    except (TypeError, ValueError, IndexError):
         token_l1 = 0
 
     sell = None

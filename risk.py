@@ -162,6 +162,12 @@ class RiskManager:
         trade_activity.refresh_from_journal()
         waived = self.min_fund_waived()
         if waived:
+            if not dry_run and wallet_balance_sol is None:
+                return (
+                    False,
+                    "cannot verify wallet balance for trade sizing "
+                    f"({self._min_fund_waiver_reason()})",
+                )
             balance = self.effective_wallet_balance(wallet_balance_sol, dry_run)
             trade_size = self.compute_trade_size(
                 wallet_balance_sol if wallet_balance_sol is not None else 0.0,
@@ -171,11 +177,6 @@ class RiskManager:
                 return False, "insufficient SOL balance"
             reserve_plus_trade = Config.MIN_SOL_RESERVE + trade_size
             if not dry_run:
-                if wallet_balance_sol is None:
-                    return (
-                        False,
-                        "cannot verify wallet balance for trade sizing",
-                    )
                 if wallet_balance_sol < reserve_plus_trade:
                     return (
                         False,

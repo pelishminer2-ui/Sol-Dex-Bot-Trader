@@ -779,14 +779,18 @@ class BotManager:
                     for c in bot._trade_candidates()
                 ]
 
-        balance = self.get_balance()
+        balance = None
+        if self.has_wallet():
+            # Always query the real session/.env wallet when present so Live UI
+            # and start gates see the same funded balance (not paper/ephemeral).
+            balance = self.get_balance()
         paper_balance = paper_session_manager.get_simulated_balance()
         tradeable_balance = live_tradeable_balance_manager.get_balance()
+        # Expose on-chain wallet even while last session was paper (toggle Live).
+        wallet_balance = balance
         if dry_run:
             effective_balance = paper_balance
-            wallet_balance = None
         else:
-            wallet_balance = balance
             if balance is not None:
                 effective_balance = min(balance, tradeable_balance)
             else:
@@ -1363,16 +1367,27 @@ class BotManager:
             return list(self._log_buffer)[-limit:]
 
     async def _fetch_balance(self) -> float:
+        """Query native SOL for the session/.env wallet pubkey (never an ephemeral key)."""
         key = self._resolve_private_key()
-        with self._lock:
-            paper = self._dry_run
-        client = SolanaClient(private_key=key, dry_run=paper)
+        if not key:
+            raise RuntimeError("No wallet key configured for balance fetch")
+        # dry_run=False so SolanaClient never invents an ephemeral keypair for this query.
+        client = SolanaClient(private_key=key, dry_run=False)
         try:
+            # Confirm pubkey matches session display address when set.
+            session_pk = self.get_session_public_key()
+            if session_pk and str(client.public_key) != session_pk:
+                logger.warning(
+                    "Balance pubkey mismatch: client=%s session=%s — using session keypair",
+                    client.public_key,
+                    session_pk,
+                )
             return await client.get_balance()
         finally:
             await client.close()
 
     def get_balance(self) -> Optional[float]:
+        """Return wallet SOL balance, or None when RPC/key lookup fails (not 0.0)."""
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(self._fetch_balance())

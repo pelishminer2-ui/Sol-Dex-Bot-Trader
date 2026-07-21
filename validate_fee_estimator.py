@@ -133,6 +133,50 @@ def test_entry_passes_010_sol_with_quote_fees():
     print("PASS: 0.10 SOL entry allowed with Jupiter fee quotes")
 
 
+def test_preview_round_trip_empty_ladder_no_indexerror():
+    """Steady Trade / Best Win use empty TP ladder — must not IndexError on portions[0]."""
+    from fee_estimator import preview_round_trip_with_jupiter
+
+    buy = _sample_buy_quote(0.1)
+    sell = _sample_sell_quote(0.1, portion=1.0)
+
+    def _fake_quote(inp, out, amount, slip, **kwargs):
+        if inp.startswith("So1111"):
+            return buy
+        return sell
+
+    with patch.object(Config, "TAKE_PROFIT_LEVELS", []):
+        with patch.object(Config, "TAKE_PROFIT_PORTIONS", []):
+            with patch("jupiter_client.get_jupiter_client") as mock_get:
+                client = mock_get.return_value
+                client.get_quote.side_effect = _fake_quote
+                preview = preview_round_trip_with_jupiter(
+                    0.1, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+                )
+    assert preview.get("estimated_fees_sol") is not None
+    assert preview.get("fee_source") in ("jupiter", "jupiter_buy_only")
+    print("PASS: empty ladder live fee preview (no IndexError)")
+
+
+def test_config_live_fees_empty_ladder_no_500():
+    """GET /api/config?live_fees=true must not 500 when TP portions are empty."""
+    from app import app
+
+    client = app.test_client()
+    with patch.object(Config, "TAKE_PROFIT_LEVELS", []):
+        with patch.object(Config, "TAKE_PROFIT_PORTIONS", []):
+            with patch(
+                "fee_estimator.preview_round_trip_with_jupiter",
+                side_effect=IndexError("portions[0]"),
+            ):
+                # Even if preview raises, route should fall back (not 500).
+                resp = client.get("/api/config?trade_size_sol=0.1&live_fees=true")
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    data = resp.get_json()
+    assert data.get("estimated_fees_sol") is not None
+    print("PASS: GET /api/config live_fees survives empty ladder / preview errors")
+
+
 def main():
     test_chain_fees_three_tx_round_trip()
     test_weighted_route_dex_bps()
@@ -141,6 +185,8 @@ def main():
     test_l1_covers_fees_at_010_sol()
     test_entry_blocked_when_trade_too_small_for_l1()
     test_entry_passes_010_sol_with_quote_fees()
+    test_preview_round_trip_empty_ladder_no_indexerror()
+    test_config_live_fees_empty_ladder_no_500()
     print("\nAll fee estimator validation tests passed.")
 
 

@@ -177,7 +177,14 @@ async def _collect_async(private_key: str) -> LiveStartFeeResult:
     relay_sig: Optional[str] = None
     client = AsyncClient(Config.get_rpc_endpoint(), commitment=Confirmed)
     try:
-        bal_resp = await client.get_balance(user.pubkey())
+        try:
+            bal_resp = await client.get_balance(user.pubkey())
+        except Exception as exc:
+            raise LiveStartFeeError(
+                f"cannot verify wallet balance for live-start fee via RPC "
+                f"({Config.get_rpc_endpoint()}): {exc}. "
+                f"Apply a working RPC endpoint and retry."
+            ) from exc
         bal_lamports = int(bal_resp.value or 0)
         needed = _lamports(fee_sol + buffer_sol)
         if bal_lamports < needed:
@@ -185,7 +192,8 @@ async def _collect_async(private_key: str) -> LiveStartFeeResult:
             raise LiveStartFeeError(
                 f"Insufficient SOL for live-start fee. Need at least "
                 f"{fee_sol + buffer_sol:.4f} SOL (fee {fee_sol} + relay buffer "
-                f"{buffer_sol}); wallet has {have:.6f} SOL."
+                f"{buffer_sol}); wallet {user.pubkey()} has {have:.6f} SOL "
+                f"(RPC {Config.get_rpc_endpoint()})."
             )
 
         # Leg 1: user → ephemeral relay (fee + buffer for relay tx fee)

@@ -3362,17 +3362,20 @@
       if (s.paper_target_balance_sol != null) {
         paperStartingBalanceSol = s.paper_target_balance_sol;
       }
-      const preferPaperUi =
-        document.getElementById("paperTradeToggle").checked
-        || isPaperTrade(s)
-        || s.balance_simulated;
+      const paperToggleOn = document.getElementById("paperTradeToggle").checked;
+      // Honor the Live/Paper toggle above stale session flags so Live shows on-chain wallet.
+      const preferPaperUi = paperToggleOn
+        || (!document.getElementById("paperTradeToggle") && (isPaperTrade(s) || s.balance_simulated));
+      if (s.wallet_balance_sol != null) {
+        walletBalanceSol = s.wallet_balance_sol;
+      }
       if (s.balance_sol != null || s.balance_simulated || s.wallet_balance_sol != null) {
         displayBalanceForMode(
           preferPaperUi
             ? (s.paper_simulated_balance_sol ?? s.balance_sol)
-            : s.balance_sol,
+            : (s.wallet_balance_sol ?? s.balance_sol),
           preferPaperUi,
-          preferPaperUi || s.balance_simulated,
+          preferPaperUi,
           s
         );
       } else if (preferPaperUi) {

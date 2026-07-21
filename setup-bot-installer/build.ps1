@@ -1,4 +1,4 @@
-ï»¿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
   Build SolDexBotTrader (PyInstaller) + setup.exe (Inno Setup) under setup-bot-installer/.
@@ -24,7 +24,7 @@ function Get-AppVersion {
         $v = (Get-Content -Raw $vf).Trim()
         if ($v) { return $v }
     }
-    return "1.1.7"
+    return "1.1.2"
 }
 
 function Write-BuildStamp {
@@ -210,7 +210,7 @@ try {
     $BotManager = Join-Path $Root "bot_manager.py"
     $bm = Get-Content -Raw -Path $BotManager
     if ($bm -like "*Stop the bot before changing wallet*") {
-        throw "bot_manager.set_wallet still blocks while running â€” remove that guard"
+        throw "bot_manager.set_wallet still blocks while running — remove that guard"
     }
     if ($bm -notlike "*apply_session_key*") {
         throw "bot_manager.set_wallet must hot-apply apply_session_key for live auto-sign"
@@ -236,7 +236,7 @@ try {
     $SetupIss = Join-Path $InstallerDir "setup.iss"
     $iss = Get-Content -Raw -Path $SetupIss
     # Installer Finish page: optional Launch checkbox (unchecked by default).
-    # Agent/build must NOT Start-Process SolDexBotTrader.exe after build â€” leave app closed.
+    # Agent/build must NOT Start-Process SolDexBotTrader.exe after build — leave app closed.
     if ($iss -notmatch '(?im)\[Run\]') {
         throw "setup.iss must have [Run] with optional Launch checkbox on Finish page"
     }
@@ -276,7 +276,7 @@ try {
         Write-Host ""
         Write-Host "[3/4] PyInstaller freeze..."
         if (-not (Test-Path (Join-Path $InstallerDir "BUILD_INFO.txt"))) {
-            throw "BUILD_INFO.txt missing â€” build stamp step failed"
+            throw "BUILD_INFO.txt missing — build stamp step failed"
         }
         $DistPath = Join-Path $InstallerDir "build\app"
         $WorkPath = Join-Path $InstallerDir "build\pyi-work"
@@ -366,7 +366,7 @@ try {
     Write-Host ("Touched {0} packaging file(s) to {1} (skipped {2})" -f $touched, $nowTouch.ToString("yyyy-MM-dd HH:mm:ss"), $skipped) -ForegroundColor Cyan
 
     Write-Host ""
-    Write-Host "Build complete â€” SolDexBotTrader.exe was NOT started (leave app closed after build/fix)."
+    Write-Host "Build complete — SolDexBotTrader.exe was NOT started (leave app closed after build/fix)."
     Write-Host "Maintainer notes: see setup-bot-installer\README.md"
     Write-Host "Truth stamp: setup-bot-installer\BUILD_INFO.txt (and output\BUILD_INFO.txt)"
 }

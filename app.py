@@ -743,7 +743,11 @@ def logs():
 def get_config():
     trade_size = request.args.get("trade_size_sol", type=float)
     live_fees = request.args.get("live_fees", "").lower() in ("1", "true", "yes")
-    cfg = Config.to_dict()
+    try:
+        cfg = Config.to_dict()
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Config.to_dict failed in GET /api/config")
+        return jsonify({"ok": False, "error": f"config serialize failed: {exc}"}), 500
     cfg["paper_target_balance_sol"] = paper_session_manager.get_target_balance()
     cfg["paper_simulated_balance_sol"] = paper_session_manager.get_simulated_balance()
     cfg["paper_quote_currency"] = paper_session_manager.get_quote_currency()
@@ -752,14 +756,28 @@ def get_config():
 
     cfg["live_tradeable_balance_sol"] = live_tradeable_balance_manager.get_balance()
     if trade_size is not None and trade_size > 0:
-        summary = Config.strategy_summary(trade_size, live_jupiter=live_fees)
-        cfg["estimated_fees_sol"] = summary["estimated_fees_sol"]
-        cfg["expected_ladder_gross_sol"] = summary["expected_ladder_gross_sol"]
-        cfg["expected_ladder_net_sol"] = summary["expected_ladder_net_sol"]
-        cfg["gross_profit_target_sol"] = summary["gross_profit_target_sol"]
-        cfg["fee_source"] = summary.get("fee_source")
-        cfg["fee_breakdown"] = summary.get("fee_breakdown")
-        cfg["preview_trade_size_sol"] = trade_size
+        try:
+            summary = Config.strategy_summary(trade_size, live_jupiter=live_fees)
+            cfg["estimated_fees_sol"] = summary["estimated_fees_sol"]
+            cfg["expected_ladder_gross_sol"] = summary["expected_ladder_gross_sol"]
+            cfg["expected_ladder_net_sol"] = summary["expected_ladder_net_sol"]
+            cfg["gross_profit_target_sol"] = summary["gross_profit_target_sol"]
+            cfg["fee_source"] = summary.get("fee_source")
+            cfg["fee_breakdown"] = summary.get("fee_breakdown")
+            cfg["preview_trade_size_sol"] = trade_size
+        except Exception as exc:
+            # Never 500 Apply Config / fee preview — fall back to static fee estimate.
+            logging.getLogger(__name__).warning(
+                "strategy_summary(live_jupiter=%s) failed: %s", live_fees, exc
+            )
+            summary = Config.strategy_summary(trade_size, live_jupiter=False)
+            cfg["estimated_fees_sol"] = summary["estimated_fees_sol"]
+            cfg["expected_ladder_gross_sol"] = summary["expected_ladder_gross_sol"]
+            cfg["expected_ladder_net_sol"] = summary["expected_ladder_net_sol"]
+            cfg["gross_profit_target_sol"] = summary["gross_profit_target_sol"]
+            cfg["fee_source"] = "fallback"
+            cfg["fee_breakdown"] = summary.get("fee_breakdown")
+            cfg["preview_trade_size_sol"] = trade_size
     enrich_with_server_time(cfg)
     enrich_with_server_info(cfg)
     cfg["project_root"] = str(PROJECT_ROOT)
@@ -847,7 +865,15 @@ def update_config():
         result = bot_manager.update_config(data)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    payload = {"ok": True, **result, "config": Config.to_dict()}
+    except Exception as exc:
+        logging.getLogger(__name__).exception("POST /api/config update failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    try:
+        cfg = Config.to_dict()
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Config.to_dict failed after update")
+        return jsonify({"ok": False, "error": f"config serialize failed: {exc}", **result}), 500
+    payload = {"ok": True, **result, "config": cfg}
     enrich_with_server_info(payload)
     return jsonify(payload)
 
