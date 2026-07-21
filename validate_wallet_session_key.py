@@ -39,6 +39,31 @@ def test_set_wallet_while_running_stores_session_key():
     print("PASS: set_wallet allowed while running (session memory)")
 
 
+def test_stop_clears_session_wallet():
+    key, _ = _ephemeral_base58()
+    prev_status = bot_manager._status
+    prev_key = bot_manager._private_key
+    prev_pub = bot_manager._public_key
+    prev_bot = bot_manager._bot
+    prev_thread = bot_manager._thread
+    try:
+        bot_manager._status = "stopped"
+        bot_manager._bot = None
+        bot_manager._thread = None
+        bot_manager.set_wallet(key)
+        bot_manager.stop()
+        assert bot_manager._private_key is None
+        assert bot_manager._public_key is None
+        assert bot_manager.get_status().get("has_session_wallet") is False
+    finally:
+        bot_manager._status = prev_status
+        bot_manager._private_key = prev_key
+        bot_manager._public_key = prev_pub
+        bot_manager._bot = prev_bot
+        bot_manager._thread = prev_thread
+    print("PASS: Stop clears session wallet")
+
+
 def test_apply_session_key_hot_swaps_signer():
     key, pubkey = _ephemeral_base58()
     bot = TradingBot(dry_run=False, private_key=None)
@@ -66,6 +91,7 @@ def test_keypair_load_does_not_echo_secret_in_error():
 
 if __name__ == "__main__":
     test_set_wallet_while_running_stores_session_key()
+    test_stop_clears_session_wallet()
     test_apply_session_key_hot_swaps_signer()
     test_keypair_load_does_not_echo_secret_in_error()
     print("All wallet session key checks passed.")

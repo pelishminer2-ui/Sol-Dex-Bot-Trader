@@ -162,6 +162,8 @@ try {
         'phantomBtn.disabled = false',
         'sessionWalletPubkey',
         'survives Paper Trade',
+        'rpcTouched',
+        'walletKeyStatus',
         'clearCredentialFieldsUI',
         'suppressCredFieldFill',
         'session_rpc_url'
@@ -210,6 +212,9 @@ try {
     if ($bm -notlike "*clear_session_credentials*" -or $bm -notlike "*_session_rpc_url*") {
         throw "bot_manager must clear session credentials on Stop and track session RPC"
     }
+    if ($bm -notlike "*apply_rpc_endpoint*") {
+        throw "bot_manager must hot-apply apply_rpc_endpoint for RPC changes"
+    }
     $SetupIss = Join-Path $InstallerDir "setup.iss"
     $iss = Get-Content -Raw -Path $SetupIss
     # Installer Finish page: optional Launch checkbox (unchecked by default).
@@ -221,6 +226,7 @@ try {
         throw "setup.iss [Run] Launch entry must use Flags: ... postinstall ... unchecked (optional, off by default)"
     }
     Write-Host "Preflight OK: wallet Connect + session key/RPC until Stop + optional unchecked Launch + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
+
 
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."

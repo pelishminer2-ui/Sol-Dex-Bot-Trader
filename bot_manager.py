@@ -59,6 +59,10 @@ class BotManager:
         self._lock = threading.RLock()
         self._private_key: Optional[str] = None
         self._public_key: Optional[str] = None
+        # Dashboard RPC changes are session-only. Keep the process-start value
+        # so Stop/Force Reset can restore the configured environment endpoint.
+        self._rpc_env_baseline = Config.SOLANA_RPC_URL
+        self._session_rpc_url: Optional[str] = None
         self._bot: Optional[TradingBot] = None
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -229,12 +233,26 @@ class BotManager:
         }
 
     def clear_wallet(self):
-        """Explicit clear only — never called by paper/live toggle, stop, or force-reset."""
+        """Clear the session wallet after the bot has stopped."""
         with self._lock:
             if self._status in ("running", "starting"):
                 raise RuntimeError("Stop the bot before clearing wallet")
             self._private_key = None
             self._public_key = None
+
+    def get_session_rpc_url(self) -> str:
+        """Return the dashboard RPC override for this process session only."""
+        with self._lock:
+            return self._session_rpc_url or ""
+
+    def clear_session_credentials(self) -> None:
+        """Forget dashboard-only wallet/RPC credentials and restore baseline RPC."""
+        with self._lock:
+            self._private_key = None
+            self._public_key = None
+            self._session_rpc_url = None
+            rpc_baseline = self._rpc_env_baseline
+        Config.update_runtime(SOLANA_RPC_URL=rpc_baseline)
 
     def has_wallet(self) -> bool:
         with self._lock:
@@ -253,8 +271,6 @@ class BotManager:
     def _clear_idle_state(self) -> None:
         """Force bot manager to stopped/idle (caller must hold _lock).
 
-        Intentionally does NOT clear _private_key / _public_key — session wallet
-        must survive Stop, force-reset, paper↔live toggle, and failed live-start fee.
         Open positions stay on disk (position_store) so Start can resume them.
         """
         was_paper = self._dry_run
@@ -562,6 +578,7 @@ class BotManager:
             thread = self._thread
             if self._status not in ("running", "starting", "stopping"):
                 if thread is None or not thread.is_alive():
+                    self.clear_session_credentials()
                     return {"status": "stopped"}
                 bot = self._bot
             else:
@@ -578,6 +595,7 @@ class BotManager:
 
         with self._lock:
             if thread is None or self._thread is not thread:
+                self.clear_session_credentials()
                 return {"status": self._status}
 
             if thread.is_alive():
@@ -589,11 +607,13 @@ class BotManager:
                 self._error = (
                     "Bot thread did not stop within timeout; click Stop again or Force Reset"
                 )
+                self.clear_session_credentials()
                 return {"status": "stopping"}
 
             was_paper = self._dry_run
             self._clear_idle_state()
 
+        self.clear_session_credentials()
         result: Dict[str, Any] = {"status": "stopped"}
         if was_paper:
             result.update(
@@ -617,7 +637,9 @@ class BotManager:
             bot.stop()
         if thread and thread.is_alive():
             thread.join(timeout=self.STOP_JOIN_TIMEOUT_SEC)
-        return self.reset_to_idle(force=True)
+        result = self.reset_to_idle(force=True)
+        self.clear_session_credentials()
+        return result
 
     def get_status(self) -> Dict[str, Any]:
         self._reconcile_stale_state()
@@ -876,7 +898,10 @@ class BotManager:
             "regime_gates": market_regime_snapshot.get("regime_gates", {}),
             "hot_market_mode_enabled": Config.HOT_MARKET_MODE_ENABLED,
             "error": error,
-            "config": Config.to_dict(),
+            "config": {
+                **Config.to_dict(),
+                "session_rpc_url": self.get_session_rpc_url(),
+            },
             "open_positions_count": open_positions_count,
             "consecutive_loss_pause": consecutive_loss_pause,
             "reentry_retry": self._reentry_retry_status(),
@@ -1489,13 +1514,15 @@ class BotManager:
             payload["entry_momentum_pct"] = normalize_entry_momentum_pct(
                 float(payload["entry_momentum_pct"])
             )
+        payload = dict(payload)
+        session_rpc_provided = "solana_rpc_url" in payload and payload["solana_rpc_url"] is not None
+        session_rpc_url = str(payload.pop("solana_rpc_url", "") or "").strip()
         mapping = {
             "trade_size_sol": "TRADE_SIZE_SOL",
             "entry_momentum_pct": "ENTRY_MOMENTUM_PCT",
             "take_profit_levels": "TAKE_PROFIT_LEVELS",
             "take_profit_portions": "TAKE_PROFIT_PORTIONS",
             "stop_loss_pct": "STOP_LOSS_PCT",
-            "solana_rpc_url": "SOLANA_RPC_URL",
             "scan_interval_sec": "SCAN_INTERVAL_SEC",
             "price_poll_sec": "PRICE_POLL_SEC",
             "max_position_sol": "MAX_POSITION_SOL",
@@ -1529,20 +1556,26 @@ class BotManager:
             if api_key in payload and payload[api_key] is not None:
                 updates[config_key] = payload[api_key]
         result = Config.update_runtime(**updates)
+        if session_rpc_provided:
+            with self._lock:
+                self._session_rpc_url = session_rpc_url or None
+            rpc_result = Config.update_runtime(SOLANA_RPC_URL=session_rpc_url)
+            result["applied"].update(rpc_result["applied"])
         if "SETUP_LEARNING_MIN_WIN_LEAN" in result.get("applied", {}):
             from session_entry_tuning import apply_runtime_win_lean
 
             apply_runtime_win_lean(result["applied"]["SETUP_LEARNING_MIN_WIN_LEAN"])
-        if "SOLANA_RPC_URL" in result.get("applied", {}):
+        if session_rpc_provided:
             with self._lock:
                 bot = self._bot
             if bot is not None:
                 try:
-                    bot.apply_rpc_endpoint(result["applied"]["SOLANA_RPC_URL"] or None)
+                    bot.apply_rpc_endpoint(session_rpc_url or None)
                 except Exception as exc:
                     logger.warning("RPC hot-apply on running bot failed: %s", exc)
             result["rpc_endpoint"] = Config.get_rpc_endpoint()
-            result["rpc_persisted"] = True
+            result["rpc_persisted"] = False
+        result["session_rpc_url"] = self.get_session_rpc_url()
         return result
 
     def restore_config_bookmark(self) -> Dict[str, Any]:

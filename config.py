@@ -2541,11 +2541,6 @@ class Config:
                     os.environ["SOLANA_RPC_URL"] = coerced
                 else:
                     os.environ.pop("SOLANA_RPC_URL", None)
-                # Persist so Flask restart / page refresh reloads the same endpoint.
-                _write_env_keys(
-                    {"solana_rpc_url": coerced},
-                    {"solana_rpc_url": "SOLANA_RPC_URL"},
-                )
                 applied[key] = coerced
                 # Config.get_rpc_endpoint() is live immediately; bot_manager may
                 # hot-swap an open SolanaClient. No full Flask restart required.
