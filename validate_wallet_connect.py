@@ -29,18 +29,22 @@ def test_connect_forces_popup_opts():
     src = WALLET_JS.read_text(encoding="utf-8")
     assert "onlyIfTrusted: false" in src, "user connect path must force popup"
     assert "onlyIfTrusted: true" in src, "eager restore may use onlyIfTrusted true"
-    assert "provider.connect(opts)" in src
-    assert "async function invokeConnect" in src
+    assert "function beginUserConnect" in src, "sync click entry beginUserConnect required"
+    assert "function startConnect" in src
     assert "phantom.app/download" in src
-    # User-facing connect goes through invokeConnect (popup); eager path is separate.
-    invoke_fn = src[src.find("async function invokeConnect") :]
-    invoke_fn = invoke_fn[: invoke_fn.find("async function connectProvider")]
-    assert "onlyIfTrusted: false" in invoke_fn
-    assert "onlyIfTrusted: true" not in invoke_fn
-    assert "await invokeConnect(provider)" in src
+    # User-facing sync path must call connect before any await.
+    begin_fn = src[src.find("function beginUserConnect") :]
+    begin_fn = begin_fn[: begin_fn.find("async function connectProvider")]
+    assert "startConnect(provider)" in begin_fn
+    assert "await waitForProviders" not in begin_fn
+    assert "onlyIfTrusted: true" not in begin_fn
+    start_fn = src[src.find("function startConnect") :]
+    start_fn = start_fn[: start_fn.find("function beginUserConnect")]
+    assert "onlyIfTrusted: false" in start_fn
+    assert "provider.connect(opts)" in start_fn
     eager_fn = src[src.find("async function tryEagerReconnect") :]
     assert "onlyIfTrusted: true" in eager_fn
-    print("PASS: connectProvider forces onlyIfTrusted:false")
+    print("PASS: beginUserConnect forces onlyIfTrusted:false (sync)")
 
 
 def test_index_wires_connect_click():
@@ -52,15 +56,20 @@ def test_index_wires_connect_click():
     assert 'bindClick("btnConnectPhantom"' in html
     assert 'bindClick("btnConnectSolflare"' in html
     assert "connectBrowserWallet(" in html
+    assert "beginUserConnect" in html
     # Must not disable wallet menu buttons (disabled = no click = no connect())
     assert "phantomBtn.disabled = false" in html
     assert "solflareBtn.disabled = false" in html
     assert "phantomBtn.disabled = !providers.phantom" not in html
-    print("PASS: index.html Connect handlers call connect()")
+    # Cache bust must be bumped when wallet_connect.js changes
+    assert "wallet_connect.js?v=1.1.4" in html or re.search(
+        r"wallet_connect\.js\?v=1\.\d+\.\d+", html
+    ), "wallet_connect.js cache query missing"
+    print("PASS: index.html Connect handlers call beginUserConnect/connect()")
 
 
 def test_node_mock_connect_called():
-    """Simulate providers and assert connect({ onlyIfTrusted: false }) is invoked."""
+    """Simulate providers and assert connect({ onlyIfTrusted: false }) is invoked sync."""
     script = r"""
 const fs = require("fs");
 const path = require("path");
@@ -68,6 +77,7 @@ const vm = require("vm");
 
 let phantomConnectCalls = [];
 let solflareConnectCalls = [];
+let phantomDisconnectCalls = 0;
 
 const fakeWindow = {
   phantom: {
@@ -77,7 +87,7 @@ const fakeWindow = {
         phantomConnectCalls.push(opts);
         return Promise.resolve({ publicKey: { toString: () => "PhanPubKey111" } });
       },
-      disconnect() { return Promise.resolve(); },
+      disconnect() { phantomDisconnectCalls++; return Promise.resolve(); },
     },
   },
   solflare: {
@@ -105,28 +115,40 @@ vm.runInNewContext(code, { window: fakeWindow, globalThis: fakeWindow });
 (async () => {
   const WC = fakeWindow.SolDexWalletConnect;
   if (!WC) throw new Error("SolDexWalletConnect missing");
-  const r1 = await WC.connectProvider("phantom", { waitMs: 50 });
-  if (r1.pubkey !== "PhanPubKey111") throw new Error("bad phantom pubkey");
-  if (phantomConnectCalls.length !== 1) throw new Error("phantom.connect not called");
+  if (typeof WC.beginUserConnect !== "function") throw new Error("beginUserConnect missing");
+
+  // Sync path: connect() must already have been called when beginUserConnect returns.
+  const p1 = WC.beginUserConnect("phantom");
+  if (phantomConnectCalls.length !== 1) throw new Error("phantom.connect not called sync");
   if (!phantomConnectCalls[0] || phantomConnectCalls[0].onlyIfTrusted !== false) {
     throw new Error("phantom.connect must use onlyIfTrusted:false got " + JSON.stringify(phantomConnectCalls[0]));
   }
-  const r2 = await WC.connectProvider("solflare", { waitMs: 50 });
-  if (r2.pubkey !== "SolfPubKey222") throw new Error("bad solflare pubkey");
+  const r1 = await p1;
+  if (r1.pubkey !== "PhanPubKey111") throw new Error("bad phantom pubkey");
+
+  const p2 = WC.beginUserConnect("solflare");
+  if (solflareConnectCalls.length !== 1) throw new Error("solflare.connect not called sync");
   if (!solflareConnectCalls[0] || solflareConnectCalls[0].onlyIfTrusted !== false) {
     throw new Error("solflare.connect must use onlyIfTrusted:false");
   }
+  const r2 = await p2;
+  if (r2.pubkey !== "SolfPubKey222") throw new Error("bad solflare pubkey");
+
+  await WC.disconnectProvider("phantom");
+  if (phantomDisconnectCalls < 1) throw new Error("disconnect not called");
+  if (WC.loadStored()) throw new Error("stored wallet should be cleared");
+
   // Missing provider message
   delete fakeWindow.phantom;
   fakeWindow.solana = undefined;
   try {
-    await WC.connectProvider("phantom", { waitMs: 50 });
+    WC.beginUserConnect("phantom");
     throw new Error("expected provider_missing");
   } catch (e) {
     if (!e || e.code !== "provider_missing") throw new Error("expected provider_missing code got " + (e && e.code));
     if (!/Install Phantom|Phantom extension/i.test(e.message)) throw new Error("bad missing msg: " + e.message);
   }
-  console.log("PASS: mock connect() called with onlyIfTrusted:false");
+  console.log("PASS: mock beginUserConnect() called with onlyIfTrusted:false (sync)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);

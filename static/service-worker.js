@@ -1,6 +1,6 @@
 /* Minimal PWA service worker — network-first; API always live.
  * Brave Shields may block registration; the dashboard works without this file. */
-const SW_VERSION = "solana-mover-bot-v9-smart-reentry-panel-20260708";
+const SW_VERSION = "solana-mover-bot-v114-wallet-connect-sync-20260721";
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();

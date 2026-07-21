@@ -6,9 +6,9 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <!-- cache-sync: 2026-07-12T21:32:00-04:00 wallet-connect-user-gesture-v109 -->
+  <!-- cache-sync: 2026-07-21T09:47:00-04:00 wallet-connect-sync-gesture-v114 -->
   <title>Solana Mover Trading Bot</title>
-  <script src="/static/wallet_connect.js?v=1.0.9"></script>
+  <script src="/static/wallet_connect.js?v=1.1.4"></script>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#14f195">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1907,43 +1907,61 @@
       }
     }
 
-    async function connectBrowserWallet(name) {
+    function handleConnectResult(name, result) {
+      connectedExtension = { provider: result.provider, pubkey: result.pubkey };
+      syncHeaderWalletUI();
+      applyWalletAddressDisplay(lastBotStatus || {});
+      const keyInput = document.getElementById("privateKey");
+      if (keyInput) keyInput.focus();
+      alert(
+        "Connected to " + name + ":\n" + result.pubkey +
+        "\n\nFor Live trading, export your private key from " + name +
+        ", paste it in Wallet Key, and click Set Wallet.\n" +
+        "The bot signs on the server (no popup per trade). Set Wallet survives Paper Trade toggle."
+      );
+      updateQuickStartSteps(lastBotStatus || {});
+      updateStartButtonState(lastBotStatus);
+    }
+
+    function handleConnectError(name, e) {
+      const msg = (e && e.message) || String(e);
+      if (e && e.code === "provider_missing") {
+        const url = e.installUrl ||
+          (name === "phantom"
+            ? (window.SolDexWalletConnect && window.SolDexWalletConnect.PHANTOM_INSTALL) || "https://phantom.app/download"
+            : (window.SolDexWalletConnect && window.SolDexWalletConnect.SOLFLARE_INSTALL) || "https://solflare.com/download");
+        alert(msg + "\n\nOpen: " + url);
+        try { window.open(url, "_blank", "noopener"); } catch (_) {}
+      } else {
+        alert("Connect failed: " + msg);
+      }
+      syncHeaderWalletUI();
+    }
+
+    /**
+     * Sync entry from click: beginUserConnect() calls provider.connect() in this turn.
+     * Never async/await before that — browsers drop user gesture → no Phantom popup.
+     */
+    function connectBrowserWallet(name) {
       if (!window.SolDexWalletConnect) {
         alert("Wallet connect module failed to load. Hard-refresh (Ctrl+Shift+R).");
         return;
       }
       const menu = document.getElementById("walletConnectMenu");
       if (menu) menu.hidden = true;
+      const begin = window.SolDexWalletConnect.beginUserConnect || window.SolDexWalletConnect.connectProvider;
+      let pending;
       try {
-        // connectProvider always uses onlyIfTrusted:false → extension popup.
-        const result = await window.SolDexWalletConnect.connectProvider(name);
-        connectedExtension = { provider: result.provider, pubkey: result.pubkey };
-        syncHeaderWalletUI();
-        applyWalletAddressDisplay(lastBotStatus || {});
-        const keyInput = document.getElementById("privateKey");
-        if (keyInput) keyInput.focus();
-        alert(
-          "Connected to " + name + ":\n" + result.pubkey +
-          "\n\nFor Live trading, export your private key from " + name +
-          ", paste it in Wallet Key, and click Set Wallet.\n" +
-          "The bot signs on the server (no popup per trade). Set Wallet survives Paper Trade toggle."
-        );
-        updateQuickStartSteps(lastBotStatus || {});
-        updateStartButtonState(lastBotStatus);
+        pending = begin.call(window.SolDexWalletConnect, name);
       } catch (e) {
-        const msg = (e && e.message) || String(e);
-        if (e && e.code === "provider_missing") {
-          const url = e.installUrl ||
-            (name === "phantom"
-              ? (window.SolDexWalletConnect.PHANTOM_INSTALL || "https://phantom.app/download")
-              : (window.SolDexWalletConnect.SOLFLARE_INSTALL || "https://solflare.com/download"));
-          alert(msg + "\n\nOpen: " + url);
-          try { window.open(url, "_blank", "noopener"); } catch (_) {}
-        } else {
-          alert("Connect failed: " + msg);
-        }
-        syncHeaderWalletUI();
+        handleConnectError(name, e);
+        return;
       }
+      void Promise.resolve(pending).then(function (result) {
+        handleConnectResult(name, result);
+      }).catch(function (e) {
+        handleConnectError(name, e);
+      });
     }
 
     /**
@@ -1965,13 +1983,12 @@
       const hasS = !!providers.solflare;
       if (hasP && !hasS) {
         if (menu) menu.hidden = true;
-        // Do not await here — start connect in this click turn.
-        void connectBrowserWallet("phantom");
+        connectBrowserWallet("phantom");
         return;
       }
       if (hasS && !hasP) {
         if (menu) menu.hidden = true;
-        void connectBrowserWallet("solflare");
+        connectBrowserWallet("solflare");
         return;
       }
       if (hasP && hasS) {
@@ -1991,14 +2008,17 @@
       );
     }
 
-    async function disconnectBrowserWallet() {
-      const name = connectedExtension && connectedExtension.provider;
-      if (window.SolDexWalletConnect) {
-        await window.SolDexWalletConnect.disconnectProvider(name || "phantom");
-      }
+    function disconnectBrowserWallet() {
+      const name = (connectedExtension && connectedExtension.provider) || "phantom";
+      // Clear UI first so Disconnect never looks stuck if extension hangs.
       connectedExtension = null;
       syncHeaderWalletUI();
       applyWalletAddressDisplay(lastBotStatus || {});
+      if (!window.SolDexWalletConnect) return;
+      try {
+        const p = window.SolDexWalletConnect.disconnectProvider(name);
+        void Promise.resolve(p).catch(function () {});
+      } catch (_) {}
     }
 
     async function api(path, opts) {
@@ -4572,13 +4592,13 @@
       if (ev) {
         try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
       }
-      void connectBrowserWallet("phantom");
+      connectBrowserWallet("phantom");
     });
     bindClick("btnConnectSolflare", (ev) => {
       if (ev) {
         try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
       }
-      void connectBrowserWallet("solflare");
+      connectBrowserWallet("solflare");
     });
     bindClick("btnWalletDisconnect", () => {
       disconnectBrowserWallet();

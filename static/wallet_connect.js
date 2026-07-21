@@ -4,7 +4,8 @@
  * still requires Set Wallet (base58) so the Flask server can sign swaps.
  *
  * Critical: user-initiated Connect MUST call provider.connect({ onlyIfTrusted: false })
- * so the extension shows the approval popup. never use onlyIfTrusted:true on that path.
+ * SYNCHRONOUSLY inside the click handler (before any await / timer). Nested async/await
+ * can drop transient user activation → Phantom shows no approval popup.
  */
 (function (global) {
   "use strict";
@@ -29,6 +30,7 @@
   function getPhantomProvider() {
     const w = win();
     try {
+      // Prefer Phantom's dedicated namespace (multi-wallet safe).
       if (w.phantom && w.phantom.solana) return w.phantom.solana;
       if (w.solana && w.solana.isPhantom) return w.solana;
     } catch (_) {}
@@ -48,6 +50,13 @@
     return { phantom: getPhantomProvider(), solflare: getSolflareProvider() };
   }
 
+  function resolveProvider(name) {
+    const { phantom, solflare } = detectProviders();
+    if (name === "phantom") return phantom;
+    if (name === "solflare") return solflare;
+    return null;
+  }
+
   function providerMissingMessage(name) {
     if (name === "phantom") {
       return "Phantom extension not found. Install Phantom (" + PHANTOM_INSTALL + "), then refresh.";
@@ -58,6 +67,7 @@
   /**
    * Wait for late injection (common on localhost / Brave). Resolves with
    * whatever is present when timeout elapses — callers still check for null.
+   * NEVER call this before user-gesture connect().
    */
   function waitForProviders(timeoutMs) {
     const ms = typeof timeoutMs === "number" ? timeoutMs : PROVIDER_WAIT_MS;
@@ -154,9 +164,11 @@
   }
 
   /**
-   * Force the extension approval popup. onlyIfTrusted MUST be false on this path.
+   * Start extension connect() NOW (sync). onlyIfTrusted MUST be false.
+   * Returns the raw Promise from provider.connect — do not wrap in async
+   * before this call or the Phantom popup may never appear.
    */
-  async function invokeConnect(provider) {
+  function startConnect(provider) {
     if (!provider) {
       const err = new Error("No wallet provider");
       err.code = "provider_missing";
@@ -175,23 +187,42 @@
   }
 
   /**
-   * MUST be called directly from a click/tap handler.
-   * Do NOT await anything (provider wait, timers, fetch) before invokeConnect —
-   * browsers drop the user gesture and Phantom/Solflare will not show a popup.
+   * MUST be called directly from a click/tap handler (sync function preferred).
+   * Invokes provider.connect() in this turn, then returns a Promise for pubkey.
+   * Do NOT await waitForProviders / timers / fetch before this.
+   */
+  function beginUserConnect(name) {
+    const provider = resolveProvider(name);
+    if (!provider) {
+      const err = new Error(providerMissingMessage(name));
+      err.code = "provider_missing";
+      err.installUrl = name === "phantom" ? PHANTOM_INSTALL : SOLFLARE_INSTALL;
+      throw err;
+    }
+    // First line that talks to the extension — must stay sync relative to click.
+    const connectPromise = startConnect(provider);
+    return Promise.resolve(connectPromise).then(function (resp) {
+      const pk = extractPubkey(resp, provider);
+      if (!pk) {
+        const err = new Error("Wallet connected but no public key returned");
+        err.code = "no_pubkey";
+        throw err;
+      }
+      saveStored(name, pk);
+      return { provider: name, pubkey: pk, adapter: provider };
+    });
+  }
+
+  /**
+   * Async wrapper kept for callers/tests. Prefer beginUserConnect from UI clicks.
+   * Never awaits before connect unless allowWait is explicitly set (may lose popup).
    */
   async function connectProvider(name, options) {
     const opts = options || {};
-    const { phantom, solflare } = detectProviders();
-    let provider = null;
-    if (name === "phantom") provider = phantom;
-    else if (name === "solflare") provider = solflare;
-    if (!provider) {
-      // Optional late inject: only if caller explicitly allows (still may lose popup).
-      if (opts.allowWait && opts.waitMs !== 0) {
-        await waitForProviders(opts.waitMs != null ? opts.waitMs : 300);
-        const again = detectProviders();
-        provider = name === "phantom" ? again.phantom : again.solflare;
-      }
+    let provider = resolveProvider(name);
+    if (!provider && opts.allowWait && opts.waitMs !== 0) {
+      await waitForProviders(opts.waitMs != null ? opts.waitMs : 300);
+      provider = resolveProvider(name);
     }
     if (!provider) {
       const err = new Error(providerMissingMessage(name));
@@ -199,8 +230,7 @@
       err.installUrl = name === "phantom" ? PHANTOM_INSTALL : SOLFLARE_INSTALL;
       throw err;
     }
-    // First await must be connect() itself so the extension approval UI can open.
-    const resp = await invokeConnect(provider);
+    const resp = await startConnect(provider);
     const pk = extractPubkey(resp, provider);
     if (!pk) {
       const err = new Error("Wallet connected but no public key returned");
@@ -217,8 +247,7 @@
    */
   async function tryEagerReconnect(name) {
     await waitForProviders(800);
-    const { phantom, solflare } = detectProviders();
-    const provider = name === "solflare" ? solflare : phantom;
+    const provider = resolveProvider(name === "solflare" ? "solflare" : "phantom");
     if (!provider || typeof provider.connect !== "function") return null;
     try {
       const resp = await provider.connect({ onlyIfTrusted: true });
@@ -231,15 +260,28 @@
     }
   }
 
-  async function disconnectProvider(name) {
-    const { phantom, solflare } = detectProviders();
-    const provider = name === "solflare" ? solflare : phantom;
+  /**
+   * Disconnect extension + clear stored pubkey. Always clears storage even if
+   * provider.disconnect hangs or throws — UI must not get stuck Connected.
+   */
+  function disconnectProvider(name) {
+    const provider = resolveProvider(name === "solflare" ? "solflare" : "phantom");
+    clearStored();
+    let disc = Promise.resolve();
     try {
       if (provider && typeof provider.disconnect === "function") {
-        await provider.disconnect();
+        disc = Promise.resolve(provider.disconnect()).catch(function () {});
       }
     } catch (_) {}
-    clearStored();
+    const timerFn = typeof global.setTimeout === "function" ? global.setTimeout : null;
+    if (!timerFn) return disc;
+    // Bound wait so Disconnect never blocks the UI forever.
+    return Promise.race([
+      disc,
+      new Promise(function (resolve) {
+        timerFn(resolve, 1500);
+      }),
+    ]);
   }
 
   global.SolDexWalletConnect = {
@@ -252,6 +294,7 @@
     loadStored: loadStored,
     saveStored: saveStored,
     clearStored: clearStored,
+    beginUserConnect: beginUserConnect,
     connectProvider: connectProvider,
     tryEagerReconnect: tryEagerReconnect,
     disconnectProvider: disconnectProvider,

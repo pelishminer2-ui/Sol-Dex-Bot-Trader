@@ -173,6 +173,9 @@ try {
     if ($walletJsText -notlike "*onlyIfTrusted: false*") {
         throw "wallet_connect.js must call connect({ onlyIfTrusted: false }) so the extension popup appears"
     }
+    if ($walletJsText -notlike "*beginUserConnect*") {
+        throw "wallet_connect.js must expose beginUserConnect (sync connect on click)"
+    }
     $FeePy = Join-Path $Root "live_start_fee.py"
     $fee = Get-Content -Raw -Path $FeePy
     if ($fee -notlike "*_is_blockhash_error*" -or $fee -notlike "*_fetch_fresh_blockhash*") {
