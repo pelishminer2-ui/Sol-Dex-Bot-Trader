@@ -1779,7 +1779,6 @@
     let tradeSizeTouched = false;
     let entryMomentumTouched = false;
     let rpcTouched = false;
-    let suppressCredFieldFill = false;
     let minFundSol = 0.75;
     let minPaperFundSol = 2.00;
     let minFundWaiverActive = false;
@@ -1826,23 +1825,6 @@
       return false;
     }
 
-    function clearCredentialFieldsUI() {
-      suppressCredFieldFill = true;
-      sessionWalletPubkey = null;
-      rpcTouched = false;
-      const keyInput = document.getElementById("privateKey");
-      const rpcInput = document.getElementById("rpcUrl");
-      const keyStatus = document.getElementById("walletKeyStatus");
-      if (keyInput) {
-        keyInput.value = "";
-        keyInput.placeholder = "Private key (base58 or JSON) — live only";
-      }
-      if (rpcInput) rpcInput.value = "";
-      applyWalletAddressDisplay({ has_wallet: false });
-      if (keyStatus) keyStatus.textContent = "Session credentials cleared.";
-      setTimeout(() => { suppressCredFieldFill = false; }, 0);
-    }
-
     function applyWalletAddressDisplay(s) {
       s = s || {};
       if (s.session_public_key) {
@@ -1856,7 +1838,7 @@
       if (!el) return;
       if (sessionWalletPubkey) {
         el.textContent = sessionWalletPubkey;
-        el.title = "Session wallet (Set Wallet / .env) — survives Paper Trade toggle; cleared on Stop";
+        el.title = "Session wallet (Set Wallet / .env) — survives Paper Trade toggle and Stop";
       } else if (connectedExtension && connectedExtension.pubkey) {
         el.textContent = connectedExtension.pubkey;
         el.title = "Extension connected — paste base58 key and Set Wallet for live auto-sign";
@@ -1873,7 +1855,10 @@
         if (keyStatus) {
           keyStatus.textContent =
             "Key set for session (" + shortPubkey(sessionWalletPubkey) +
-            ") — key remains in this field until Stop/Force Reset.";
+            ") — password field cleared for security; session key kept across Paper toggle / Stop / status poll.";
+        }
+        if (keyInput && !keyInput.value) {
+          keyInput.placeholder = "Key set — paste a new key to replace";
         }
       } else {
         if (keyStatus) keyStatus.textContent = "";
@@ -3734,19 +3719,19 @@
       if (!respectTouched || !stopLossTouched) {
         setStopLossPct(cfg.stop_loss_pct ?? spreadDefaults.stop_loss_pct);
       }
-      if (!suppressCredFieldFill && cfg.session_rpc_url != null && (!respectTouched || !rpcTouched)) {
-        document.getElementById("rpcUrl").value = cfg.session_rpc_url || "";
+      if (!respectTouched || !rpcTouched) {
+        document.getElementById("rpcUrl").value = cfg.solana_rpc_url || "";
       }
       const rpcHint = document.getElementById("rpcUrlHint");
       if (rpcHint) {
-        const sessionRpc = (cfg.session_rpc_url || "").trim();
-        const effective = (cfg.rpc_endpoint || sessionRpc || "").trim();
-        if (sessionRpc) {
-          rpcHint.textContent = "Session custom RPC — active: " + sessionRpc;
+        const saved = (cfg.solana_rpc_url || "").trim();
+        const effective = (cfg.rpc_endpoint || saved || "").trim();
+        if (saved) {
+          rpcHint.textContent = "Saved custom RPC (persists in .env) — active: " + saved;
         } else if (effective) {
           rpcHint.textContent = "Using network default RPC — active: " + effective;
         } else {
-          rpcHint.textContent = "Session RPC is kept until Stop Bot";
+          rpcHint.textContent = "Custom RPC persists to .env on Apply Config";
         }
       }
       if (cfg.scan_pumpfun != null) {
@@ -4369,6 +4354,7 @@
       try {
         const r = await api("/api/wallet", { method: "POST", body: JSON.stringify({ private_key: key }) });
         // Keep the entered value visible for this session; it is never logged.
+        document.getElementById("privateKey").value = "";
         if (r.public_key) {
           sessionWalletPubkey = r.public_key;
           document.getElementById("walletAddress").textContent = r.public_key;
@@ -4748,8 +4734,10 @@
           e.code === "already_running" || /already running/i.test(e.message || "");
         if (!isAlreadyRunning) throw e;
         await api("/api/bot/force-reset", { method: "POST", body: "{}" });
-        clearCredentialFieldsUI();
-        throw new Error("Force Reset cleared session credentials. Set Wallet and Apply RPC again before starting.");
+        await api("/api/bot/start", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
       }
     }
 
@@ -4780,6 +4768,7 @@
       startInFlight = true;
       btnStart.disabled = true;
       try {
+        await api("/api/bot/force-reset", { method: "POST", body: "{}" });
         await startBotRequest(paper_trade, cfg);
         await refresh();
         setStopLossPct(slBefore);
@@ -5110,8 +5099,7 @@
       document.getElementById("activityStatus").textContent = "Stopping...";
       try {
         const stopResult = await api("/api/bot/stop", { method: "POST", body: "{}" });
-        clearCredentialFieldsUI();
-        if (stopResult.paper_balance_reset_on_stop) {
+                        if (stopResult.paper_balance_reset_on_stop) {
           paperBalanceTouched = false;
           if (stopResult.paper_simulated_balance_sol != null) {
             paperRunningBalance = stopResult.paper_simulated_balance_sol;
@@ -5125,8 +5113,7 @@
       } catch (e) {
         try {
           await api("/api/bot/force-reset", { method: "POST", body: "{}" });
-          clearCredentialFieldsUI();
-          await pollUntilStopped(10000);
+                    await pollUntilStopped(10000);
           await refresh();
         } catch (e2) {
           alert("Error: " + e2.message);
@@ -5146,8 +5133,7 @@
       if (!confirm("Force reset bot state? Use this if Start says 'already running' but the bot is idle.")) return;
       try {
         await api("/api/bot/force-reset", { method: "POST", body: "{}" });
-        clearCredentialFieldsUI();
-        logActivity("Bot force reset to idle", { server_url: cachedServerUrl });
+                logActivity("Bot force reset to idle", { server_url: cachedServerUrl });
         alert("Bot reset to idle." + serverSuffix({ server_url: cachedServerUrl }));
         refresh();
       } catch (e) { alert("Error: " + e.message); }
@@ -5162,7 +5148,7 @@
         rpcTouched = false;
         fillConfig(r.config || {}, false);
         const rpcNote = (r.applied && r.applied.SOLANA_RPC_URL != null)
-          ? "\n\nRPC is active for this session only. Config.get_rpc_endpoint() uses it immediately (no Flask restart). " +
+          ? "\n\nRPC saved to .env. Config.get_rpc_endpoint() uses it immediately (no Flask restart). " +
             "If the bot is already running, the live Solana client was hot-swapped."
           : "";
         if (r.needs_restart && r.needs_restart.length) {

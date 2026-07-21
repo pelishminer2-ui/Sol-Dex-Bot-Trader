@@ -751,8 +751,6 @@ def get_config():
     from live_tradeable_balance import live_tradeable_balance_manager
 
     cfg["live_tradeable_balance_sol"] = live_tradeable_balance_manager.get_balance()
-    cfg["session_rpc_url"] = bot_manager.get_session_rpc_url()
-    cfg["solana_rpc_url_display"] = cfg["session_rpc_url"] or ""
     if trade_size is not None and trade_size > 0:
         summary = Config.strategy_summary(trade_size, live_jupiter=live_fees)
         cfg["estimated_fees_sol"] = summary["estimated_fees_sol"]
@@ -849,10 +847,7 @@ def update_config():
         result = bot_manager.update_config(data)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    cfg = Config.to_dict()
-    cfg["session_rpc_url"] = result.get("session_rpc_url", bot_manager.get_session_rpc_url())
-    cfg["solana_rpc_url_display"] = cfg["session_rpc_url"] or ""
-    payload = {"ok": True, **result, "config": cfg}
+    payload = {"ok": True, **result, "config": Config.to_dict()}
     enrich_with_server_info(payload)
     return jsonify(payload)
 
