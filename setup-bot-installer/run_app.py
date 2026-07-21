@@ -205,7 +205,8 @@ def main() -> None:
 
     _start_server()
 
-    # Wait briefly for bind, then open browser + auto-resume open trades.
+    # Wait briefly for bind, then open browser. Trading never auto-starts —
+    # user must click Start Bot (schedule_auto_resume is a no-op unless opted in).
     for _ in range(50):
         if flask_app._bot_status_reachable(host, port):
             break
@@ -243,6 +244,7 @@ def main() -> None:
                             break
                         time.sleep(0.1)
                     try:
+                        # Default no-op (AUTO_RESUME_ON_START=false); Flask only, no trading.
                         flask_app.schedule_auto_resume(delay_sec=1.0)
                     except Exception:
                         logger.exception("Auto-resume after supervisor restart failed")

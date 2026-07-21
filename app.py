@@ -257,7 +257,17 @@ def _schedule_browser_open() -> None:
 
 
 def schedule_auto_resume(delay_sec: float = 2.0) -> None:
-    """After Flask is up, resume trading if runtime/open-position state requires it."""
+    """No-op by default: trading never auto-starts; user must click Start Bot.
+
+    Kept as a stub so packaged run_app / older callers do not crash. Opt-in only
+    when Config.AUTO_RESUME_ON_START is explicitly true (not recommended).
+    """
+    if not Config.AUTO_RESUME_ON_START:
+        logging.getLogger(__name__).info(
+            "Auto-resume disabled — bot stays idle until Start Bot "
+            "(watchdog may keep Flask alive only)."
+        )
+        return
 
     def _resume() -> None:
         try:
@@ -467,6 +477,8 @@ def bot_start():
         msg = str(exc)
         if "already running" in msg.lower():
             code = "already_running"
+        elif "own rpc" in msg.lower() or "helius" in msg.lower() or "dedicated rpc" in msg.lower():
+            code = "live_rpc_required"
         elif "live-start fee" in msg.lower() or "fee payment" in msg.lower():
             code = "live_start_fee_failed"
         elif "wallet" in msg.lower() or "private key" in msg.lower():

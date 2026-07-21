@@ -102,8 +102,54 @@ def test_stop_clears_session_wallet_keeps_env_rpc():
 
 def test_to_dict_includes_rpc_endpoint():
     d = Config.to_dict()
-    assert d["rpc_endpoint"] == Config.get_rpc_endpoint()
+    assert d["rpc_endpoint"] == Config.get_rpc_endpoint(allow_public=True)
+    assert "has_user_rpc" in d
+    assert d["solana_rpc_url"] == Config.user_rpc_url()
+    # Public mainnet must never appear as solana_rpc_url for the UI field.
+    assert "api.mainnet-beta.solana.com" not in (d["solana_rpc_url"] or "")
     print("PASS: rpc_endpoint")
+
+
+def test_public_rpc_sanitized_for_ui_and_live():
+    prev = Config.SOLANA_RPC_URL
+    prev_env = os.environ.get("SOLANA_RPC_URL")
+    try:
+        Config.SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+        assert Config.user_rpc_url() == ""
+        assert Config.has_user_rpc() is False
+        assert Config.get_rpc_endpoint(allow_public=True) == "https://api.mainnet-beta.solana.com"
+        try:
+            Config.get_rpc_endpoint(allow_public=False)
+            raise AssertionError("expected RuntimeError for live without user RPC")
+        except RuntimeError as exc:
+            assert "Helius" in str(exc) or "own RPC" in str(exc)
+        d = Config.to_dict()
+        assert d["solana_rpc_url"] == ""
+        assert d["has_user_rpc"] is False
+    finally:
+        Config.SOLANA_RPC_URL = prev
+        if prev_env is None:
+            os.environ.pop("SOLANA_RPC_URL", None)
+        else:
+            os.environ["SOLANA_RPC_URL"] = prev_env
+    print("PASS: public RPC sanitized; live requires user RPC")
+
+
+def test_auto_resume_off_by_default():
+    assert Config.AUTO_RESUME_ON_START is False or os.getenv("AUTO_RESUME_ON_START", "false").lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+        "",
+    )
+    # Fresh default string in config source is false
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent / "config.py"
+    text = src.read_text(encoding="utf-8")
+    assert 'AUTO_RESUME_ON_START", "false"' in text or "AUTO_RESUME_ON_START', 'false'" in text
+    print("PASS: AUTO_RESUME_ON_START defaults false")
 
 
 def test_write_env_keys_rpc_roundtrip():
@@ -119,5 +165,7 @@ if __name__ == "__main__":
     test_rpc_hot_swap_on_solana_client()
     test_stop_clears_session_wallet_keeps_env_rpc()
     test_to_dict_includes_rpc_endpoint()
+    test_public_rpc_sanitized_for_ui_and_live()
+    test_auto_resume_off_by_default()
     test_write_env_keys_rpc_roundtrip()
     print("All RPC/wallet persist checks passed.")

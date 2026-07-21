@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 
 class SolanaClient:
     def __init__(self, private_key: Optional[str] = None, dry_run: Optional[bool] = None):
-        self.rpc_endpoint = Config.get_rpc_endpoint()
-        self.client = AsyncClient(self.rpc_endpoint, commitment=Confirmed)
         self.dry_run = Config.DRY_RUN if dry_run is None else dry_run
+        # Paper may use public mainnet fallback; live requires user Helius/dedicated RPC.
+        self.rpc_endpoint = Config.get_rpc_endpoint(allow_public=bool(self.dry_run))
+        self.client = AsyncClient(self.rpc_endpoint, commitment=Confirmed)
 
         key = private_key or Config.SOLANA_PRIVATE_KEY
         if key:
@@ -57,14 +58,20 @@ class SolanaClient:
     def apply_rpc_endpoint(self, endpoint: Optional[str] = None) -> str:
         """Hot-swap AsyncClient to a new RPC URL (Config default when endpoint omitted)."""
         if endpoint is None:
-            ep = Config.get_rpc_endpoint()
+            ep = Config.get_rpc_endpoint(allow_public=bool(self.dry_run))
         else:
-            ep = str(endpoint).strip() or Config.get_rpc_endpoint()
+            from config import normalize_user_rpc_url
+
+            cleaned = normalize_user_rpc_url(endpoint)
+            if cleaned:
+                ep = cleaned
+            else:
+                ep = Config.get_rpc_endpoint(allow_public=bool(self.dry_run))
         if ep == self.rpc_endpoint and self.client is not None:
             return self.rpc_endpoint
         self.rpc_endpoint = ep
         self.client = AsyncClient(self.rpc_endpoint, commitment=Confirmed)
-        logger.info("RPC endpoint updated to %s", ep)
+        logger.info("RPC endpoint updated to %s (dry_run=%s)", ep, self.dry_run)
         return self.rpc_endpoint
 
     async def get_balance(self) -> float:

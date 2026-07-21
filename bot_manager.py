@@ -211,8 +211,8 @@ class BotManager:
         if not private_key:
             raise ValueError("Private key is required")
 
-        # Validate + derive pubkey without retaining the temp client.
-        client = SolanaClient(private_key=private_key)
+        # Validate + derive pubkey locally (dry_run=True → no live-RPC requirement).
+        client = SolanaClient(private_key=private_key, dry_run=True)
         pubkey = str(client.public_key)
 
         with self._lock:
@@ -447,6 +447,14 @@ class BotManager:
                 key = self._resolve_private_key()
                 if not dry_run and not key:
                     raise RuntimeError("Set a wallet private key before live trading")
+
+                if not dry_run and not Config.has_user_rpc():
+                    raise RuntimeError(
+                        "Live trading requires your own RPC URL from Helius (dedicated RPC). "
+                        "Paste it in the RPC field and click Apply Config. "
+                        "Public mainnet RPC cannot be used for Live fee/transactions "
+                        "(causes BlockhashNotFound / flaky txs)."
+                    )
 
                 trade_activity.refresh_from_journal()
                 risk = RiskManager()

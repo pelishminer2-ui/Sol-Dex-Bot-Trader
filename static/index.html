@@ -1068,8 +1068,11 @@
             <tr>
               <th>RPC</th>
               <td colspan="2">
-                <input type="text" id="rpcUrl" placeholder="https://..." style="margin-bottom:0" autocomplete="off">
-                <div class="compact-hint" id="rpcUrlHint" style="margin-top:0.25rem">RPC field kept until Stop Bot; Apply may save to .env</div>
+                <input type="text" id="rpcUrl" placeholder="Paste your Helius RPC URL (https://...)" style="margin-bottom:0" autocomplete="off" value="">
+                <div id="rpcHeliusNote" style="margin-top:0.35rem;font-weight:700;color:var(--danger)">
+                  You must provide your own RPC URL from Helius (dedicated RPC). Public mainnet RPC causes fee/tx failures like BlockhashNotFound and cannot be used for Live trading.
+                </div>
+                <div class="compact-hint" id="rpcUrlHint" style="margin-top:0.25rem">Leave blank until you paste your RPC. Paper may use public RPC; Live requires Helius. Apply saves to .env.</div>
               </td>
             </tr>
             <tr>
@@ -1779,6 +1782,29 @@
     let tradeSizeTouched = false;
     let entryMomentumTouched = false;
     let rpcTouched = false;
+
+    function isPublicRpcUrl(url) {
+      const raw = (url || "").trim();
+      if (!raw) return false;
+      try {
+        const host = new URL(raw).hostname.toLowerCase();
+        return (
+          host === "api.mainnet-beta.solana.com" ||
+          host === "api.devnet.solana.com" ||
+          host === "api.testnet.solana.com"
+        );
+      } catch (_) {
+        const u = raw.replace(/\/$/, "").toLowerCase();
+        return u === "https://api.mainnet-beta.solana.com" ||
+          u === "http://api.mainnet-beta.solana.com";
+      }
+    }
+
+    function displayRpcFromConfig(cfg) {
+      const saved = (cfg && cfg.solana_rpc_url ? String(cfg.solana_rpc_url) : "").trim();
+      if (!saved || isPublicRpcUrl(saved)) return "";
+      return saved;
+    }
     // After Stop/Force Reset, keep RPC/key fields blank until the user types again
     // (polls must not refill from .env). Initial page load still fills from config.
     let suppressCredFieldFill = false;
@@ -2102,9 +2128,13 @@
       if (err.code === "no_wallet") {
         return "Live trading requires a wallet. Connect Phantom/Solflare (upper right), then paste your exported base58 key and click Set Wallet — or enable Paper Trade.";
       }
+      if (err.code === "live_rpc_required") {
+        return "Live start blocked — paste your own Helius (dedicated) RPC URL in the RPC field, click Apply Config, then Start again.\n\n" +
+          "Public mainnet RPC cannot be used for Live fee/transactions (BlockhashNotFound).\n\n" + msg;
+      }
       if (err.code === "live_start_fee_failed") {
         return "Live start blocked — fee payment failed.\n\n" + msg +
-          "\n\nIf you see Blockhash not found, wait a moment and Start again (fresh blockhash is fetched automatically). Confirm your Set Wallet session key is still shown under Address.";
+          "\n\nIf you see Blockhash not found, confirm your Helius RPC is applied (not public mainnet), wait a moment, and Start again. Confirm your Set Wallet session key is still shown under Address.";
       }
       if (err.code === "insufficient_funds") {
         return msg;
@@ -2115,9 +2145,12 @@
       if (/already running/i.test(msg)) {
         return msg + "\n\nIf the bot is not actually trading, click Stop (or Force Reset) to clear stale state, then Start again.";
       }
+      if (/own rpc|helius|dedicated rpc/i.test(msg)) {
+        return "Live start blocked — paste your own Helius (dedicated) RPC URL in the RPC field, click Apply Config, then Start again.\n\n" + msg;
+      }
       if (/live-start fee|fee payment|blockhash/i.test(msg)) {
         return "Live start blocked — fee payment failed.\n\n" + msg +
-          "\n\nSession Set Wallet key is kept across Paper↔Live. Retry Start; a fresh blockhash is used automatically.";
+          "\n\nSession Set Wallet key is kept across Paper↔Live. Confirm Helius RPC is applied (not public mainnet), then retry Start.";
       }
       if (/wallet|private key/i.test(msg)) {
         return "Live trading requires a wallet. Connect Phantom/Solflare, then Set Wallet with your base58 key — or enable Paper Trade.";
@@ -3742,24 +3775,37 @@
         setStopLossPct(cfg.stop_loss_pct ?? spreadDefaults.stop_loss_pct);
       }
       if (!suppressCredFieldFill && (!respectTouched || !rpcTouched)) {
-        document.getElementById("rpcUrl").value = cfg.solana_rpc_url || "";
+        const el = document.getElementById("rpcUrl");
+        const next = displayRpcFromConfig(cfg);
+        const current = (el.value || "").trim();
+        // Never inject public mainnet into the field.
+        if (next) {
+          el.value = next;
+        } else if (!respectTouched) {
+          // Apply / Steady Trade / init: clear public junk; preserve user-typed custom URL.
+          if (!current || isPublicRpcUrl(current)) {
+            el.value = "";
+          }
+        } else {
+          el.value = "";
+        }
       }
       const rpcHint = document.getElementById("rpcUrlHint");
       if (rpcHint) {
         const fieldVal = (document.getElementById("rpcUrl").value || "").trim();
-        const saved = (cfg.solana_rpc_url || "").trim();
-        const effective = (cfg.rpc_endpoint || saved || "").trim();
+        const saved = displayRpcFromConfig(cfg);
         if (suppressCredFieldFill && !fieldVal) {
           rpcHint.textContent =
-            "RPC field cleared on Stop — paste again to edit; .env endpoint (if saved) still used by the bot";
-        } else if (fieldVal || saved) {
+            "RPC field cleared on Stop — paste your Helius RPC again to edit; .env endpoint (if saved) still used by the bot";
+        } else if (fieldVal && !isPublicRpcUrl(fieldVal)) {
           rpcHint.textContent =
             "RPC kept until Stop Bot" +
-            (saved ? " (Apply may save to .env) — active: " + (fieldVal || saved) : " — active: " + (fieldVal || effective));
-        } else if (effective) {
-          rpcHint.textContent = "Using network default RPC — active: " + effective;
+            (saved ? " (Apply may save to .env) — active: " + fieldVal : " — not saved yet: " + fieldVal);
+        } else if (saved) {
+          rpcHint.textContent = "Saved RPC in .env — active: " + saved + " (paste to edit; Apply to update)";
         } else {
-          rpcHint.textContent = "RPC field kept until Stop Bot; Apply may save to .env";
+          rpcHint.textContent =
+            "RPC field blank until you paste. Paper may use public RPC; Live requires Helius. Apply saves to .env.";
         }
       }
       if (cfg.scan_pumpfun != null) {
@@ -3812,10 +3858,10 @@
         scan_gmgn: document.getElementById("includeGmgnToggle").checked,
       };
       const rpc = document.getElementById("rpcUrl").value.trim();
-      if (rpc) {
+      if (rpc && !isPublicRpcUrl(rpc)) {
         payload.solana_rpc_url = rpc;
       } else if (rpcTouched) {
-        // User intentionally cleared the field — persist empty (network default).
+        // User intentionally cleared the field (or pasted public URL) — persist empty.
         payload.solana_rpc_url = "";
       }
       // When empty and not touched, omit so Start/Apply cannot wipe a saved RPC.

@@ -112,8 +112,15 @@ def test_rpc_and_wallet_persist_ui():
     assert 'id="walletKeyStatus"' in html
     assert "Key set for session" in html
     assert "omit so Start/Apply cannot wipe a saved RPC" in html
-    assert "clearCredentialFieldsUI" not in html
-    assert "suppressCredFieldFill" not in html
+    assert "function isPublicRpcUrl(" in html
+    assert "function displayRpcFromConfig(" in html
+    assert 'id="rpcHeliusNote"' in html
+    assert "Helius" in html
+    assert "font-weight:700" in html
+    # Never refill the field from public mainnet
+    assert "Never inject public mainnet" in html
+    assert "clearCredentialFieldsUI" in html
+    assert "suppressCredFieldFill" in html
     print("PASS: RPC/wallet persist UI guards present")
 
 
@@ -185,13 +192,17 @@ def test_api_config_get_post():
 
 
 def test_api_bot_start_stop_paper():
-    with _client() as client:
-        client.post("/api/bot/force-reset", json={}, environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
-        r = client.post(
-            "/api/bot/start",
-            json={"paper_trade": True},
-            environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
-        )
+    from unittest.mock import patch
+
+    with patch("bot_manager.RiskManager.can_start_trading", return_value=(True, "")):
+        with patch("bot_manager.has_open_positions", return_value=False):
+            with _client() as client:
+                client.post("/api/bot/force-reset", json={}, environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+                r = client.post(
+                    "/api/bot/start",
+                    json={"paper_trade": True},
+                    environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+                )
     assert r.status_code == 200, r.get_data(as_text=True)
     with _client() as client:
         rs = client.post("/api/bot/stop", json={}, environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
@@ -201,15 +212,19 @@ def test_api_bot_start_stop_paper():
 
 def test_api_bot_start_firefox_ua_cors():
     """Simulate Firefox same-origin POST with Origin header."""
-    with _client() as client:
-        client.post("/api/bot/force-reset", json={}, environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
-        origin = "http://127.0.0.1:5000"
-        r = client.post(
-            "/api/bot/start",
-            json={"paper_trade": True},
-            headers={"Origin": origin, "User-Agent": FIREFOX_UA},
-            environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
-        )
+    from unittest.mock import patch
+
+    with patch("bot_manager.RiskManager.can_start_trading", return_value=(True, "")):
+        with patch("bot_manager.has_open_positions", return_value=False):
+            with _client() as client:
+                client.post("/api/bot/force-reset", json={}, environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+                origin = "http://127.0.0.1:5000"
+                r = client.post(
+                    "/api/bot/start",
+                    json={"paper_trade": True},
+                    headers={"Origin": origin, "User-Agent": FIREFOX_UA},
+                    environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+                )
     assert r.status_code == 200, r.get_data(as_text=True)
     acao = r.headers.get("Access-Control-Allow-Origin")
     assert acao == origin, f"CORS origin mismatch for Firefox: {acao}"
@@ -223,6 +238,7 @@ def main():
         test_index_html_has_required_buttons,
         test_index_javascript_parses,
         test_update_bookmark_hint_in_scope,
+        test_rpc_and_wallet_persist_ui,
         test_bind_helpers_and_no_inline_onclick,
         test_brave_compat_footer,
         test_firefox_compat_footer,

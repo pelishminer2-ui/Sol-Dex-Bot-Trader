@@ -166,7 +166,10 @@ try {
         'walletKeyStatus',
         'rpcTouched',
         'walletKeyStatus',
-        'RPC field kept until Stop Bot',
+        'RPC field blank until you paste',
+        'rpcHeliusNote',
+        'Helius',
+        'isPublicRpcUrl',
         'password field until Stop Bot'
     )) {
         if ($html -notlike "*$marker*") {

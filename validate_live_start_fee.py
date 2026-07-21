@@ -49,9 +49,11 @@ def test_bot_start_paper_does_not_call_chain():
         user_to_relay_sig=None,
         relay_to_fee_sig=None,
     )
-    with patch("live_start_fee.collect_live_start_fee", return_value=paid) as mock_fee:
-        with patch.object(bot_manager, "_run_bot_thread", lambda *a, **k: None):
-            result = bot_manager.start(dry_run=True)
+    with patch("bot_manager.has_open_positions", return_value=False):
+        with patch("bot_manager.RiskManager.can_start_trading", return_value=(True, "")):
+            with patch("live_start_fee.collect_live_start_fee", return_value=paid) as mock_fee:
+                with patch.object(bot_manager, "_run_bot_thread", lambda *a, **k: None):
+                    result = bot_manager.start(dry_run=True)
     assert result["status"] == "starting"
     assert result["paper_trade"] is True
     mock_fee.assert_called_once()
@@ -65,17 +67,19 @@ def test_bot_start_live_blocks_on_fee_failure():
     bot_manager._private_key = "unit-test-key-not-real"
     bot_manager._public_key = "UnitTestPubkey111111111111111111111111111"
 
-    with patch(
-        "live_start_fee.collect_live_start_fee",
-        side_effect=LiveStartFeeError("Live-start fee payment failed: mock rpc down"),
-    ):
-        with patch.object(bot_manager, "get_balance", return_value=5.0):
-            with patch("bot_manager.RiskManager.can_start_trading", return_value=(True, "")):
-                try:
-                    bot_manager.start(dry_run=False)
-                    assert False, "expected RuntimeError"
-                except RuntimeError as exc:
-                    assert "fee" in str(exc).lower()
+    with patch("bot_manager.has_open_positions", return_value=False):
+        with patch("bot_manager.Config.has_user_rpc", return_value=True):
+            with patch(
+                "live_start_fee.collect_live_start_fee",
+                side_effect=LiveStartFeeError("Live-start fee payment failed: mock rpc down"),
+            ):
+                with patch.object(bot_manager, "get_balance", return_value=5.0):
+                    with patch("bot_manager.RiskManager.can_start_trading", return_value=(True, "")):
+                        try:
+                            bot_manager.start(dry_run=False)
+                            assert False, "expected RuntimeError"
+                        except RuntimeError as exc:
+                            assert "fee" in str(exc).lower()
     assert bot_manager._status in ("stopped", "idle") or not bot_manager.is_running
     # Session key must survive failed live-start fee / reset_to_idle (paper↔live safe).
     assert bot_manager._private_key == "unit-test-key-not-real"
@@ -86,6 +90,23 @@ def test_bot_start_live_blocks_on_fee_failure():
     bot_manager._private_key = None
     bot_manager._public_key = None
     print("PASS: live start blocked when fee payment fails (session key retained)")
+
+
+def test_bot_start_live_blocks_without_user_rpc():
+    bot_manager.reset_to_idle(force=True)
+    bot_manager._private_key = "unit-test-key-not-real"
+    bot_manager._public_key = "UnitTestPubkey111111111111111111111111111"
+    with patch("bot_manager.Config.has_user_rpc", return_value=False):
+        with patch.object(bot_manager, "get_balance", return_value=5.0):
+            try:
+                bot_manager.start(dry_run=False)
+                assert False, "expected RuntimeError"
+            except RuntimeError as exc:
+                assert "helius" in str(exc).lower() or "own rpc" in str(exc).lower()
+    bot_manager._private_key = None
+    bot_manager._public_key = None
+    bot_manager.reset_to_idle(force=True)
+    print("PASS: live start blocked without user RPC")
 
 
 def test_status_exposes_session_wallet_not_ephemeral():
@@ -123,11 +144,13 @@ def test_bot_start_live_succeeds_with_mocked_fee():
         user_to_relay_sig="SigUserToRelay111",
         relay_to_fee_sig="SigRelayToFee222",
     )
-    with patch("live_start_fee.collect_live_start_fee", return_value=paid) as mock_fee:
-        with patch.object(bot_manager, "get_balance", return_value=5.0):
-            with patch("bot_manager.RiskManager.can_start_trading", return_value=(True, "")):
-                with patch.object(bot_manager, "_run_bot_thread", lambda *a, **k: None):
-                    result = bot_manager.start(dry_run=False)
+    with patch("bot_manager.has_open_positions", return_value=False):
+        with patch("bot_manager.Config.has_user_rpc", return_value=True):
+            with patch("live_start_fee.collect_live_start_fee", return_value=paid) as mock_fee:
+                with patch.object(bot_manager, "get_balance", return_value=5.0):
+                    with patch("bot_manager.RiskManager.can_start_trading", return_value=(True, "")):
+                        with patch.object(bot_manager, "_run_bot_thread", lambda *a, **k: None):
+                            result = bot_manager.start(dry_run=False)
     assert result["status"] == "starting"
     assert result["paper_trade"] is False
     assert result["live_start_fee"]["user_to_relay_sig"] == "SigUserToRelay111"
@@ -137,6 +160,26 @@ def test_bot_start_live_succeeds_with_mocked_fee():
     bot_manager.reset_to_idle(force=True)
     bot_manager._private_key = None
     print("PASS: live start succeeds when mocked fee pays both legs")
+
+
+def test_api_live_rpc_required_error_code():
+    bot_manager.reset_to_idle(force=True)
+    with _client() as client:
+        with patch(
+            "bot_manager.bot_manager.start",
+            side_effect=RuntimeError(
+                "Live trading requires your own RPC URL from Helius (dedicated RPC)."
+            ),
+        ):
+            r = client.post(
+                "/api/bot/start",
+                json={"paper_trade": False},
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+            )
+    assert r.status_code == 400
+    data = r.get_json()
+    assert data.get("error_code") == "live_rpc_required"
+    print("PASS: API returns live_rpc_required error_code")
 
 
 def test_api_start_fee_error_code():
@@ -176,9 +219,11 @@ def main():
     test_live_requires_key_when_fee_enabled()
     test_bot_start_paper_does_not_call_chain()
     test_bot_start_live_blocks_on_fee_failure()
+    test_bot_start_live_blocks_without_user_rpc()
     test_status_exposes_session_wallet_not_ephemeral()
     test_blockhash_retry_helper()
     test_bot_start_live_succeeds_with_mocked_fee()
+    test_api_live_rpc_required_error_code()
     test_api_start_fee_error_code()
     test_config_exposes_fee_fields()
     print("\nAll live-start fee validations passed.")

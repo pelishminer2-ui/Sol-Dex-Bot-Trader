@@ -25,6 +25,46 @@ PROJECT_ROOT = _resolve_project_root()
 
 load_dotenv(PROJECT_ROOT / ".env")
 
+# Public Solana RPC — paper fallback only. Never treat as a user-supplied live RPC.
+PUBLIC_MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com"
+_PUBLIC_RPC_HOSTS = frozenset(
+    {
+        "api.mainnet-beta.solana.com",
+        "api.devnet.solana.com",
+        "api.testnet.solana.com",
+    }
+)
+
+
+def is_public_rpc_url(url: str | None) -> bool:
+    """True when URL is a Solana Labs public cluster endpoint (not Helius/etc.)."""
+    raw = str(url or "").strip()
+    if not raw:
+        return False
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(raw).hostname or "").lower()
+    except Exception:
+        host = ""
+    if host in _PUBLIC_RPC_HOSTS:
+        return True
+    lowered = raw.rstrip("/").lower()
+    return lowered in {
+        PUBLIC_MAINNET_RPC_URL.lower(),
+        "http://api.mainnet-beta.solana.com",
+        "https://api.devnet.solana.com",
+        "https://api.testnet.solana.com",
+    }
+
+
+def normalize_user_rpc_url(url: str | None) -> str:
+    """User RPC for live/.env display — empty when unset or public cluster URL."""
+    raw = str(url or "").strip()
+    if not raw or is_public_rpc_url(raw):
+        return ""
+    return raw
+
 
 def resolve_data_path(value: str) -> Path:
     """Resolve a config path relative to PROJECT_ROOT unless already absolute."""
@@ -1131,7 +1171,8 @@ def normalize_take_profit_levels(levels: list[float]) -> list[float]:
 class Config:
     SOLANA_NETWORK = os.getenv("SOLANA_NETWORK", "mainnet-beta")
     SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "")
-    SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "")
+    # Public mainnet URL in .env is ignored (paper may still fall back via get_rpc_endpoint).
+    SOLANA_RPC_URL = normalize_user_rpc_url(os.getenv("SOLANA_RPC_URL", ""))
 
     JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
     JUPITER_QUOTE_API = os.getenv(
@@ -1952,8 +1993,9 @@ class Config:
         "yes",
         "on",
     )
-    # After Flask/process restart, auto-resume trading if runtime state says running.
-    AUTO_RESUME_ON_START = os.getenv("AUTO_RESUME_ON_START", "true").lower() in (
+    # Never auto-start trading on Flask boot — user must click Start Bot.
+    # Opt-in only via AUTO_RESUME_ON_START=true (default off).
+    AUTO_RESUME_ON_START = os.getenv("AUTO_RESUME_ON_START", "false").lower() in (
         "1",
         "true",
         "yes",
@@ -2162,7 +2204,7 @@ class Config:
     RPC_ENDPOINTS = {
         "devnet": "https://api.devnet.solana.com",
         "testnet": "https://api.testnet.solana.com",
-        "mainnet-beta": "https://api.mainnet-beta.solana.com",
+        "mainnet-beta": PUBLIC_MAINNET_RPC_URL,
     }
 
     @classmethod
@@ -2374,9 +2416,31 @@ class Config:
         return cls.MAX_ENTRY_PRICE_IMPACT_PCT
 
     @classmethod
-    def get_rpc_endpoint(cls) -> str:
-        if cls.SOLANA_RPC_URL:
-            return cls.SOLANA_RPC_URL
+    def user_rpc_url(cls) -> str:
+        """Custom RPC from field/.env; empty when unset or public cluster URL."""
+        return normalize_user_rpc_url(cls.SOLANA_RPC_URL)
+
+    @classmethod
+    def has_user_rpc(cls) -> bool:
+        return bool(cls.user_rpc_url())
+
+    @classmethod
+    def get_rpc_endpoint(cls, *, allow_public: bool = True) -> str:
+        """Resolve RPC URL.
+
+        Paper/dry-run may fall back to public mainnet when no custom RPC is set.
+        Live trading must pass allow_public=False (requires Helius/dedicated RPC).
+        """
+        user = cls.user_rpc_url()
+        if user:
+            return user
+        if not allow_public:
+            raise RuntimeError(
+                "Live trading requires your own RPC URL (Helius dedicated RPC). "
+                "Paste it in the RPC field and click Apply Config. "
+                "Public mainnet RPC (api.mainnet-beta.solana.com) cannot be used "
+                "for Live fee/transactions (BlockhashNotFound / flaky txs)."
+            )
         return cls.RPC_ENDPOINTS.get(cls.SOLANA_NETWORK, cls.RPC_ENDPOINTS["mainnet-beta"])
 
     @classmethod
@@ -2533,7 +2597,8 @@ class Config:
             if key == "TAKE_PROFIT_PORTIONS":
                 coerced = normalize_take_profit_portions(coerced)
             if key == "SOLANA_RPC_URL":
-                coerced = str(coerced or "").strip()
+                # Never persist public cluster URLs as a "user" RPC (UI stays blank).
+                coerced = normalize_user_rpc_url(coerced)
                 if getattr(cls, key, "") == coerced:
                     continue
                 setattr(cls, key, coerced)
@@ -2731,8 +2796,10 @@ class Config:
             "min_paper_fund_sol": cls.MIN_PAPER_FUND_SOL,
             "min_fund_waiver_hours": cls.MIN_FUND_WAIVER_HOURS,
             "min_fund_waiver_after_session_trade": cls.MIN_FUND_WAIVER_AFTER_SESSION_TRADE,
-            "solana_rpc_url": cls.SOLANA_RPC_URL,
-            "rpc_endpoint": cls.get_rpc_endpoint(),
+            "solana_rpc_url": cls.user_rpc_url(),
+            "has_user_rpc": cls.has_user_rpc(),
+            # Effective endpoint for paper/status (may be public fallback). Live start rejects public.
+            "rpc_endpoint": cls.get_rpc_endpoint(allow_public=True),
             "solana_network": cls.SOLANA_NETWORK,
             "scan_interval_sec": cls.SCAN_INTERVAL_SEC,
             "price_poll_sec": cls.PRICE_POLL_SEC,
