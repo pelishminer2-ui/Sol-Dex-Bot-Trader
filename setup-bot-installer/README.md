@@ -2,7 +2,7 @@
 
 Build **setup.exe** from this folder. End users only run `setup.exe`; they never need `launch.ps1` / `.bat`.
 
-Current product version is in `version.txt` (now **1.1.4**). Each `build.ps1` run stamps local date/time into:
+Current product version is in `version.txt` (now **1.1.5**). Each `build.ps1` run stamps local date/time into:
 
 - `BUILD_INFO.txt` (shipped with the app + copied to `output\`)
 - Inno `VersionInfo*` / `AppVerName` on `output\setup.exe`
@@ -38,6 +38,7 @@ Outputs:
 2. Regenerate the end-user PDF (`generate_user_guide.py`)
 3. PyInstaller onedir freeze (`SolDexBotTrader.spec`, `console=False` / windowed)
 4. Inno Setup compile (`setup.iss` → `output\setup.exe`)
+5. **Touch-All:** set `LastWriteTime` on every packaging-tree file under `setup-bot-installer\` (scripts, assets, iss, pdfs, version, BUILD_INFO, `output\*`, sources) to the build stamp — excludes huge `build\` PyInstaller intermediates
 
 ## PDF only
 

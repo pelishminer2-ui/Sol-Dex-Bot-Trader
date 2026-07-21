@@ -24,7 +24,7 @@ function Get-AppVersion {
         $v = (Get-Content -Raw $vf).Trim()
         if ($v) { return $v }
     }
-    return "1.1.3"
+    return "1.1.5"
 }
 
 function Write-BuildStamp {
@@ -312,23 +312,28 @@ try {
         Write-Host "[4/4] Skipping Inno Setup"
     }
 
-    # build.bat / build.ps1 content rarely changes; touch mtimes so Explorer
-    # "Date modified" tracks the last successful build (real stamp is BUILD_INFO.txt).
-    # Also align BUILD_INFO.txt mtimes with setup.exe so all three match in Explorer.
+    # Align Explorer "Date modified" across the whole packaging tree to the
+    # successful build stamp. Real truth remains BUILD_INFO.txt / VersionInfo.
+    # Excludes huge PyInstaller intermediates under build\ (not user-visible).
     $nowTouch = Get-Date
-    $touchList = @(
-        (Join-Path $InstallerDir "build.bat"),
-        (Join-Path $InstallerDir "build.ps1"),
-        (Join-Path $InstallerDir "BUILD_INFO.txt"),
-        (Join-Path $OutDir "BUILD_INFO.txt"),
-        (Join-Path $OutDir "setup.exe")
-    )
-    foreach ($p in $touchList) {
-        if (Test-Path $p) {
-            (Get-Item $p).LastWriteTime = $nowTouch
+    $touched = 0
+    $skipped = 0
+    Get-ChildItem -Path $InstallerDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notmatch '[\\/]build[\\/]' -and
+            $_.FullName -notmatch '[\\/]\.git[\\/]'
+        } |
+        ForEach-Object {
+            try {
+                $_.LastWriteTime = $nowTouch
+                $_.LastAccessTime = $nowTouch
+                $touched++
+            } catch {
+                $skipped++
+                Write-Host ("Touch skipped: {0} ({1})" -f $_.FullName, $_.Exception.Message) -ForegroundColor Yellow
+            }
         }
-    }
-
+    Write-Host ("Touched {0} packaging file(s) to {1} (skipped {2})" -f $touched, $nowTouch.ToString("yyyy-MM-dd HH:mm:ss"), $skipped) -ForegroundColor Cyan
 
     Write-Host ""
     Write-Host "Build complete — SolDexBotTrader.exe was NOT started (leave app closed after build/fix)."

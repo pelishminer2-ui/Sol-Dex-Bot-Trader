@@ -47,9 +47,10 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.4"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.5"
     except OSError:
-        return "1.1.3"
+        return "1.1.5"
+
 
 
 def _guide_built_stamp() -> str:
