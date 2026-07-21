@@ -24,7 +24,7 @@ function Get-AppVersion {
         $v = (Get-Content -Raw $vf).Trim()
         if ($v) { return $v }
     }
-    return "1.1.5"
+    return "1.1.6"
 }
 
 function Write-BuildStamp {
@@ -161,7 +161,10 @@ try {
         'onWalletConnectClick',
         'phantomBtn.disabled = false',
         'sessionWalletPubkey',
-        'survives Paper Trade'
+        'survives Paper Trade',
+        'clearCredentialFieldsUI',
+        'suppressCredFieldFill',
+        'session_rpc_url'
     )) {
         if ($html -notlike "*$marker*") {
             throw "Dashboard missing required marker '$marker' in $DashHtml"
@@ -204,6 +207,9 @@ try {
     if ($bm -notlike "*session_public_key*" -or $bm -notlike "*wallet_ephemeral*") {
         throw "bot_manager status must expose session_public_key and wallet_ephemeral"
     }
+    if ($bm -notlike "*clear_session_credentials*" -or $bm -notlike "*_session_rpc_url*") {
+        throw "bot_manager must clear session credentials on Stop and track session RPC"
+    }
     $SetupIss = Join-Path $InstallerDir "setup.iss"
     $iss = Get-Content -Raw -Path $SetupIss
     # Installer Finish page: optional Launch checkbox (unchecked by default).
@@ -214,7 +220,7 @@ try {
     if ($iss -notmatch '(?im)Filename:.*MyAppExeName.*Flags:.*postinstall.*unchecked') {
         throw "setup.iss [Run] Launch entry must use Flags: ... postinstall ... unchecked (optional, off by default)"
     }
-    Write-Host "Preflight OK: wallet Connect + optional unchecked Launch checkbox + session key retention + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
+    Write-Host "Preflight OK: wallet Connect + session key/RPC until Stop + optional unchecked Launch + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "[1/4] Ensuring build dependencies..."

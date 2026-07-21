@@ -2532,10 +2532,23 @@ class Config:
                 coerced = normalize_take_profit_levels(coerced)
             if key == "TAKE_PROFIT_PORTIONS":
                 coerced = normalize_take_profit_portions(coerced)
-            if key == "SOLANA_RPC_URL" and getattr(cls, key, "") != coerced:
+            if key == "SOLANA_RPC_URL":
+                coerced = str(coerced or "").strip()
+                if getattr(cls, key, "") == coerced:
+                    continue
                 setattr(cls, key, coerced)
+                if coerced:
+                    os.environ["SOLANA_RPC_URL"] = coerced
+                else:
+                    os.environ.pop("SOLANA_RPC_URL", None)
+                # Persist so Flask restart / page refresh reloads the same endpoint.
+                _write_env_keys(
+                    {"solana_rpc_url": coerced},
+                    {"solana_rpc_url": "SOLANA_RPC_URL"},
+                )
                 applied[key] = coerced
-                needs_restart.append(key)
+                # Config.get_rpc_endpoint() is live immediately; bot_manager may
+                # hot-swap an open SolanaClient. No full Flask restart required.
                 continue
             if key in ("INCLUDE_PUMPFUN", "SCAN_PUMPFUN"):
                 setattr(cls, "SCAN_PUMPFUN", coerced)
@@ -2719,6 +2732,7 @@ class Config:
             "min_fund_waiver_hours": cls.MIN_FUND_WAIVER_HOURS,
             "min_fund_waiver_after_session_trade": cls.MIN_FUND_WAIVER_AFTER_SESSION_TRADE,
             "solana_rpc_url": cls.SOLANA_RPC_URL,
+            "rpc_endpoint": cls.get_rpc_endpoint(),
             "solana_network": cls.SOLANA_NETWORK,
             "scan_interval_sec": cls.SCAN_INTERVAL_SEC,
             "price_poll_sec": cls.PRICE_POLL_SEC,

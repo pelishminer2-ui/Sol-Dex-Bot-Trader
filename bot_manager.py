@@ -241,8 +241,9 @@ class BotManager:
             return bool(self._private_key or Config.SOLANA_PRIVATE_KEY)
 
     def get_session_public_key(self) -> Optional[str]:
-        """Pubkey from Set Wallet / .env only (never paper ephemeral)."""
-        return self.get_public_key()
+        """Pubkey from Set Wallet session memory only (never paper ephemeral)."""
+        with self._lock:
+            return self._public_key
 
     def _thread_is_alive(self) -> bool:
         with self._lock:
@@ -746,11 +747,13 @@ class BotManager:
             companion_open = companion_slot_open(open_mints)
             wbtc_companion = wbtc_companion_slot_open(open_mints)
             proxy_companion = proxy_companion_slot_open(open_mints)
-            # Session / .env key only — never treat paper ephemeral keypair as "wallet set".
-            session_public_key = self.get_public_key()
+            # Session Set Wallet pubkey when present; else .env-derived pubkey.
+            session_public_key = self.get_session_public_key()
             wallet_ephemeral = False
             public_key = session_public_key
-            if bot and bot.solana and not session_public_key:
+            if not public_key:
+                public_key = self.get_public_key()
+            if bot and bot.solana and not public_key:
                 public_key = str(bot.solana.public_key)
                 wallet_ephemeral = True
             trade_candidates: List[Dict[str, Any]] = []
@@ -819,6 +822,7 @@ class BotManager:
             "session_public_key": session_public_key,
             "wallet_ephemeral": wallet_ephemeral,
             "has_wallet": self.has_wallet(),
+            "has_session_wallet": bool(session_public_key),
             "started_at": started_at,
             "bot_started_at": started_at,
             "last_scan_time": last_scan,
@@ -1529,6 +1533,16 @@ class BotManager:
             from session_entry_tuning import apply_runtime_win_lean
 
             apply_runtime_win_lean(result["applied"]["SETUP_LEARNING_MIN_WIN_LEAN"])
+        if "SOLANA_RPC_URL" in result.get("applied", {}):
+            with self._lock:
+                bot = self._bot
+            if bot is not None:
+                try:
+                    bot.apply_rpc_endpoint(result["applied"]["SOLANA_RPC_URL"] or None)
+                except Exception as exc:
+                    logger.warning("RPC hot-apply on running bot failed: %s", exc)
+            result["rpc_endpoint"] = Config.get_rpc_endpoint()
+            result["rpc_persisted"] = True
         return result
 
     def restore_config_bookmark(self) -> Dict[str, Any]:

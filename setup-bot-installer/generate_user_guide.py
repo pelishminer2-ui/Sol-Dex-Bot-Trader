@@ -47,9 +47,9 @@ VERSION_FILE = Path(__file__).resolve().parent / "version.txt"
 
 def _app_version() -> str:
     try:
-        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.5"
+        return VERSION_FILE.read_text(encoding="utf-8").strip() or "1.1.6"
     except OSError:
-        return "1.1.5"
+        return "1.1.6"
 
 
 
@@ -388,7 +388,9 @@ def build_story(styles) -> list:
             "continues (stop-loss, instant profit, and 15-minute rules are unchanged). "
             "Live signing uses the in-memory Set Wallet key (ephemeral) or "
             "<font face='Courier'>SOLANA_PRIVATE_KEY</font> in <font face='Courier'>.env</font> — "
-            "re-Set Wallet after a full restart if you rely on the dashboard key only. "
+            "Stop Bot clears the dashboard key field and the ephemeral session key from memory "
+            "(re-Set Wallet before the next Live start if you do not use .env). "
+            "Session RPC pasted in the dashboard is also cleared on Stop. "
             "Windows keep-awake and a Flask supervisor/watchdog help prevent sleep and silent exits.",
             styles["body"],
         )
@@ -445,8 +447,10 @@ def build_story(styles) -> list:
                 ),
                 ListItem(
                     Paragraph(
-                        "<b>4. Session key retention:</b> The key stays in server memory and is "
-                        "<b>not cleared</b> when you uncheck <b>Paper Trade</b>, Stop, or Force Reset. "
+                        "<b>4. Session key until Stop:</b> The key stays in the Wallet Key field and "
+                        "server memory across Paper Trade toggle and status polls. "
+                        "<b>Stop Bot</b> clears both the RPC and private-key fields and wipes the "
+                        "ephemeral session key (and session RPC override) from memory. "
                         "You can set or update the key even while the bot is running.",
                         styles["bullet"],
                     )

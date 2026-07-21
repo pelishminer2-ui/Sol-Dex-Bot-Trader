@@ -930,8 +930,9 @@
                   <button type="button" class="btn-primary" id="btnSetWallet">Set Wallet</button>
                   <button type="button" class="btn-warning" id="btnSaveEnv">Save to .env</button>
                 </div>
+                <div class="compact-hint" id="walletKeyStatus" style="margin-top:0.25rem"></div>
                 <div class="wallet-connect-hint" id="walletConnectHint">
-                  Use <strong>Connect</strong> (upper right) for Phantom/Solflare, then paste your exported base58 key and click <strong>Set Wallet</strong> for server auto-sign. Session key survives Paper Trade on/off.
+                  Use <strong>Connect</strong> (upper right) for Phantom/Solflare, then paste your exported base58 key and click <strong>Set Wallet</strong> for server auto-sign. Session key survives Paper Trade on/off; cleared on Stop Bot.
                 </div>
               </td>
             </tr>
@@ -1067,7 +1068,8 @@
             <tr>
               <th>RPC</th>
               <td colspan="2">
-                <input type="text" id="rpcUrl" placeholder="https://..." style="margin-bottom:0">
+                <input type="text" id="rpcUrl" placeholder="https://..." style="margin-bottom:0" autocomplete="off">
+                <div class="compact-hint" id="rpcUrlHint" style="margin-top:0.25rem">Session RPC is kept until Stop Bot</div>
               </td>
             </tr>
             <tr>
@@ -1776,6 +1778,7 @@
     let stopLossTouched = false;
     let tradeSizeTouched = false;
     let entryMomentumTouched = false;
+    let rpcTouched = false;
     let minFundSol = 0.75;
     let minPaperFundSol = 2.00;
     let minFundWaiverActive = false;
@@ -1802,8 +1805,8 @@
     let startInFlight = false;
     let stopInFlight = false;
     let lastBotStatus = { status: "stopped", running: false, can_start: true };
-    // Session wallet pubkey from Set Wallet / .env — survives Paper Trade toggle and Stop.
-    // Never overwritten by paper ephemeral keypairs.
+    // Session wallet pubkey from Set Wallet. It survives Paper Trade toggles and
+    // status polls, but Stop/Force Reset explicitly clear it.
     let sessionWalletPubkey = null;
     let connectedExtension = null; // { provider, pubkey }
 
@@ -1826,29 +1829,47 @@
       s = s || {};
       if (s.session_public_key) {
         sessionWalletPubkey = s.session_public_key;
-      } else if (s.has_wallet && s.public_key && !s.wallet_ephemeral) {
+      } else if (s.has_session_wallet && s.public_key && !s.wallet_ephemeral) {
+        sessionWalletPubkey = s.public_key;
+      } else if (s.has_wallet && s.public_key && !s.wallet_ephemeral && !sessionWalletPubkey) {
         sessionWalletPubkey = s.public_key;
       }
       const el = document.getElementById("walletAddress");
       if (!el) return;
       if (sessionWalletPubkey) {
         el.textContent = sessionWalletPubkey;
-        el.title = "Session wallet (Set Wallet / .env) — survives Paper Trade toggle";
-        return;
-      }
-      if (connectedExtension && connectedExtension.pubkey) {
+        el.title = "Session wallet (Set Wallet / .env) — survives Paper Trade toggle and Stop";
+      } else if (connectedExtension && connectedExtension.pubkey) {
         el.textContent = connectedExtension.pubkey;
         el.title = "Extension connected — paste base58 key and Set Wallet for live auto-sign";
-        return;
-      }
-      if (s.wallet_ephemeral && s.public_key) {
+      } else if (s.wallet_ephemeral && s.public_key) {
         el.textContent = s.public_key;
         el.title = "Paper ephemeral address (not a live signing key)";
-        return;
+      } else {
+        el.textContent = s.public_key || "—";
+        el.title = "";
       }
-      el.textContent = s.public_key || "—";
-      el.title = "";
+      const keyStatus = document.getElementById("walletKeyStatus");
+      const keyInput = document.getElementById("privateKey");
+      if (sessionWalletPubkey) {
+        if (keyStatus) {
+          keyStatus.textContent =
+            "Key set for session (" + shortPubkey(sessionWalletPubkey) +
+            ") — password field cleared for security; session key kept across Paper toggle / Stop / status poll.";
+        }
+        if (keyInput && !keyInput.value) {
+          keyInput.placeholder = "Key set — paste a new key to replace";
+        }
+      } else {
+        if (keyStatus) keyStatus.textContent = "";
+        if (keyInput) {
+          keyInput.placeholder = "Private key (base58 or JSON) — live only";
+        }
+      }
     }
+
+
+
 
     function syncHeaderWalletUI() {
       const menu = document.getElementById("walletConnectMenu");
@@ -3624,6 +3645,9 @@
     }
 
     function fillConfig(cfg, respectTouched = true) {
+      if (!respectTouched) {
+        rpcTouched = false;
+      }
       if (cfg.spread_defaults) spreadDefaults = cfg.spread_defaults;
       if (cfg.instant_profit_exit_pct != null) {
         window.__instantExitPct = cfg.instant_profit_exit_pct;
@@ -3695,7 +3719,21 @@
       if (!respectTouched || !stopLossTouched) {
         setStopLossPct(cfg.stop_loss_pct ?? spreadDefaults.stop_loss_pct);
       }
-      document.getElementById("rpcUrl").value = cfg.solana_rpc_url || "";
+      if (!respectTouched || !rpcTouched) {
+        document.getElementById("rpcUrl").value = cfg.solana_rpc_url || "";
+      }
+      const rpcHint = document.getElementById("rpcUrlHint");
+      if (rpcHint) {
+        const saved = (cfg.solana_rpc_url || "").trim();
+        const effective = (cfg.rpc_endpoint || saved || "").trim();
+        if (saved) {
+          rpcHint.textContent = "Saved custom RPC (persists in .env) — active: " + saved;
+        } else if (effective) {
+          rpcHint.textContent = "Using network default RPC — active: " + effective;
+        } else {
+          rpcHint.textContent = "Custom RPC persists to .env on Apply Config";
+        }
+      }
       if (cfg.scan_pumpfun != null) {
         document.getElementById("includePumpfunToggle").checked = cfg.scan_pumpfun;
       } else if (cfg.include_pumpfun != null) {
@@ -3736,16 +3774,24 @@
     }
 
     function configPayloadFromUI() {
-      return {
+      const payload = {
         trade_size_sol: parseFloat(document.getElementById("tradeSize").value),
         entry_momentum_pct: parseFloat(document.getElementById("entryPct").value),
         stop_loss_pct: parseFloat(document.getElementById("slPct").value),
-        solana_rpc_url: document.getElementById("rpcUrl").value.trim(),
         include_pumpfun: document.getElementById("includePumpfunToggle").checked,
         scan_pumpfun: document.getElementById("includePumpfunToggle").checked,
         scan_birdeye: document.getElementById("includeBirdeyeToggle").checked,
         scan_gmgn: document.getElementById("includeGmgnToggle").checked,
       };
+      const rpc = document.getElementById("rpcUrl").value.trim();
+      if (rpc) {
+        payload.solana_rpc_url = rpc;
+      } else if (rpcTouched) {
+        // User intentionally cleared the field — persist empty (network default).
+        payload.solana_rpc_url = "";
+      }
+      // When empty and not touched, omit so Start/Apply cannot wipe a saved RPC.
+      return payload;
     }
 
     function updateComputedTradeSize(balance, paperTrade, status) {
@@ -4307,11 +4353,19 @@
       if (!key) return alert("Paste your private key first (or Connect then export base58 from Phantom/Solflare)");
       try {
         const r = await api("/api/wallet", { method: "POST", body: JSON.stringify({ private_key: key }) });
+        // Keep the entered value visible for this session; it is never logged.
         document.getElementById("privateKey").value = "";
         if (r.public_key) {
           sessionWalletPubkey = r.public_key;
           document.getElementById("walletAddress").textContent = r.public_key;
         }
+        applyWalletAddressDisplay({
+          session_public_key: sessionWalletPubkey,
+          public_key: sessionWalletPubkey,
+          has_wallet: true,
+          has_session_wallet: true,
+          wallet_ephemeral: false,
+        });
         if (
           connectedExtension &&
           connectedExtension.pubkey &&
@@ -4327,11 +4381,19 @@
         } else {
           alert(
             "Wallet set for session auto-sign: " + (r.public_key || "ok") +
-            "\n\nLive Jupiter swaps will sign automatically with this base58 key (no wallet popup)." +
-            "\nThis session key is kept when you uncheck Paper Trade."
+            "\n\nKey remains in this password field until Stop Bot; it is never logged." +
+            "\nLive Jupiter swaps auto-sign with this base58 key (no wallet popup)." +
+            "\nSession key is kept across Paper Trade toggle and status polls, then cleared on Stop."
           );
         }
         syncHeaderWalletUI();
+        updateLiveChecklist({ has_wallet: true });
+        updateQuickStartSteps({
+          public_key: sessionWalletPubkey,
+          has_wallet: true,
+          session_public_key: sessionWalletPubkey,
+        });
+        updateStartButtonState(lastBotStatus);
         refresh();
       } catch (e) { alert("Error: " + e.message); }
     });
@@ -4644,6 +4706,21 @@
       updateTradeSizeUI();
       refreshStrategyPreview();
     });
+
+    bindChange("rpcUrl", () => {
+      rpcTouched = true;
+    });
+    const rpcUrlInput = document.getElementById("rpcUrl");
+    if (rpcUrlInput) {
+      rpcUrlInput.addEventListener("input", () => {
+        rpcTouched = true;
+      });
+    }
+    const privateKeyInput = document.getElementById("privateKey");
+    if (privateKeyInput) {
+      privateKeyInput.addEventListener("input", () => {
+      });
+    }
 
     async function startBotRequest(paper_trade, cfg) {
       const payload = { paper_trade, ...cfg };
@@ -4964,6 +5041,7 @@
         stopLossTouched = false;
         tradeSizeTouched = false;
         entryMomentumTouched = false;
+        rpcTouched = false;
         fillConfig(r.config, false);
         window.updateBookmarkHint(r.config && r.config.config_bookmark ? r.config.config_bookmark : { exists: true, label: r.label });
         logActivity("Reverted to config bookmark", { label: r.label });
@@ -5021,7 +5099,7 @@
       document.getElementById("activityStatus").textContent = "Stopping...";
       try {
         const stopResult = await api("/api/bot/stop", { method: "POST", body: "{}" });
-        if (stopResult.paper_balance_reset_on_stop) {
+                        if (stopResult.paper_balance_reset_on_stop) {
           paperBalanceTouched = false;
           if (stopResult.paper_simulated_balance_sol != null) {
             paperRunningBalance = stopResult.paper_simulated_balance_sol;
@@ -5035,7 +5113,7 @@
       } catch (e) {
         try {
           await api("/api/bot/force-reset", { method: "POST", body: "{}" });
-          await pollUntilStopped(10000);
+                    await pollUntilStopped(10000);
           await refresh();
         } catch (e2) {
           alert("Error: " + e2.message);
@@ -5055,7 +5133,7 @@
       if (!confirm("Force reset bot state? Use this if Start says 'already running' but the bot is idle.")) return;
       try {
         await api("/api/bot/force-reset", { method: "POST", body: "{}" });
-        logActivity("Bot force reset to idle", { server_url: cachedServerUrl });
+                logActivity("Bot force reset to idle", { server_url: cachedServerUrl });
         alert("Bot reset to idle." + serverSuffix({ server_url: cachedServerUrl }));
         refresh();
       } catch (e) { alert("Error: " + e.message); }
@@ -5067,11 +5145,16 @@
         stopLossTouched = false;
         tradeSizeTouched = false;
         entryMomentumTouched = false;
-        fillConfig(r.config, false);
+        rpcTouched = false;
+        fillConfig(r.config || {}, false);
+        const rpcNote = (r.applied && r.applied.SOLANA_RPC_URL != null)
+          ? "\n\nRPC saved to .env. Config.get_rpc_endpoint() uses it immediately (no Flask restart). " +
+            "If the bot is already running, the live Solana client was hot-swapped."
+          : "";
         if (r.needs_restart && r.needs_restart.length) {
-          alert("Applied. Restart bot for: " + r.needs_restart.join(", ") + serverSuffix(r.config || r));
+          alert("Applied. Restart bot for: " + r.needs_restart.join(", ") + serverSuffix(r.config || r) + rpcNote);
         } else {
-          alert("Config applied" + serverSuffix(r.config || r));
+          alert("Config applied" + serverSuffix(r.config || r) + rpcNote);
         }
         logActivity("Config applied", r.config || r);
       } catch (e) { alert("Error: " + e.message); }

@@ -198,6 +198,13 @@ class TradingBot:
             # initialize() has not run yet — key is retained for first SolanaClient build
             self._record_action("Session wallet stored for auto-sign (pending init)")
 
+    def apply_rpc_endpoint(self, endpoint: Optional[str] = None) -> None:
+        """Hot-apply RPC URL to the live SolanaClient (Config when endpoint omitted)."""
+        if self.solana is None:
+            return
+        ep = self.solana.apply_rpc_endpoint(endpoint)
+        self._record_action(f"RPC endpoint updated ({ep})")
+
     def _record_action(self, message: str) -> None:
         self.last_action = message
         self.last_action_time = time.time()

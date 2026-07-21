@@ -54,6 +54,19 @@ class SolanaClient:
         self.keypair = self._load_keypair(private_key)
         self.public_key = self.keypair.pubkey()
 
+    def apply_rpc_endpoint(self, endpoint: Optional[str] = None) -> str:
+        """Hot-swap AsyncClient to a new RPC URL (Config default when endpoint omitted)."""
+        if endpoint is None:
+            ep = Config.get_rpc_endpoint()
+        else:
+            ep = str(endpoint).strip() or Config.get_rpc_endpoint()
+        if ep == self.rpc_endpoint and self.client is not None:
+            return self.rpc_endpoint
+        self.rpc_endpoint = ep
+        self.client = AsyncClient(self.rpc_endpoint, commitment=Confirmed)
+        logger.info("RPC endpoint updated to %s", ep)
+        return self.rpc_endpoint
+
     async def get_balance(self) -> float:
         try:
             response = await self.client.get_balance(self.public_key)

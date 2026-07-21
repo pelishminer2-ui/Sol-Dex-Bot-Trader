@@ -105,6 +105,18 @@ def test_update_bookmark_hint_in_scope():
     print("PASS: updateBookmarkHint defined before fillConfig and bindUiHandlers")
 
 
+def test_rpc_and_wallet_persist_ui():
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "let rpcTouched = false" in html
+    assert "!respectTouched || !rpcTouched" in html
+    assert 'id="walletKeyStatus"' in html
+    assert "Key set for session" in html
+    assert "omit so Start/Apply cannot wipe a saved RPC" in html
+    assert "clearCredentialFieldsUI" not in html
+    assert "suppressCredFieldFill" not in html
+    print("PASS: RPC/wallet persist UI guards present")
+
+
 def test_bind_helpers_and_no_inline_onclick():
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert "function bindClick(" in html
