@@ -1,8 +1,8 @@
-﻿# Sol Dex Bot Trader â€” Windows Installer (Maintainers)
+# Sol Dex Bot Trader â€” Windows Installer (Maintainers)
 
 Build **setup.exe** from this folder. End users only run `setup.exe`; they never need `launch.ps1` / `.bat`.
 
-Current product version is in `version.txt` (now **1.1.5**). Each `build.ps1` run stamps local date/time into:
+Current product version is in `version.txt` (now **1.1.7**). Each `build.ps1` run stamps local date/time into:
 
 - `BUILD_INFO.txt` (shipped with the app + copied to `output\`)
 - Inno `VersionInfo*` / `AppVerName` on `output\setup.exe`

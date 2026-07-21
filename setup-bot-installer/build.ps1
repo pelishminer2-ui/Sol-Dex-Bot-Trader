@@ -24,7 +24,7 @@ function Get-AppVersion {
         $v = (Get-Content -Raw $vf).Trim()
         if ($v) { return $v }
     }
-    return "1.1.6"
+    return "1.1.7"
 }
 
 function Write-BuildStamp {
@@ -166,20 +166,19 @@ try {
         'walletKeyStatus',
         'rpcTouched',
         'walletKeyStatus',
-        'Saved custom RPC',
-        'password field cleared for security'
+        'RPC field kept until Stop Bot',
+        'password field until Stop Bot'
     )) {
         if ($html -notlike "*$marker*") {
             throw "Dashboard missing required marker '$marker' in $DashHtml"
         }
     }
-    foreach ($banned in @(
+    foreach ($marker in @(
         'clearCredentialFieldsUI',
-        'suppressCredFieldFill',
-        'session_credentials_cleared'
+        'suppressCredFieldFill'
     )) {
-        if ($html -like "*$banned*") {
-            throw "Dashboard must not include banned marker '$banned' in $DashHtml"
+        if ($html -notlike "*$marker*") {
+            throw "Dashboard missing required Stop-clear marker '$marker' in $DashHtml"
         }
     }
     $WalletJs = Join-Path $Root "static\wallet_connect.js"
@@ -219,8 +218,11 @@ try {
     if ($bm -notlike "*session_public_key*" -or $bm -notlike "*wallet_ephemeral*") {
         throw "bot_manager status must expose session_public_key and wallet_ephemeral"
     }
-    if ($bm -like "*clear_session_credentials*" -or $bm -like "*_session_rpc_url*") {
-        throw "bot_manager must NOT clear session credentials on Stop or use ephemeral _session_rpc_url"
+    if ($bm -notlike "*clear_session_credentials*") {
+        throw "bot_manager must clear_session_credentials on Stop / Force Reset"
+    }
+    if ($bm -like "*_session_rpc_url*") {
+        throw "bot_manager must NOT use ephemeral _session_rpc_url (RPC persists via .env)"
     }
     if ($bm -notlike "*rpc_persisted*" -or $bm -notlike "*apply_rpc_endpoint*") {
         throw "bot_manager must persist RPC (rpc_persisted) and hot-apply apply_rpc_endpoint"
@@ -241,7 +243,7 @@ try {
     if ($iss -notmatch '(?im)Filename:.*MyAppExeName.*Flags:.*postinstall.*unchecked') {
         throw "setup.iss [Run] Launch entry must use Flags: ... postinstall ... unchecked (optional, off by default)"
     }
-    Write-Host "Preflight OK: wallet Connect + persisted RPC/.env + session key survives Stop + optional unchecked Launch + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
+    Write-Host "Preflight OK: wallet Connect + persisted RPC/.env + Stop clears session key/UI + optional unchecked Launch + blockhash retry + paper 2.00 SOL gate" -ForegroundColor Green
 
 
     Write-Host ""
