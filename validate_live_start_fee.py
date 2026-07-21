@@ -123,12 +123,31 @@ def test_status_exposes_session_wallet_not_ephemeral():
 
 
 def test_blockhash_retry_helper():
-    from live_start_fee import _is_blockhash_error
+    from live_start_fee import _is_blockhash_error, _is_retryable_fee_send_error, _resolve_live_fee_rpc_url
+    from config import Config, is_public_rpc_url
+    from unittest.mock import patch
 
     assert _is_blockhash_error(Exception("BlockhashNotFound"))
     assert _is_blockhash_error(Exception("Transaction simulation failed: Blockhash not found"))
+    assert _is_blockhash_error(
+        Exception("SendTransactionPreflightFailureMessage: BlockhashNotFound")
+    )
     assert not _is_blockhash_error(Exception("insufficient funds"))
-    print("PASS: blockhash error detector")
+    assert _is_retryable_fee_send_error(Exception("BlockhashNotFound"))
+    assert _is_retryable_fee_send_error(Exception("Connection reset by peer"))
+    assert not _is_retryable_fee_send_error(Exception("insufficient funds"))
+
+    with patch.object(Config, "get_rpc_endpoint", return_value="https://api.mainnet-beta.solana.com"):
+        try:
+            _resolve_live_fee_rpc_url()
+            assert False, "expected LiveStartFeeError for public RPC"
+        except LiveStartFeeError as exc:
+            assert "public" in str(exc).lower() or "helius" in str(exc).lower()
+    with patch.object(Config, "get_rpc_endpoint", return_value="https://mainnet.helius-rpc.com/?api-key=test"):
+        url = _resolve_live_fee_rpc_url()
+        assert "helius" in url.lower()
+        assert not is_public_rpc_url(url)
+    print("PASS: blockhash error detector + live fee RPC guard")
 
 
 def test_bot_start_live_succeeds_with_mocked_fee():
@@ -168,7 +187,8 @@ def test_api_live_rpc_required_error_code():
         with patch(
             "bot_manager.bot_manager.start",
             side_effect=RuntimeError(
-                "Live trading requires your own RPC URL from Helius (dedicated RPC)."
+                "Live trading requires your own RPC URL from Helius (dedicated RPC). "
+                "Paste it in the RPC field and click Apply RPC."
             ),
         ):
             r = client.post(
@@ -213,6 +233,50 @@ def test_config_exposes_fee_fields():
     print("PASS: /api/config exposes live-start fee fields")
 
 
+def test_api_apply_rpc_endpoint():
+    bot_manager.reset_to_idle(force=True)
+    with _client() as client:
+        with patch(
+            "bot_manager.bot_manager.apply_user_rpc",
+            return_value={
+                "rpc_applied": True,
+                "rpc_host": "mainnet.helius-rpc.com",
+                "rpc_message": "Helius RPC applied (mainnet.helius-rpc.com)",
+                "rpc_persisted": True,
+                "applied": {"SOLANA_RPC_URL": "https://mainnet.helius-rpc.com/?api-key=x"},
+            },
+        ):
+            r = client.post(
+                "/api/config/apply-rpc",
+                json={"solana_rpc_url": "https://mainnet.helius-rpc.com/?api-key=x"},
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+            )
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data.get("ok") is True
+    assert data.get("rpc_host") == "mainnet.helius-rpc.com"
+    assert "Helius RPC applied" in (data.get("rpc_message") or "")
+    print("PASS: API /api/config/apply-rpc returns masked host confirmation")
+
+
+def test_api_apply_rpc_rejects_public():
+    bot_manager.reset_to_idle(force=True)
+    with _client() as client:
+        with patch(
+            "bot_manager.bot_manager.apply_user_rpc",
+            side_effect=ValueError("Public mainnet RPC cannot be applied for Live."),
+        ):
+            r = client.post(
+                "/api/config/apply-rpc",
+                json={"solana_rpc_url": "https://api.mainnet-beta.solana.com"},
+                environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+            )
+    assert r.status_code == 400
+    data = r.get_json()
+    assert data.get("error_code") == "rpc_apply_failed"
+    print("PASS: API /api/config/apply-rpc rejects public RPC")
+
+
 def main():
     test_paper_skips_fee()
     test_fee_disabled_skips()
@@ -226,6 +290,8 @@ def main():
     test_api_live_rpc_required_error_code()
     test_api_start_fee_error_code()
     test_config_exposes_fee_fields()
+    test_api_apply_rpc_endpoint()
+    test_api_apply_rpc_rejects_public()
     print("\nAll live-start fee validations passed.")
 
 

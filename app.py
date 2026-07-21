@@ -890,6 +890,30 @@ def update_config():
     return jsonify(payload)
 
 
+@app.route("/api/config/apply-rpc", methods=["POST"])
+def apply_rpc():
+    """Dedicated Apply RPC: persist Helius URL to .env and hot-swap the live client."""
+    data = request.get_json(silent=True) or {}
+    rpc_url = data.get("solana_rpc_url")
+    if rpc_url is None:
+        rpc_url = data.get("rpc_url")
+    try:
+        result = bot_manager.apply_user_rpc(rpc_url)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc), "error_code": "rpc_apply_failed"}), 400
+    except Exception as exc:
+        logging.getLogger(__name__).exception("POST /api/config/apply-rpc failed")
+        return jsonify({"ok": False, "error": str(exc), "error_code": "rpc_apply_failed"}), 500
+    try:
+        cfg = Config.to_dict()
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Config.to_dict failed after apply-rpc")
+        return jsonify({"ok": False, "error": f"config serialize failed: {exc}", **result}), 500
+    payload = {"ok": True, **result, "config": cfg}
+    enrich_with_server_info(payload)
+    return jsonify(payload)
+
+
 @app.route("/api/tax/export")
 def tax_export():
     fmt = request.args.get("format", "csv").lower()

@@ -451,10 +451,44 @@ class BotManager:
                 if not dry_run and not Config.has_user_rpc():
                     raise RuntimeError(
                         "Live trading requires your own RPC URL from Helius (dedicated RPC). "
-                        "Paste it in the RPC field and click Apply Config. "
+                        "Paste it in the RPC field and click Apply RPC. "
                         "Public mainnet RPC cannot be used for Live fee/transactions "
                         "(causes BlockhashNotFound / flaky txs)."
                     )
+
+                if not dry_run:
+                    # Force fee path onto the applied user RPC (never public).
+                    from urllib.parse import urlparse
+
+                    from config import is_public_rpc_url
+
+                    live_rpc = Config.user_rpc_url()
+                    if not live_rpc or is_public_rpc_url(live_rpc):
+                        raise RuntimeError(
+                            "Live trading requires your own RPC URL from Helius (dedicated RPC). "
+                            "Paste it in the RPC field and click Apply RPC. "
+                            "Public mainnet RPC cannot be used for Live fee/transactions "
+                            "(causes BlockhashNotFound / flaky txs)."
+                        )
+                    try:
+                        rpc_host = (urlparse(live_rpc).hostname or "").strip() or "(unknown)"
+                    except Exception:
+                        rpc_host = "(unknown)"
+                    logger.info(
+                        "Live start using applied RPC host=%s for fee + trading "
+                        "(public mainnet forbidden)",
+                        rpc_host,
+                    )
+                    with self._lock:
+                        bot = self._bot
+                    if bot is not None:
+                        try:
+                            bot.apply_rpc_endpoint(live_rpc)
+                        except Exception as exc:
+                            logger.warning(
+                                "Pre-fee RPC hot-swap failed (fee uses its own client): %s",
+                                exc,
+                            )
 
                 trade_activity.refresh_from_journal()
                 risk = RiskManager()
@@ -1583,6 +1617,49 @@ class BotManager:
             result["rpc_endpoint"] = Config.get_rpc_endpoint()
             result["rpc_persisted"] = True
         return result
+
+    def apply_user_rpc(self, rpc_url: Optional[str]) -> Dict[str, Any]:
+        """Validate + persist dedicated RPC (Helius), hot-swap client, return masked host.
+
+        Rejects empty and public mainnet URLs. Does not start trading.
+        """
+        from urllib.parse import urlparse
+
+        from config import is_public_rpc_url, normalize_user_rpc_url
+
+        raw = str(rpc_url or "").strip()
+        if not raw:
+            raise ValueError(
+                "Paste your Helius (dedicated) RPC URL in the RPC field, then click Apply RPC."
+            )
+        if is_public_rpc_url(raw):
+            raise ValueError(
+                "Public mainnet RPC cannot be applied for Live. "
+                "Use a Helius dedicated RPC URL, then click Apply RPC."
+            )
+        cleaned = normalize_user_rpc_url(raw)
+        if not cleaned:
+            raise ValueError(
+                "Invalid RPC URL. Paste a Helius https://... URL, then click Apply RPC."
+            )
+        result = self.update_config({"solana_rpc_url": cleaned})
+        try:
+            host = (urlparse(cleaned).hostname or "").strip() or "(unknown)"
+        except Exception:
+            host = "(unknown)"
+        helius_like = "helius" in host.lower()
+        message = (
+            f"Helius RPC applied ({host})"
+            if helius_like
+            else f"RPC applied ({host})"
+        )
+        logger.info("Apply RPC persisted host=%s hot_swapped=%s", host, bool(result.get("rpc_persisted")))
+        return {
+            **result,
+            "rpc_applied": True,
+            "rpc_host": host,
+            "rpc_message": message,
+        }
 
     def restore_config_bookmark(self) -> Dict[str, Any]:
         from config import restore_config_bookmark

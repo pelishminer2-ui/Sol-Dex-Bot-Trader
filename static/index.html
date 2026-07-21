@@ -1068,11 +1068,15 @@
             <tr>
               <th>RPC</th>
               <td colspan="2">
-                <input type="text" id="rpcUrl" placeholder="Paste your Helius RPC URL (https://...)" style="margin-bottom:0" autocomplete="off" value="">
+                <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+                  <input type="text" id="rpcUrl" placeholder="Paste your Helius RPC URL (https://...)" style="flex:1;min-width:14rem;margin-bottom:0" autocomplete="off" value="">
+                  <button type="button" class="btn-secondary" id="btnApplyRpc" title="Save Helius RPC to .env and hot-swap the live fee/trading client">Apply RPC</button>
+                </div>
                 <div id="rpcHeliusNote" style="margin-top:0.35rem;font-weight:700;color:var(--danger)">
                   You must provide your own RPC URL from Helius (dedicated RPC). Public mainnet RPC causes fee/tx failures like BlockhashNotFound and cannot be used for Live trading.
                 </div>
-                <div class="compact-hint" id="rpcUrlHint" style="margin-top:0.25rem">Leave blank until you paste your RPC. Paper may use public RPC; Live requires Helius. Apply saves to .env.</div>
+                <div class="compact-hint" id="rpcApplyStatus" style="margin-top:0.25rem;font-weight:600" aria-live="polite"></div>
+                <div class="compact-hint" id="rpcUrlHint" style="margin-top:0.25rem">Leave blank until you paste your RPC. Paper may use public RPC; Live requires Helius. Click <strong>Apply RPC</strong> to save to .env and confirm the endpoint before Start.</div>
               </td>
             </tr>
             <tr>
@@ -1866,6 +1870,8 @@
         keyInput.placeholder = "Private key (base58 or JSON) — live only";
       }
       if (rpcInput) rpcInput.value = "";
+      const rpcStatus = document.getElementById("rpcApplyStatus");
+      if (rpcStatus) rpcStatus.textContent = "";
       applyWalletAddressDisplay({ has_wallet: false, has_session_wallet: false, session_public_key: null });
       if (keyStatus) keyStatus.textContent = "Session credentials cleared.";
     }
@@ -2129,12 +2135,12 @@
         return "Live trading requires a wallet. Connect Phantom/Solflare (upper right), then paste your exported base58 key and click Set Wallet — or enable Paper Trade.";
       }
       if (err.code === "live_rpc_required") {
-        return "Live start blocked — paste your own Helius (dedicated) RPC URL in the RPC field, click Apply Config, then Start again.\n\n" +
+        return "Live start blocked — paste your own Helius (dedicated) RPC URL, click Apply RPC, then Start again.\n\n" +
           "Public mainnet RPC cannot be used for Live fee/transactions (BlockhashNotFound).\n\n" + msg;
       }
       if (err.code === "live_start_fee_failed") {
         return "Live start blocked — fee payment failed.\n\n" + msg +
-          "\n\nIf you see Blockhash not found, confirm your Helius RPC is applied (not public mainnet), wait a moment, and Start again. Confirm your Set Wallet session key is still shown under Address.";
+          "\n\nIf you see Blockhash not found, confirm Apply RPC shows your Helius host (not public mainnet), wait a moment, and Start again. Confirm your Set Wallet session key is still shown under Address.";
       }
       if (err.code === "insufficient_funds") {
         return msg;
@@ -2145,12 +2151,12 @@
       if (/already running/i.test(msg)) {
         return msg + "\n\nIf the bot is not actually trading, click Stop (or Force Reset) to clear stale state, then Start again.";
       }
-      if (/own rpc|helius|dedicated rpc/i.test(msg)) {
-        return "Live start blocked — paste your own Helius (dedicated) RPC URL in the RPC field, click Apply Config, then Start again.\n\n" + msg;
+      if (/own rpc|helius|dedicated rpc|apply rpc/i.test(msg)) {
+        return "Live start blocked — paste your own Helius (dedicated) RPC URL, click Apply RPC, then Start again.\n\n" + msg;
       }
       if (/live-start fee|fee payment|blockhash/i.test(msg)) {
         return "Live start blocked — fee payment failed.\n\n" + msg +
-          "\n\nSession Set Wallet key is kept across Paper↔Live. Confirm Helius RPC is applied (not public mainnet), then retry Start.";
+          "\n\nSession Set Wallet key is kept across Paper↔Live. Confirm Apply RPC shows your Helius host (not public mainnet), then retry Start.";
       }
       if (/wallet|private key/i.test(msg)) {
         return "Live trading requires a wallet. Connect Phantom/Solflare, then Set Wallet with your base58 key — or enable Paper Trade.";
@@ -3796,16 +3802,35 @@
         const saved = displayRpcFromConfig(cfg);
         if (suppressCredFieldFill && !fieldVal) {
           rpcHint.textContent =
-            "RPC field cleared on Stop — paste your Helius RPC again to edit; .env endpoint (if saved) still used by the bot";
+            "RPC field cleared on Stop — paste your Helius RPC again and click Apply RPC; .env endpoint (if saved) still used by the bot";
         } else if (fieldVal && !isPublicRpcUrl(fieldVal)) {
           rpcHint.textContent =
-            "RPC kept until Stop Bot" +
-            (saved ? " (Apply may save to .env) — active: " + fieldVal : " — not saved yet: " + fieldVal);
+            "RPC in field — click Apply RPC to save/confirm" +
+            (saved ? " (saved host still active until you Apply)" : " (not saved yet)");
         } else if (saved) {
-          rpcHint.textContent = "Saved RPC in .env — active: " + saved + " (paste to edit; Apply to update)";
+          try {
+            const host = new URL(saved).hostname;
+            rpcHint.textContent =
+              "Saved RPC in .env — active host: " + host + " (paste a new URL and Apply RPC to change)";
+          } catch (_) {
+            rpcHint.textContent = "Saved RPC in .env is active (paste to edit; Apply RPC to update)";
+          }
         } else {
           rpcHint.textContent =
-            "RPC field blank until you paste. Paper may use public RPC; Live requires Helius. Apply saves to .env.";
+            "RPC field blank until you paste. Paper may use public RPC; Live requires Helius. Click Apply RPC before Live Start.";
+        }
+      }
+      const rpcApplyStatus = document.getElementById("rpcApplyStatus");
+      if (rpcApplyStatus && !rpcApplyStatus.dataset.locked) {
+        const saved = displayRpcFromConfig(cfg);
+        if (saved) {
+          try {
+            const host = new URL(saved).hostname;
+            const label = /helius/i.test(host) ? "Helius RPC applied" : "RPC applied";
+            rpcApplyStatus.textContent = label + " (" + host + ")";
+          } catch (_) {
+            rpcApplyStatus.textContent = "RPC applied (saved in .env)";
+          }
         }
       }
       if (cfg.scan_pumpfun != null) {
@@ -5228,9 +5253,8 @@
         suppressCredFieldFill = false;
         fillConfig(r.config || {}, false);
         const rpcNote = (r.applied && r.applied.SOLANA_RPC_URL != null)
-          ? "\n\nRPC saved to .env. Config.get_rpc_endpoint() uses it immediately (no Flask restart). " +
-            "If the bot is already running, the live Solana client was hot-swapped." +
-            "\nStop Bot blanks the RPC field in the UI; .env is kept unless you clear and Apply empty."
+          ? "\n\nRPC saved to .env. Prefer the dedicated Apply RPC button next to the RPC field for a clear host confirmation. " +
+            "Config.get_rpc_endpoint() uses it immediately (no Flask restart)."
           : "";
         if (r.needs_restart && r.needs_restart.length) {
           alert("Applied. Restart bot for: " + r.needs_restart.join(", ") + serverSuffix(r.config || r) + rpcNote);
@@ -5239,6 +5263,60 @@
         }
         logActivity("Config applied", r.config || r);
       } catch (e) { alert("Error: " + e.message); }
+    });
+
+    bindClick("btnApplyRpc", async () => {
+      const rpcInput = document.getElementById("rpcUrl");
+      const statusEl = document.getElementById("rpcApplyStatus");
+      const rpc = (rpcInput && rpcInput.value ? rpcInput.value : "").trim();
+      if (!rpc) {
+        if (statusEl) {
+          statusEl.dataset.locked = "1";
+          statusEl.textContent = "Paste a Helius RPC URL first, then click Apply RPC.";
+          statusEl.style.color = "var(--danger)";
+        }
+        alert("Paste your Helius RPC URL in the RPC field, then click Apply RPC.");
+        return;
+      }
+      if (isPublicRpcUrl(rpc)) {
+        if (statusEl) {
+          statusEl.dataset.locked = "1";
+          statusEl.textContent = "Public mainnet RPC rejected — use Helius.";
+          statusEl.style.color = "var(--danger)";
+        }
+        alert("Public mainnet RPC cannot be applied for Live. Paste a Helius dedicated RPC URL, then Apply RPC.");
+        return;
+      }
+      try {
+        const r = await api("/api/config/apply-rpc", {
+          method: "POST",
+          body: JSON.stringify({ solana_rpc_url: rpc }),
+        });
+        rpcTouched = false;
+        suppressCredFieldFill = false;
+        const host = r.rpc_host || "";
+        const msg = r.rpc_message || (host ? ("Helius RPC applied (" + host + ")") : "RPC applied");
+        if (statusEl) {
+          statusEl.dataset.locked = "1";
+          statusEl.textContent = msg;
+          statusEl.style.color = "var(--success, #1a7f37)";
+        }
+        fillConfig(r.config || {}, false);
+        if (statusEl) {
+          statusEl.dataset.locked = "1";
+          statusEl.textContent = msg;
+          statusEl.style.color = "var(--success, #1a7f37)";
+        }
+        logActivity("RPC applied", { rpc_host: host, rpc_persisted: r.rpc_persisted });
+        alert(msg + "\n\nSaved to .env. Live start fee will use this endpoint." + serverSuffix(r.config || r));
+      } catch (e) {
+        if (statusEl) {
+          statusEl.dataset.locked = "1";
+          statusEl.textContent = "Apply RPC failed: " + (e.message || e);
+          statusEl.style.color = "var(--danger)";
+        }
+        alert("Apply RPC failed: " + (e.message || e));
+      }
     });
 
     function downloadTaxExport(format, report) {

@@ -198,6 +198,20 @@ try {
     if ($fee -notlike "*_is_blockhash_error*" -or $fee -notlike "*_fetch_fresh_blockhash*") {
         throw "live_start_fee.py must refetch blockhash and retry on BlockhashNotFound"
     }
+    if ($fee -notlike "*_FEE_SEND_ATTEMPTS*" -or $fee -notlike "*skip_preflight*") {
+        throw "live_start_fee.py must multi-retry fee sends with skip_preflight on BlockhashNotFound"
+    }
+    if ($html -notlike "*btnApplyRpc*" -or $html -notlike "*Apply RPC*") {
+        throw "Dashboard must include dedicated Apply RPC button (btnApplyRpc)"
+    }
+    if ($html -notlike "*rpcApplyStatus*") {
+        throw "Dashboard must show rpcApplyStatus confirmation for applied Helius host"
+    }
+    $AppPy = Join-Path $Root "app.py"
+    $appPy = Get-Content -Raw -Path $AppPy
+    if ($appPy -notlike "*apply-rpc*" -or $appPy -notlike "*apply_user_rpc*") {
+        throw "app.py must expose /api/config/apply-rpc wired to bot_manager.apply_user_rpc"
+    }
     if ($html -match 'type="number"\s+id="liveTradeableInput"') {
         throw "Live tradeable control is still a number input; expected <select> dropdown in $DashHtml"
     }
@@ -213,7 +227,7 @@ try {
     $BotManager = Join-Path $Root "bot_manager.py"
     $bm = Get-Content -Raw -Path $BotManager
     if ($bm -like "*Stop the bot before changing wallet*") {
-        throw "bot_manager.set_wallet still blocks while running — remove that guard"
+        throw "bot_manager.set_wallet still blocks while running ? remove that guard"
     }
     if ($bm -notlike "*apply_session_key*") {
         throw "bot_manager.set_wallet must hot-apply apply_session_key for live auto-sign"
@@ -230,6 +244,12 @@ try {
     if ($bm -notlike "*rpc_persisted*" -or $bm -notlike "*apply_rpc_endpoint*") {
         throw "bot_manager must persist RPC (rpc_persisted) and hot-apply apply_rpc_endpoint"
     }
+    if ($bm -notlike "*apply_user_rpc*") {
+        throw "bot_manager must expose apply_user_rpc for dedicated Apply RPC button"
+    }
+    if ($bm -notlike "*Apply RPC*") {
+        throw "bot_manager live-start messages must tell user to click Apply RPC"
+    }
     if ($cfg -notlike "*SOLANA_RPC_URL*" -or $cfg -notlike '*"solana_rpc_url": coerced*') {
         throw "config.py must persist SOLANA_RPC_URL to .env on runtime apply"
     }
@@ -239,7 +259,7 @@ try {
     $SetupIss = Join-Path $InstallerDir "setup.iss"
     $iss = Get-Content -Raw -Path $SetupIss
     # Installer Finish page: optional Launch checkbox (unchecked by default).
-    # Agent/build must NOT Start-Process SolDexBotTrader.exe after build — leave app closed.
+    # Agent/build must NOT Start-Process SolDexBotTrader.exe after build ? leave app closed.
     if ($iss -notmatch '(?im)\[Run\]') {
         throw "setup.iss must have [Run] with optional Launch checkbox on Finish page"
     }
@@ -279,7 +299,7 @@ try {
         Write-Host ""
         Write-Host "[3/4] PyInstaller freeze..."
         if (-not (Test-Path (Join-Path $InstallerDir "BUILD_INFO.txt"))) {
-            throw "BUILD_INFO.txt missing — build stamp step failed"
+            throw "BUILD_INFO.txt missing ? build stamp step failed"
         }
         $DistPath = Join-Path $InstallerDir "build\app"
         $WorkPath = Join-Path $InstallerDir "build\pyi-work"
@@ -369,7 +389,7 @@ try {
     Write-Host ("Touched {0} packaging file(s) to {1} (skipped {2})" -f $touched, $nowTouch.ToString("yyyy-MM-dd HH:mm:ss"), $skipped) -ForegroundColor Cyan
 
     Write-Host ""
-    Write-Host "Build complete — SolDexBotTrader.exe was NOT started (leave app closed after build/fix)."
+    Write-Host "Build complete ? SolDexBotTrader.exe was NOT started (leave app closed after build/fix)."
     Write-Host "Maintainer notes: see setup-bot-installer\README.md"
     Write-Host "Truth stamp: setup-bot-installer\BUILD_INFO.txt (and output\BUILD_INFO.txt)"
 }

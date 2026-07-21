@@ -60,6 +60,7 @@ ALLOWED_ROUTES: Set[Tuple[str, str]] = {
     ("POST", "/api/actions/dev/preview"),
     ("DELETE", "/api/actions/dev/preview"),
     ("POST", "/api/config"),
+    ("POST", "/api/config/apply-rpc"),
     ("POST", "/api/config/save-bookmark"),
     ("POST", "/api/config/apply-best-win-strategy"),
     ("POST", "/api/config/apply-balanced-win-strategy"),

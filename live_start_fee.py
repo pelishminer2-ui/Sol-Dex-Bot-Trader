@@ -23,19 +23,25 @@ from dataclasses import dataclass
 from typing import Optional
 
 import base58
+from urllib.parse import urlparse
+
 from solana.rpc.async_api import AsyncClient
-from solana.rpc.commitment import Confirmed
+from solana.rpc.commitment import Confirmed, Processed
 from solana.rpc.models import TxOpts
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
-from config import Config
+from config import Config, is_public_rpc_url
 
 logger = logging.getLogger(__name__)
 
 LAMPORTS_PER_SOL = 1_000_000_000
+# Fresh blockhash + resend on each attempt. Do not rely on RPC max_retries for
+# BlockhashNotFound — that only rebroadcasts the same dead bytes.
+_FEE_SEND_ATTEMPTS = 5
+_FEE_RETRY_BASE_SLEEP_SEC = 0.35
 
 
 class LiveStartFeeError(RuntimeError):
@@ -86,15 +92,78 @@ def _is_blockhash_error(exc: BaseException) -> bool:
         or "blockhash not found" in msg
         or "blockhash" in msg and "not found" in msg
         or "expired" in msg and "blockhash" in msg
+        or "sendtransactionpreflightfailure" in msg and "blockhash" in msg
     )
 
 
+def _is_retryable_fee_send_error(exc: BaseException) -> bool:
+    if _is_blockhash_error(exc):
+        return True
+    msg = str(exc).lower()
+    name = type(exc).__name__.lower()
+    return (
+        "timeout" in msg
+        or "timed out" in msg
+        or "connection" in msg
+        or "temporarily unavailable" in msg
+        or "429" in msg
+        or "503" in msg
+        or "502" in msg
+        or "httpstatuserror" in name
+        or "connecterror" in name
+        or "readtimeout" in name
+    )
+
+
+def _rpc_host_for_log(rpc_url: str) -> str:
+    """Hostname only — never log API-key query params."""
+    try:
+        host = (urlparse(rpc_url).hostname or "").strip()
+    except Exception:
+        host = ""
+    return host or "(unknown)"
+
+
+def _resolve_live_fee_rpc_url() -> str:
+    """Live fee must use applied user Helius/dedicated RPC only — never public mainnet."""
+    try:
+        rpc_url = Config.get_rpc_endpoint(allow_public=False)
+    except RuntimeError as exc:
+        raise LiveStartFeeError(str(exc)) from exc
+    if not rpc_url or is_public_rpc_url(rpc_url):
+        raise LiveStartFeeError(
+            "Live-start fee refused public mainnet RPC. "
+            "Paste your Helius (dedicated) RPC URL, click Apply RPC, then Start again."
+        )
+    return rpc_url
+
+
 async def _fetch_fresh_blockhash(client: AsyncClient):
-    """Fetch a fresh recent blockhash immediately before signing (never reuse)."""
-    blockhash_resp = await client.get_latest_blockhash(commitment=Confirmed)
-    if blockhash_resp.value is None:
-        raise LiveStartFeeError("Failed to fetch recent blockhash for fee payment")
-    return blockhash_resp.value.blockhash
+    """Fetch a fresh blockhash immediately before signing (never reuse).
+
+    Prefer processed (freshest), then confirmed. Raises if both fail.
+    """
+    last_exc: Optional[BaseException] = None
+    for commitment in (Processed, Confirmed):
+        try:
+            blockhash_resp = await client.get_latest_blockhash(commitment=commitment)
+            if blockhash_resp.value is not None:
+                return blockhash_resp.value.blockhash
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "getLatestBlockhash(%s) failed for live fee: %s",
+                commitment,
+                exc,
+            )
+    raise LiveStartFeeError(
+        f"Failed to fetch recent blockhash for fee payment: {last_exc}"
+    )
+
+
+async def _open_fee_client(rpc_url: str) -> AsyncClient:
+    """Create a dedicated AsyncClient bound to the applied live RPC."""
+    return AsyncClient(rpc_url, commitment=Confirmed)
 
 
 async def _send_sol(
@@ -102,7 +171,10 @@ async def _send_sol(
     payer: Keypair,
     dest: Pubkey,
     lamports: int,
-) -> str:
+    *,
+    rpc_url: str,
+) -> tuple[str, AsyncClient]:
+    """Send SOL; returns (signature, client) — client may be recreated on retry."""
     if lamports <= 0:
         raise LiveStartFeeError("Transfer amount must be positive")
 
@@ -114,24 +186,39 @@ async def _send_sol(
         )
     )
     last_exc: Optional[BaseException] = None
-    # Fresh blockhash per attempt; one retry on BlockhashNotFound / stale preflight.
-    for attempt in range(2):
+    active = client
+    for attempt in range(_FEE_SEND_ATTEMPTS):
+        # First attempt: preflight on. Later attempts: skip preflight so a stale
+        # simulation BlockhashNotFound cannot block a freshly signed tx.
+        skip_preflight = attempt > 0
         try:
-            recent = await _fetch_fresh_blockhash(client)
+            if attempt > 0 and attempt % 2 == 0:
+                # Hot-recreate client mid-retry in case the HTTP session went stale.
+                try:
+                    await active.close()
+                except Exception:
+                    pass
+                active = await _open_fee_client(rpc_url)
+                logger.info(
+                    "Live-start fee recreated RPC client host=%s attempt=%s",
+                    _rpc_host_for_log(rpc_url),
+                    attempt + 1,
+                )
+            recent = await _fetch_fresh_blockhash(active)
             tx = Transaction.new_signed_with_payer(
                 [ix],
                 payer.pubkey(),
                 [payer],
                 recent,
             )
-            resp = await client.send_raw_transaction(
+            resp = await active.send_raw_transaction(
                 bytes(tx),
-                opts=TxOpts(skip_preflight=False, max_retries=3),
+                opts=TxOpts(skip_preflight=skip_preflight, max_retries=0),
             )
             if not resp.value:
                 raise LiveStartFeeError("Fee transfer broadcast returned no signature")
             sig = str(resp.value)
-            conf = await client.confirm_transaction(resp.value, commitment=Confirmed)
+            conf = await active.confirm_transaction(resp.value, commitment=Confirmed)
             if not conf.value:
                 raise LiveStartFeeError(f"Fee transfer not confirmed: {sig}")
             status = conf.value[0]
@@ -139,21 +226,26 @@ async def _send_sol(
                 raise LiveStartFeeError(
                     f"Fee transfer failed on-chain: {sig} err={getattr(status, 'err', None)}"
                 )
-            return sig
+            return sig, active
         except LiveStartFeeError:
             raise
         except Exception as exc:
             last_exc = exc
-            if attempt == 0 and _is_blockhash_error(exc):
+            if attempt < _FEE_SEND_ATTEMPTS - 1 and _is_retryable_fee_send_error(exc):
                 logger.warning(
-                    "Live-start fee BlockhashNotFound/stale blockhash; "
-                    "refetching fresh blockhash and retrying once: %s",
+                    "Live-start fee send retryable failure "
+                    "(attempt %s/%s, skip_preflight=%s, rpc=%s): %s — "
+                    "refetching fresh blockhash and retrying",
+                    attempt + 1,
+                    _FEE_SEND_ATTEMPTS,
+                    skip_preflight,
+                    _rpc_host_for_log(rpc_url),
                     exc,
                 )
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(_FEE_RETRY_BASE_SLEEP_SEC * (attempt + 1))
                 continue
             raise LiveStartFeeError(f"Fee transfer failed: {exc}") from exc
-    raise LiveStartFeeError(f"Fee transfer failed after blockhash retry: {last_exc}")
+    raise LiveStartFeeError(f"Fee transfer failed after blockhash retries: {last_exc}")
 
 
 async def _collect_async(private_key: str) -> LiveStartFeeResult:
@@ -175,18 +267,17 @@ async def _collect_async(private_key: str) -> LiveStartFeeResult:
     relay_pubkey = str(relay.pubkey())
     user_sig: Optional[str] = None
     relay_sig: Optional[str] = None
-    try:
-        rpc_url = Config.get_rpc_endpoint(allow_public=False)
-    except RuntimeError as exc:
-        raise LiveStartFeeError(str(exc)) from exc
-    client = AsyncClient(rpc_url, commitment=Confirmed)
+    rpc_url = _resolve_live_fee_rpc_url()
+    rpc_host = _rpc_host_for_log(rpc_url)
+    logger.info("Live-start fee using dedicated RPC host=%s (public mainnet forbidden)", rpc_host)
+    client = await _open_fee_client(rpc_url)
     try:
         try:
             bal_resp = await client.get_balance(user.pubkey())
         except Exception as exc:
             raise LiveStartFeeError(
                 f"cannot verify wallet balance for live-start fee via RPC "
-                f"({rpc_url}): {exc}. "
+                f"host={rpc_host}: {exc}. "
                 f"Apply a working Helius/dedicated RPC endpoint and retry."
             ) from exc
         bal_lamports = int(bal_resp.value or 0)
@@ -197,25 +288,31 @@ async def _collect_async(private_key: str) -> LiveStartFeeResult:
                 f"Insufficient SOL for live-start fee. Need at least "
                 f"{fee_sol + buffer_sol:.4f} SOL (fee {fee_sol} + relay buffer "
                 f"{buffer_sol}); wallet {user.pubkey()} has {have:.6f} SOL "
-                f"(RPC {rpc_url})."
+                f"(RPC host={rpc_host})."
             )
 
         # Leg 1: user → ephemeral relay (fee + buffer for relay tx fee)
-        user_sig = await _send_sol(client, user, relay.pubkey(), needed)
+        user_sig, client = await _send_sol(
+            client, user, relay.pubkey(), needed, rpc_url=rpc_url
+        )
         logger.info(
-            "Live-start fee leg1 user→relay sig=%s relay=%s amount_sol=%.6f",
+            "Live-start fee leg1 user→relay sig=%s relay=%s amount_sol=%.6f rpc=%s",
             user_sig,
             relay_pubkey,
             fee_sol + buffer_sol,
+            rpc_host,
         )
 
         # Leg 2: ephemeral → project fee wallet (exact fee)
-        relay_sig = await _send_sol(client, relay, fee_dest, _lamports(fee_sol))
+        relay_sig, client = await _send_sol(
+            client, relay, fee_dest, _lamports(fee_sol), rpc_url=rpc_url
+        )
         logger.info(
-            "Live-start fee leg2 relay→fee_wallet sig=%s fee_wallet=%s amount_sol=%.6f",
+            "Live-start fee leg2 relay→fee_wallet sig=%s fee_wallet=%s amount_sol=%.6f rpc=%s",
             relay_sig,
             fee_wallet_str,
             fee_sol,
+            rpc_host,
         )
 
         return LiveStartFeeResult(

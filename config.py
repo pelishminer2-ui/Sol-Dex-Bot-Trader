@@ -2437,7 +2437,7 @@ class Config:
         if not allow_public:
             raise RuntimeError(
                 "Live trading requires your own RPC URL (Helius dedicated RPC). "
-                "Paste it in the RPC field and click Apply Config. "
+                "Paste it in the RPC field and click Apply RPC. "
                 "Public mainnet RPC (api.mainnet-beta.solana.com) cannot be used "
                 "for Live fee/transactions (BlockhashNotFound / flaky txs)."
             )

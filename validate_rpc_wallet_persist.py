@@ -160,6 +160,39 @@ def test_write_env_keys_rpc_roundtrip():
     print("PASS: write env")
 
 
+def test_apply_user_rpc_rejects_public_and_persists():
+    prev = Config.SOLANA_RPC_URL
+    prev_env = os.environ.get("SOLANA_RPC_URL")
+    try:
+        try:
+            bot_manager.apply_user_rpc("https://api.mainnet-beta.solana.com")
+            assert False, "expected ValueError for public RPC"
+        except ValueError as exc:
+            assert "public" in str(exc).lower() or "helius" in str(exc).lower()
+        try:
+            bot_manager.apply_user_rpc("")
+            assert False, "expected ValueError for empty RPC"
+        except ValueError as exc:
+            assert "paste" in str(exc).lower() or "apply rpc" in str(exc).lower()
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            with patch("config.PROJECT_ROOT", Path(tmp)):
+                custom = "https://mainnet.helius-rpc.com/?api-key=unit-test-key"
+                result = bot_manager.apply_user_rpc(custom)
+                assert result.get("rpc_applied") is True
+                assert result.get("rpc_host") == "mainnet.helius-rpc.com"
+                assert "Helius RPC applied" in (result.get("rpc_message") or "")
+                assert Config.user_rpc_url() == custom
+                assert "SOLANA_RPC_URL=" in env_path.read_text(encoding="utf-8")
+    finally:
+        Config.SOLANA_RPC_URL = prev
+        if prev_env is None:
+            os.environ.pop("SOLANA_RPC_URL", None)
+        else:
+            os.environ["SOLANA_RPC_URL"] = prev_env
+    print("PASS: apply_user_rpc rejects public and persists Helius")
+
+
 if __name__ == "__main__":
     test_rpc_update_persists_env_and_hot_endpoint()
     test_rpc_hot_swap_on_solana_client()
@@ -168,4 +201,5 @@ if __name__ == "__main__":
     test_public_rpc_sanitized_for_ui_and_live()
     test_auto_resume_off_by_default()
     test_write_env_keys_rpc_roundtrip()
+    test_apply_user_rpc_rejects_public_and_persists()
     print("All RPC/wallet persist checks passed.")
