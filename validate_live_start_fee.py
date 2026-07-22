@@ -29,12 +29,18 @@ def test_fee_disabled_skips():
 
 
 def test_live_requires_key_when_fee_enabled():
-    with patch("live_start_fee.Config.FEE_ENABLED", True):
-        try:
-            collect_live_start_fee(dry_run=False, private_key=None)
-            assert False, "expected LiveStartFeeError"
-        except LiveStartFeeError as exc:
-            assert "private key" in str(exc).lower()
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "no_paid.json"
+        with patch("live_start_fee.Config.FEE_ENABLED", True):
+            with patch("live_start_fee.Config.LIVE_START_FEE_PAID_PATH", str(path)):
+                try:
+                    collect_live_start_fee(dry_run=False, private_key=None)
+                    assert False, "expected LiveStartFeeError"
+                except LiveStartFeeError as exc:
+                    assert "private key" in str(exc).lower()
     print("PASS: live fee requires private key")
 
 
@@ -277,6 +283,67 @@ def test_api_apply_rpc_rejects_public():
     print("PASS: API /api/config/apply-rpc rejects public RPC")
 
 
+def test_session_fee_paid_skips_chain():
+    from live_start_fee import (
+        collect_live_start_fee,
+        is_live_start_fee_paid,
+        mark_live_start_fee_paid,
+    )
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "live_start_fee_paid.json"
+        with patch("live_start_fee.Config.LIVE_START_FEE_PAID_PATH", str(path)):
+            with patch("live_start_fee.Config.FEE_ENABLED", True):
+                assert is_live_start_fee_paid() is False
+                mark_live_start_fee_paid(reason="session_already_paid", fee_sol=0.025)
+                assert is_live_start_fee_paid() is True
+                result = collect_live_start_fee(dry_run=False, private_key="fake")
+    assert result.skipped is True
+    assert result.reason == "session_fee_paid"
+    print("PASS: durable session fee-paid marker skips chain fee")
+
+
+def test_bot_start_skips_fee_when_session_paid():
+    from live_start_fee import mark_live_start_fee_paid
+    from pathlib import Path
+    import tempfile
+
+    bot_manager.reset_to_idle(force=True)
+    bot_manager._private_key = "unit-test-key-not-real"
+    bot_manager._public_key = "UnitTestPubkey111111111111111111111111111"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "live_start_fee_paid.json"
+        with patch("live_start_fee.Config.LIVE_START_FEE_PAID_PATH", str(path)):
+            mark_live_start_fee_paid(reason="session_already_paid")
+            with patch("bot_manager.has_open_positions", return_value=False):
+                with patch("bot_manager.Config.has_user_rpc", return_value=True):
+                    with patch.object(bot_manager, "get_balance", return_value=5.0):
+                        with patch(
+                            "bot_manager.RiskManager.can_start_trading",
+                            return_value=(True, ""),
+                        ):
+                            with patch.object(
+                                bot_manager, "_run_bot_thread", lambda *a, **k: None
+                            ):
+                                with patch(
+                                    "live_start_fee._collect_async"
+                                ) as mock_chain:
+                                    result = bot_manager.start(dry_run=False)
+                                    assert result["status"] == "starting"
+                                    assert result["live_start_fee"]["skipped"] is True
+                                    assert (
+                                        result["live_start_fee"]["reason"]
+                                        == "session_fee_paid"
+                                    )
+                                    mock_chain.assert_not_called()
+    bot_manager.reset_to_idle(force=True)
+    bot_manager._private_key = None
+    bot_manager._public_key = None
+    print("PASS: live start skips fee when session paid marker set")
+
+
 def main():
     test_paper_skips_fee()
     test_fee_disabled_skips()
@@ -287,6 +354,8 @@ def main():
     test_status_exposes_session_wallet_not_ephemeral()
     test_blockhash_retry_helper()
     test_bot_start_live_succeeds_with_mocked_fee()
+    test_session_fee_paid_skips_chain()
+    test_bot_start_skips_fee_when_session_paid()
     test_api_live_rpc_required_error_code()
     test_api_start_fee_error_code()
     test_config_exposes_fee_fields()

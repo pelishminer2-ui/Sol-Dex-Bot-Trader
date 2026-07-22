@@ -499,14 +499,27 @@ class BotManager:
 
                 resuming = has_open_positions(dry_run=dry_run)
 
-                # Live-start fee (paper skips). Skip when resuming open books after crash/restart.
-                from live_start_fee import LiveStartFeeError, collect_live_start_fee
+                # Live-start fee (paper skips). Skip when resuming open books OR
+                # durable session paid/waived marker (Flask restart bookmark).
+                from live_start_fee import (
+                    LiveStartFeeError,
+                    collect_live_start_fee,
+                    is_live_start_fee_paid,
+                    mark_live_start_fee_paid,
+                )
 
                 if resuming:
                     self._last_live_start_fee = {
                         "skipped": True,
                         "reason": "resume_open_positions",
                     }
+                    # Keep / set paid marker so a later empty-books Start after
+                    # process restart still does not re-charge this session.
+                    if not dry_run:
+                        try:
+                            mark_live_start_fee_paid(reason="resume_open_positions")
+                        except OSError:
+                            pass
                 else:
                     try:
                         fee_result = collect_live_start_fee(dry_run=dry_run, private_key=key)
@@ -519,6 +532,11 @@ class BotManager:
                             fee_result.relay_pubkey,
                             fee_result.user_to_relay_sig,
                             fee_result.relay_to_fee_sig,
+                        )
+                    elif fee_result.reason == "session_fee_paid":
+                        logger.info(
+                            "Live-start fee waived (session paid marker; is_paid=%s)",
+                            is_live_start_fee_paid(),
                         )
 
                 if not dry_run and not Config.ENFORCE_TRANSFER_GUARD:
@@ -975,7 +993,16 @@ class BotManager:
             "firewall": get_firewall_stats(),
             "trading_lock": trading_lock.is_authorized(self.is_running, silent=True),
             "transfer_guard": get_transfer_guard_stats(),
+            "live_start_fee_paid": False,
+            "live_start_fee_last": getattr(self, "_last_live_start_fee", None),
         }
+        try:
+            from live_start_fee import is_live_start_fee_paid, load_live_start_fee_paid
+
+            result["live_start_fee_paid"] = bool(is_live_start_fee_paid())
+            result["live_start_fee_paid_marker"] = load_live_start_fee_paid()
+        except Exception:
+            pass
         result.update(paper_session_manager.get_session_stats())
         result.update(trade_activity.status_fields())
         from setup_learner import SetupLearner

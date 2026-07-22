@@ -2178,6 +2178,11 @@ class Config:
     BOT_RUNTIME_STATE_PATH = str(
         resolve_data_path(os.getenv("BOT_RUNTIME_STATE_PATH", "bot_runtime_state.json"))
     )
+    LIVE_START_FEE_PAID_PATH = str(
+        resolve_data_path(
+            os.getenv("LIVE_START_FEE_PAID_PATH", "data/live_start_fee_paid.json")
+        )
+    )
     OPEN_POSITIONS_STATE_PATH = str(
         resolve_data_path(
             os.getenv("OPEN_POSITIONS_STATE_PATH", "data/open_positions.json")

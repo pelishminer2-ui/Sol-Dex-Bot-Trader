@@ -8,6 +8,12 @@ Flow:
   3. Transfer exact fee: ephemeral → FEE_WALLET
   4. Discard ephemeral private key (never persist)
 
+Skip (no chain tx) when:
+  - paper / dry-run
+  - FEE_ENABLED=false
+  - resuming open positions (bot_manager)
+  - durable session paid/waived marker on disk (Flask restart bookmark)
+
 The fee path signs SystemProgram transfers directly and does NOT go through
 tx_authorizer (which only allows Jupiter swap flows). This is intentional:
 the product fee is not a trade. Trading exits and transfer-guard rules for
@@ -19,8 +25,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 import base58
 from urllib.parse import urlparse
@@ -333,12 +341,75 @@ async def _collect_async(private_key: str) -> LiveStartFeeResult:
             pass
 
 
+def _fee_paid_path() -> Path:
+    raw = getattr(Config, "LIVE_START_FEE_PAID_PATH", "data/live_start_fee_paid.json")
+    return Path(str(raw))
+
+
+def load_live_start_fee_paid() -> Optional[dict[str, Any]]:
+    """Return durable paid/waived marker dict, or None if absent/invalid."""
+    path = _fee_paid_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not (data.get("paid") is True or data.get("waived") is True):
+        return None
+    return data
+
+
+def is_live_start_fee_paid() -> bool:
+    return load_live_start_fee_paid() is not None
+
+
+def mark_live_start_fee_paid(
+    *,
+    reason: str = "paid",
+    fee_sol: Optional[float] = None,
+    fee_wallet: str = "",
+    user_to_relay_sig: Optional[str] = None,
+    relay_to_fee_sig: Optional[str] = None,
+    relay_pubkey: Optional[str] = None,
+) -> dict[str, Any]:
+    """Persist session fee-paid/waived marker. Never clears existing marker fields on rewrite."""
+    path = _fee_paid_path()
+    prev = load_live_start_fee_paid() or {}
+    fee = float(
+        fee_sol
+        if fee_sol is not None
+        else getattr(Config, "LIVE_START_FEE_SOL", 0.025) or 0.025
+    )
+    payload: dict[str, Any] = {
+        "paid": True,
+        "waived": True,
+        "reason": reason or prev.get("reason") or "paid",
+        "fee_sol": fee,
+        "fee_wallet": (fee_wallet or prev.get("fee_wallet") or getattr(Config, "FEE_WALLET", "") or "").strip(),
+        "paid_at": prev.get("paid_at") or time.time(),
+        "updated_at": time.time(),
+        "user_to_relay_sig": user_to_relay_sig or prev.get("user_to_relay_sig"),
+        "relay_to_fee_sig": relay_to_fee_sig or prev.get("relay_to_fee_sig"),
+        "relay_pubkey": relay_pubkey or prev.get("relay_pubkey"),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.error("Failed to persist live-start fee paid marker: %s", exc)
+        raise
+    return payload
+
+
 def collect_live_start_fee(
     *,
     dry_run: bool,
     private_key: Optional[str],
 ) -> LiveStartFeeResult:
-    """Collect the live-start fee or skip for paper / disabled.
+    """Collect the live-start fee or skip for paper / disabled / already-paid.
 
     Raises LiveStartFeeError on failure when a fee is required.
     """
@@ -371,16 +442,45 @@ def collect_live_start_fee(
         logger.info("Live-start fee skipped (FEE_ENABLED=false)")
         return result
 
+    paid_marker = load_live_start_fee_paid()
+    if paid_marker is not None:
+        result = LiveStartFeeResult(
+            skipped=True,
+            reason="session_fee_paid",
+            fee_sol=float(paid_marker.get("fee_sol") or fee_sol),
+            fee_wallet=str(paid_marker.get("fee_wallet") or fee_wallet),
+            relay_pubkey=paid_marker.get("relay_pubkey"),
+            user_to_relay_sig=paid_marker.get("user_to_relay_sig"),
+            relay_to_fee_sig=paid_marker.get("relay_to_fee_sig"),
+        )
+        logger.info("Live-start fee skipped (session already paid/waived)")
+        return result
+
     if not private_key:
         raise LiveStartFeeError("Set a wallet private key before live trading (fee payment required)")
 
     try:
-        return asyncio.run(_collect_async(private_key))
+        result = asyncio.run(_collect_async(private_key))
     except LiveStartFeeError:
         raise
     except Exception as exc:
         logger.exception("Live-start fee payment failed")
         raise LiveStartFeeError(f"Live-start fee payment failed: {exc}") from exc
+
+    if not result.skipped:
+        try:
+            mark_live_start_fee_paid(
+                reason="paid",
+                fee_sol=result.fee_sol,
+                fee_wallet=result.fee_wallet,
+                user_to_relay_sig=result.user_to_relay_sig,
+                relay_to_fee_sig=result.relay_to_fee_sig,
+                relay_pubkey=result.relay_pubkey,
+            )
+        except OSError:
+            # Fee already left the wallet; do not fail start over marker I/O.
+            logger.error("Live-start fee paid on-chain but marker write failed")
+    return result
 
 
 def fee_notice_text() -> str:

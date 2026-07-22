@@ -1,0 +1,12 @@
+{
+  "paid": true,
+  "waived": true,
+  "reason": "session_already_paid_before_ata_restart",
+  "fee_sol": 0.025,
+  "fee_wallet": "8TdLLnveaK5iFD6dmVU7qfw8V14cM7CyCcHiZfgcRQMi",
+  "paid_at": 1784682087.3606837,
+  "updated_at": 1784682087.360684,
+  "user_to_relay_sig": null,
+  "relay_to_fee_sig": null,
+  "relay_pubkey": null
+}
