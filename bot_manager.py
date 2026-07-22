@@ -1764,6 +1764,7 @@ class BotManager:
     def unblock_mint(
         self, mint: str, *, symbol: str = "", name: str = ""
     ) -> Dict[str, Any]:
+        from reentry_retry import reentry_retry_manager
         from stock_token_filter import add_stock_allowlist_mint, is_stock_related_token
 
         mint = (mint or "").strip()
@@ -1779,12 +1780,14 @@ class BotManager:
             if bot:
                 session_cleared = bot.strategy.clear_mint_blocks(mint).get("cleared", [])
 
+        reentry_cleared = reentry_retry_manager.clear_mint_denial(mint)
         after = self._mint_block_snapshot(mint, symbol=symbol, name=name)
         return {
             "mint": mint,
             "symbol": symbol or None,
             "before_blocks": before["blocks"],
             "session_cleared": session_cleared,
+            "reentry_cleared": reentry_cleared,
             "after_blocks": after["blocks"],
             "unblocked": not after["blocked"],
         }

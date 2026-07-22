@@ -263,6 +263,29 @@ class ReentryRetryManager:
             "deny_similar_pattern": deny_similar_pattern,
         }
 
+    def clear_mint_denial(self, mint: str) -> Dict[str, Any]:
+        """Remove re-chase user deny / timed block for a mint (entry gate only)."""
+        mint = (mint or "").strip()
+        if not mint:
+            return {"mint": mint, "cleared": False, "reason": "empty_mint"}
+        rec = self.mints.get(mint)
+        if not rec:
+            return {"mint": mint, "cleared": False, "reason": "not_found"}
+        symbol = rec.get("symbol") or ""
+        had_deny = bool(
+            (rec.get("user_decision") or {}).get("allow") is False
+            or rec.get("block_until", 0) > self._now()
+            or rec.get("pending_user_action")
+        )
+        self.mints.pop(mint, None)
+        self._save()
+        return {
+            "mint": mint,
+            "symbol": symbol or None,
+            "cleared": True,
+            "had_deny": had_deny,
+        }
+
     def status_snapshot(self) -> dict:
         pending = self.get_pending_actions()
         return {

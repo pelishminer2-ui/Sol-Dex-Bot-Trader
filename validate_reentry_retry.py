@@ -122,6 +122,28 @@ def test_user_deny_similar_blocks_pattern():
     print("PASS: deny similar blocks matching candidates")
 
 
+def test_clear_mint_denial_removes_user_deny():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ReentryRetryManager(Path(tmp) / "state4b.json")
+        mint = "mint4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b"
+        rec = store._mint_record(mint, "ANSEM")
+        rec["pending_user_action"] = True
+        store.apply_decision(mint, allow=False, deny_similar_pattern=False)
+        denied, _ = store.entry_denied_for_candidate(
+            _candidate(mint=mint, symbol="ANSEM")
+        )
+        assert denied
+        result = store.clear_mint_denial(mint)
+        assert result["cleared"] is True
+        assert result["had_deny"] is True
+        assert mint not in store.mints
+        denied_after, _ = store.entry_denied_for_candidate(
+            _candidate(mint=mint, symbol="ANSEM")
+        )
+        assert denied_after is False
+    print("PASS: clear_mint_denial removes user deny")
+
+
 def test_win_clears_retry_state():
     with tempfile.TemporaryDirectory() as tmp:
         store = ReentryRetryManager(Path(tmp) / "state5.json")
@@ -148,6 +170,7 @@ def main():
     test_session_retry_loss_blocks_reopen()
     test_user_allow_clears_block()
     test_user_deny_similar_blocks_pattern()
+    test_clear_mint_denial_removes_user_deny()
     test_win_clears_retry_state()
     test_manager_singleton_active()
     print("\nAll reentry retry validations passed.")
