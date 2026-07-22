@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -22,22 +24,86 @@ logger = logging.getLogger(__name__)
 JUPITER_V6_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 JUPITER_V4_PROGRAM = "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB"
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2dvvtandZdxQ7WH9MoNcLd8f4x3"
+# Official Associated Token Account program (SPL).
+ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"
 
-ALLOWED_SWAP_PROGRAMS: FrozenSet[str] = frozenset({
+_DEFAULT_ALLOWED_SWAP_PROGRAMS: FrozenSet[str] = frozenset({
     JUPITER_V6_PROGRAM,
     JUPITER_V4_PROGRAM,
-    TOKEN_PROGRAM_ID,
+    str(TOKEN_PROGRAM_ID),
     TOKEN_2022_PROGRAM,
     ASSOCIATED_TOKEN_PROGRAM,
     COMPUTE_BUDGET_PROGRAM,
     str(SYSTEM_PROGRAM_ID),
 })
 
+# Backward-compatible alias; prefer get_allowed_swap_programs() which also
+# merges data/allowed_programs.json on every authorize/inspect call.
+ALLOWED_SWAP_PROGRAMS: FrozenSet[str] = _DEFAULT_ALLOWED_SWAP_PROGRAMS
+
+_ALLOWED_PROGRAMS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "allowed_programs.json"
+)
+_runtime_extra_programs: Set[str] = set()
+_programs_lock = threading.Lock()
+
 SYSTEM_TRANSFER_DISCRIMINATOR = 2
 SYSTEM_TRANSFER_WITH_SEED_DISCRIMINATOR = 11
 SPL_TRANSFER_INSTRUCTION = 3
+
+
+def _load_allowlist_file() -> Set[str]:
+    """Read optional JSON allowlist; failures fall back to empty (builtins still apply)."""
+    path = _ALLOWED_PROGRAMS_PATH
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return set()
+    except Exception as exc:
+        logger.warning("transfer guard: failed reading %s: %s", path, exc)
+        return set()
+    programs = raw.get("programs") if isinstance(raw, dict) else raw
+    if not isinstance(programs, list):
+        return set()
+    out: Set[str] = set()
+    for item in programs:
+        if isinstance(item, str) and item.strip():
+            out.add(item.strip())
+    return out
+
+
+def get_allowed_swap_programs() -> FrozenSet[str]:
+    """Builtin + JSON file (re-read each call) + any runtime extras."""
+    with _programs_lock:
+        extras = set(_runtime_extra_programs)
+    return frozenset(_DEFAULT_ALLOWED_SWAP_PROGRAMS | _load_allowlist_file() | extras)
+
+
+def add_allowed_programs(program_ids: List[str]) -> FrozenSet[str]:
+    """Hot-add program ids for the current process (also persists into JSON when possible)."""
+    cleaned = [p.strip() for p in program_ids if isinstance(p, str) and p.strip()]
+    if not cleaned:
+        return get_allowed_swap_programs()
+    with _programs_lock:
+        _runtime_extra_programs.update(cleaned)
+    try:
+        existing = sorted(_load_allowlist_file() | set(cleaned) | set(_DEFAULT_ALLOWED_SWAP_PROGRAMS))
+        os.makedirs(os.path.dirname(_ALLOWED_PROGRAMS_PATH), exist_ok=True)
+        with open(_ALLOWED_PROGRAMS_PATH, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "programs": existing,
+                    "notes": "Official Associated Token Account program allowlisted for Jupiter ATA create/use. Re-read on every transfer-guard inspect.",
+                },
+                fh,
+                indent=2,
+            )
+            fh.write("\n")
+    except Exception as exc:
+        logger.warning("transfer guard: failed persisting allowlist: %s", exc)
+    return get_allowed_swap_programs()
 
 
 class UnauthorizedTransferError(Exception):
@@ -232,7 +298,7 @@ class TxAuthorizer:
                             "SPL token transfer to unauthorized destination"
                         )
 
-            if program_id not in ALLOWED_SWAP_PROGRAMS:
+            if program_id not in get_allowed_swap_programs():
                 self._record_block(f"unexpected program id: {program_id}")
                 raise UnauthorizedTransferError(
                     f"Unexpected program in transaction: {program_id}"
@@ -328,11 +394,14 @@ class TxAuthorizer:
         with self._lock:
             pending = len(self._pending)
             blocked = self._blocked_count
+        allowed = sorted(get_allowed_swap_programs())
         return {
             "active": Config.ENFORCE_TRANSFER_GUARD,
             "enforced": Config.ENFORCE_TRANSFER_GUARD,
             "blocked_transfer_attempts": blocked,
             "pending_authorizations": pending,
+            "allowed_programs_count": len(allowed),
+            "associated_token_program_allowed": ASSOCIATED_TOKEN_PROGRAM in allowed,
             "description": "Only automated Jupiter swaps authorized",
         }
 

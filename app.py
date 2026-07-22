@@ -505,6 +505,28 @@ def bot_force_reset():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/bot/transfer-guard/allow-programs", methods=["POST"])
+def bot_transfer_guard_allow_programs():
+    """Hot-add swap program ids to the transfer-guard allowlist (localhost only)."""
+    data = request.get_json(silent=True) or {}
+    programs = data.get("programs") or data.get("program_ids") or []
+    if isinstance(programs, str):
+        programs = [programs]
+    if not isinstance(programs, list) or not programs:
+        return jsonify({"ok": False, "error": "programs list required"}), 400
+    from tx_authorizer import ASSOCIATED_TOKEN_PROGRAM, add_allowed_programs, get_transfer_guard_stats
+
+    allowed = add_allowed_programs([str(p) for p in programs])
+    return jsonify(
+        {
+            "ok": True,
+            "allowed_programs_count": len(allowed),
+            "associated_token_program_allowed": ASSOCIATED_TOKEN_PROGRAM in allowed,
+            "transfer_guard": get_transfer_guard_stats(),
+        }
+    )
+
+
 @app.route("/api/mint/unblock", methods=["POST"])
 def mint_unblock():
     data = request.get_json(silent=True) or {}

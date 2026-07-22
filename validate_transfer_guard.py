@@ -229,7 +229,86 @@ def test_status_includes_transfer_guard():
     assert "transfer_guard" in data
     assert data["transfer_guard"]["active"] is True
     assert "blocked_transfer_attempts" in data["transfer_guard"]
+    assert data["transfer_guard"].get("associated_token_program_allowed") is True
     print("PASS: bot status includes transfer_guard")
+
+
+def test_official_ata_program_allowlisted():
+    from tx_authorizer import ASSOCIATED_TOKEN_PROGRAM, get_allowed_swap_programs
+
+    official = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    assert ASSOCIATED_TOKEN_PROGRAM == official
+    assert official in get_allowed_swap_programs()
+    # Typo / wrong ATA id must not be the builtin constant
+    assert ASSOCIATED_TOKEN_PROGRAM != "ATokenGPvbdGVxr1b2dvvtandZdxQ7WH9MoNcLd8f4x3"
+    print("PASS: official Associated Token program allowlisted")
+
+
+def _ata_jupiter_tx_bytes(wallet: Pubkey) -> bytes:
+    from tx_authorizer import ASSOCIATED_TOKEN_PROGRAM
+
+    jupiter = Pubkey.from_string(JUPITER_V6_PROGRAM)
+    ata = Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM)
+    ata_ix = CompiledInstruction(program_id_index=1, data=bytes([1]), accounts=bytes([0]))
+    jupiter_ix = CompiledInstruction(program_id_index=2, data=bytes([9, 0, 0]), accounts=bytes([0]))
+    message = Message.new_with_compiled_instructions(
+        1,
+        0,
+        1,
+        [wallet, ata, jupiter],
+        Hash.default(),
+        [ata_ix, jupiter_ix],
+    )
+    return bytes(VersionedTransaction.populate(message, []))
+
+
+def test_jupiter_with_ata_program_passes():
+    trading_lock.register_bot_thread()
+    wallet = Pubkey.new_unique()
+    context = AuthorizedTradeContext(
+        mint="TokenMint1111111111111111111111111111111",
+        side="buy",
+        amount_sol=0.05,
+        trade_id="test-trade-ata",
+    )
+    token = tx_authorizer.authorize(context, mint_allowed=lambda m: True, is_running=_running)
+    tx_bytes = _ata_jupiter_tx_bytes(wallet)
+    result = tx_authorizer.verify_and_consume(
+        tx_bytes, token, str(wallet), is_running=_running
+    )
+    assert result.trade_id == "test-trade-ata"
+    print("PASS: Jupiter swap with Associated Token program passes")
+
+
+def test_unexpected_program_still_blocked():
+    trading_lock.register_bot_thread()
+    wallet = Pubkey.new_unique()
+    evil = Pubkey.new_unique()
+    jupiter = Pubkey.from_string(JUPITER_V6_PROGRAM)
+    evil_ix = CompiledInstruction(program_id_index=1, data=bytes([1]), accounts=bytes([0]))
+    jupiter_ix = CompiledInstruction(program_id_index=2, data=bytes([9]), accounts=bytes([0]))
+    message = Message.new_with_compiled_instructions(
+        1,
+        0,
+        1,
+        [wallet, evil, jupiter],
+        Hash.default(),
+        [evil_ix, jupiter_ix],
+    )
+    tx_bytes = bytes(VersionedTransaction.populate(message, []))
+    context = AuthorizedTradeContext(
+        mint="TokenMint1111111111111111111111111111111",
+        side="buy",
+        amount_sol=0.05,
+        trade_id="test-trade-evil",
+    )
+    token = tx_authorizer.authorize(context, mint_allowed=lambda m: True, is_running=_running)
+    try:
+        tx_authorizer.verify_and_consume(tx_bytes, token, str(wallet), is_running=_running)
+        raise AssertionError("expected unexpected program to be blocked")
+    except UnauthorizedTransferError:
+        pass
+    print("PASS: unexpected program id still blocked")
 
 
 def test_mint_not_on_watchlist_blocked():
@@ -252,7 +331,10 @@ def test_mint_not_on_watchlist_blocked():
 
 def main():
     Config.ENFORCE_TRANSFER_GUARD = True
+    test_official_ata_program_allowlisted()
     test_authorized_jupiter_swap_passes()
+    test_jupiter_with_ata_program_passes()
+    test_unexpected_program_still_blocked()
     test_unauthorized_send_without_token_blocked()
     test_replay_token_blocked()
     test_bare_sol_drain_blocked()

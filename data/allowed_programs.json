@@ -1,0 +1,12 @@
+{
+  "programs": [
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+    "JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "ComputeBudget111111111111111111111111111111",
+    "11111111111111111111111111111111"
+  ],
+  "notes": "Official Associated Token Account program allowlisted for Jupiter ATA create/use. Re-read on every transfer-guard inspect."
+}
