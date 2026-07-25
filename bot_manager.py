@@ -26,7 +26,7 @@ from tx_authorizer import get_transfer_guard_stats
 from paper_session import paper_session_manager
 from live_tradeable_balance import live_tradeable_balance_manager
 from pnl_tracker import pnl_tracker
-from position_store import has_open_positions
+from position_store import has_open_positions, load_open_positions, peek_runtime_mode
 from risk import RiskManager
 from trade_activity import trade_activity
 from solana_client import SolanaClient
@@ -268,7 +268,8 @@ class BotManager:
         (position_store) so Start can resume them.
         """
         was_paper = self._dry_run
-        open_books = has_open_positions(dry_run=was_paper)
+        # Any parked book (paper or live) must survive Stop/Force Reset.
+        open_books = has_open_positions()
         self._status = "stopped"
         self._bot = None
         self._thread = None
@@ -277,12 +278,18 @@ class BotManager:
         self._started_at = None
         # Keep runtime state when open trades remain so AUTO_RESUME can pick up.
         if open_books:
+            peeked = None
+            try:
+                peeked = peek_runtime_mode()
+            except Exception:
+                peeked = None
+            resume_dry_run = peeked if peeked is not None else was_paper
             try:
                 self._runtime_state_path.write_text(
                     json.dumps(
                         {
                             "started_at": time.time(),
-                            "dry_run": was_paper,
+                            "dry_run": resume_dry_run,
                             "status": "stopped_with_open",
                             "needs_resume": True,
                         }
@@ -447,6 +454,19 @@ class BotManager:
                 key = self._resolve_private_key()
                 if not dry_run and not key:
                     raise RuntimeError("Set a wallet private key before live trading")
+
+                # Parked open books are mode-specific — refuse the wrong mode so
+                # an empty opposite-mode save cannot wipe live/paper resumes.
+                other_books = has_open_positions(dry_run=(not dry_run))
+                if other_books:
+                    other_label = "paper" if not dry_run else "live"
+                    want_label = "paper" if dry_run else "live"
+                    raise RuntimeError(
+                        f"Open {other_label} position(s) are parked on disk. "
+                        f"Start in {other_label} mode to resume monitoring "
+                        f"(Stop does not close trades). Switch to {want_label} "
+                        f"only after those positions are closed."
+                    )
 
                 if not dry_run and not Config.has_user_rpc():
                     raise RuntimeError(
@@ -812,6 +832,19 @@ class BotManager:
             open_mints = (
                 [p.mint for p in bot.strategy.get_open_positions()] if bot else []
             )
+            persisted_open: List[Any] = []
+            persisted_mode: Optional[bool] = None
+            if open_positions_count == 0:
+                try:
+                    persisted_mode = peek_runtime_mode()
+                    persisted_open = load_open_positions(
+                        dry_run=persisted_mode if persisted_mode is not None else None
+                    )
+                except Exception:
+                    persisted_open = []
+                if persisted_open:
+                    open_positions_count = len(persisted_open)
+                    open_mints = [p.mint for p in persisted_open]
             consecutive_loss_pause = (
                 bot.risk.consecutive_loss_pause_status(dry_run=bot.dry_run)
                 if bot
@@ -872,6 +905,19 @@ class BotManager:
                 activity_status = "Running - Scanning"
         else:
             activity_status = "Idle"
+            if open_positions_count > 0:
+                activity_status = "Idle - Open trades parked (Start to resume)"
+
+        needs_resume = False
+        try:
+            runtime = self._load_runtime_state() or {}
+            needs_resume = bool(runtime.get("needs_resume")) or str(
+                runtime.get("status") or ""
+            ) == "stopped_with_open"
+        except Exception:
+            needs_resume = False
+        if open_positions_count > 0 and not running:
+            needs_resume = True
 
         result = {
             "status": status,
@@ -958,6 +1004,12 @@ class BotManager:
             "error": error,
             "config": Config.to_dict(),
             "open_positions_count": open_positions_count,
+            "needs_resume": needs_resume,
+            "persisted_open_mode": (
+                ("paper" if persisted_mode else "live")
+                if persisted_mode is not None
+                else None
+            ),
             "consecutive_loss_pause": consecutive_loss_pause,
             "reentry_retry": self._reentry_retry_status(),
             "max_open_positions": effective_max_open_positions,
@@ -1242,7 +1294,17 @@ class BotManager:
         with self._lock:
             bot = self._bot
             if not bot:
-                return []
+                # Idle: surface parked books so Stop→Start resume is visible.
+                try:
+                    mode = peek_runtime_mode()
+                    parked = load_open_positions(
+                        dry_run=mode if mode is not None else None
+                    )
+                except Exception:
+                    parked = []
+                return [
+                    self._position_to_dict(p, p.entry_price) for p in parked
+                ]
             positions = bot.strategy.get_open_positions()
             if not positions:
                 return []

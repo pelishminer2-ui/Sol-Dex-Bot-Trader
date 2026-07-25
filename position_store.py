@@ -91,7 +91,11 @@ def save_open_positions(
     *,
     dry_run: bool,
 ) -> None:
-    """Serialize the current open-position book to disk (atomic replace)."""
+    """Serialize the current open-position book to disk (atomic replace).
+
+    Refuses to overwrite a non-empty book from the other mode (paper vs live)
+    so starting Paper while a Live trade is parked on disk cannot wipe it.
+    """
     path = _state_path()
     payload = {
         "version": 1,
@@ -103,6 +107,23 @@ def save_open_positions(
     text = json.dumps(payload, indent=2)
     with _lock:
         try:
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    existing = None
+                if existing is not None and "dry_run" in existing:
+                    other_mode = bool(existing["dry_run"]) != bool(dry_run)
+                    other_count = len(existing.get("positions") or [])
+                    if other_mode and other_count > 0:
+                        logger.error(
+                            "Refusing to overwrite %d open %s position(s) with %s book "
+                            "(start the matching mode to resume, or close those trades first)",
+                            other_count,
+                            existing.get("mode") or ("paper" if existing["dry_run"] else "live"),
+                            "paper" if dry_run else "live",
+                        )
+                        return
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(path.suffix + ".tmp")
             tmp.write_text(text, encoding="utf-8")

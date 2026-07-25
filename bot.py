@@ -421,6 +421,15 @@ class TradingBot:
                 )
                 restored.append(pos)
                 continue
+            # None = RPC/query unknown — never treat as not-held (would wipe open books).
+            if wallet_raw is None:
+                logger.warning(
+                    "Resume: wallet balance unknown for %s (%s) — keeping stored qty",
+                    pos.symbol,
+                    pos.mint[:8],
+                )
+                restored.append(pos)
+                continue
             if wallet_raw <= 0:
                 logger.warning(
                     "Resume: wallet has 0 tokens for %s (%s) — dropping from book",
@@ -952,6 +961,12 @@ class TradingBot:
 
         if not self.dry_run:
             wallet_raw = await self.solana.get_token_balance_raw(position.mint)
+            if wallet_raw is None:
+                logger.error(
+                    "Cannot verify token balance for %s — aborting sell (keeping book)",
+                    position.symbol,
+                )
+                return None
             if wallet_raw <= 0:
                 logger.error("No token balance to sell for %s", position.symbol)
                 self.strategy.positions = [
@@ -2472,7 +2487,14 @@ class TradingBot:
         token_raw = quote.out_amount
         if not self.dry_run:
             await asyncio.sleep(2)
-            token_raw = await self.solana.get_token_balance_raw(candidate.mint)
+            wallet_raw = await self.solana.get_token_balance_raw(candidate.mint)
+            if wallet_raw is not None:
+                token_raw = wallet_raw
+            else:
+                logger.warning(
+                    "Post-buy wallet balance unknown for %s — using quote out_amount",
+                    candidate.symbol,
+                )
 
         sol_price = self._sol_price_usd()
         sol_in, _ = self._quote_sol_flow(quote)
@@ -2611,11 +2633,16 @@ class TradingBot:
         token_raw = quote.out_amount
         if not self.dry_run:
             await asyncio.sleep(2)
-            token_raw = await self.solana.get_token_balance_raw(position.mint)
-            wallet_raw = token_raw
-            added_raw = max(0, wallet_raw - position.remaining_token_amount_raw)
-            if added_raw > 0:
-                token_raw = added_raw
+            wallet_raw = await self.solana.get_token_balance_raw(position.mint)
+            if wallet_raw is not None:
+                added_raw = max(0, wallet_raw - position.remaining_token_amount_raw)
+                if added_raw > 0:
+                    token_raw = added_raw
+            else:
+                logger.warning(
+                    "Post-DCA wallet balance unknown for %s — using quote out_amount",
+                    position.symbol,
+                )
 
         sol_price = self._sol_price_usd()
         sol_in, _ = self._quote_sol_flow(quote)

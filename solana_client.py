@@ -103,15 +103,27 @@ class SolanaClient:
             logger.error("Error getting token balance for %s: %s", mint, exc)
             return 0.0
 
-    async def get_token_balance_raw(self, mint: str) -> int:
+    async def get_token_balance_raw(self, mint: str) -> Optional[int]:
+        """Return raw token balance, or None when RPC/query fails (never 0 for unknown).
+
+        Callers must treat None as unknown — not as a zero wallet — so live resume
+        and sells never drop a still-held book entry on transient RPC errors.
+        A confirmed empty account set returns 0.
+        """
         try:
             mint_pubkey = Pubkey.from_string(mint)
             response = await self.client.get_token_accounts_by_owner_json_parsed(
                 self.public_key,
                 TokenAccountOpts(mint=mint_pubkey),
             )
+            if response.value is None:
+                logger.error(
+                    "Raw token balance for %s returned no value from RPC — unknown",
+                    mint,
+                )
+                return None
             total = 0
-            for account in response.value or []:
+            for account in response.value:
                 parsed = account.account.data.parsed
                 info = parsed.get("info", parsed) if isinstance(parsed, dict) else parsed["info"]
                 token_amount = info["tokenAmount"]
@@ -119,7 +131,7 @@ class SolanaClient:
             return total
         except Exception as exc:
             logger.error("Error getting raw token balance for %s: %s", mint, exc)
-            return 0
+            return None
 
     async def get_latest_blockhash(self):
         """Fetch a fresh Confirmed blockhash (never reuse across paper/live)."""

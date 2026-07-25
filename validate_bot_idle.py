@@ -1,12 +1,42 @@
 """Validate bot idle / stale-state recovery behavior."""
 
+import tempfile
 import threading
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 from bot_manager import STARTING_TIMEOUT_SEC, bot_manager
+from config import Config
 
 _MOCK_BALANCE = patch.object(bot_manager, "get_balance", return_value=1.0)
+
+# Isolate from real data/open_positions.json (e.g. parked live WBTC).
+_TMP_POS_DIR = tempfile.TemporaryDirectory()
+_TMP_POS_PATH = str(Path(_TMP_POS_DIR.name) / "open_positions.json")
+_POS_PATH_PATCH = patch.object(Config, "OPEN_POSITIONS_STATE_PATH", _TMP_POS_PATH)
+_POS_PATH_PATCH.start()
+# Funding/risk gates are out of scope for idle-state tests.
+_RISK_PATCH = patch(
+    "bot_manager.RiskManager.can_start_trading",
+    return_value=(True, ""),
+)
+_RISK_PATCH.start()
+_RPC_PATCH = patch("bot_manager.Config.has_user_rpc", return_value=True)
+_RPC_PATCH.start()
+_FEE_PATCH = patch(
+    "live_start_fee.collect_live_start_fee",
+    return_value=type(
+        "Fee",
+        (),
+        {
+            "skipped": True,
+            "reason": "test",
+            "to_dict": lambda self: {"skipped": True, "reason": "test"},
+        },
+    )(),
+)
+_FEE_PATCH.start()
 
 
 class _FakeBot:
@@ -352,19 +382,26 @@ def test_bot_started_at_restored_from_persisted_state():
 
 
 if __name__ == "__main__":
-    test_can_start_when_idle()
-    test_can_start_when_stopping()
-    test_can_start_false_when_running()
-    test_fresh_start_is_idle()
-    test_start_stop_cycle()
-    test_second_start_while_running()
-    test_stale_running_flag_recovered()
-    test_force_reset_clears_stale()
-    test_orphan_thread_allows_start()
-    test_start_failure_resets_to_idle()
-    test_stuck_starting_times_out()
-    test_old_thread_does_not_clobber_new_session()
-    test_stop_timeout_keeps_thread_tracked()
-    test_bot_started_at_while_running()
-    test_bot_started_at_restored_from_persisted_state()
-    print("\nAll bot idle validation tests passed.")
+    try:
+        test_can_start_when_idle()
+        test_can_start_when_stopping()
+        test_can_start_false_when_running()
+        test_fresh_start_is_idle()
+        test_start_stop_cycle()
+        test_second_start_while_running()
+        test_stale_running_flag_recovered()
+        test_force_reset_clears_stale()
+        test_orphan_thread_allows_start()
+        test_start_failure_resets_to_idle()
+        test_stuck_starting_times_out()
+        test_old_thread_does_not_clobber_new_session()
+        test_stop_timeout_keeps_thread_tracked()
+        test_bot_started_at_while_running()
+        test_bot_started_at_restored_from_persisted_state()
+        print("\nAll bot idle validation tests passed.")
+    finally:
+        _FEE_PATCH.stop()
+        _RPC_PATCH.stop()
+        _RISK_PATCH.stop()
+        _POS_PATH_PATCH.stop()
+        _TMP_POS_DIR.cleanup()
