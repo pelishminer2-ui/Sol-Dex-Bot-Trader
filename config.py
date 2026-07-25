@@ -288,6 +288,16 @@ DEFAULT_SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP = 0.02
 DEFAULT_SESSION_AUTO_TIGHTEN_WIN_LEAN_CAP = 0.15
 DEFAULT_SESSION_AUTO_TIGHTEN_LIQUIDITY_STEP_USD = 2500.0
 DEFAULT_SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD = 40000.0
+# Session auto-loosen when market "picks up" (hot regime sustained). Entry only —
+# steps session tighten bumps back toward Steady/session base. Never touches exits.
+# Rule: market_regime == hot for SESSION_AUTO_LOOSEN_HOT_HOLD_SEC, then every
+# SESSION_AUTO_LOOSEN_COOLDOWN_SEC reduce one tighten level (win_lean + liquidity).
+# While hot + bumps remain, further auto-tighten is paused.
+DEFAULT_SESSION_AUTO_LOOSEN_ENABLED = True
+DEFAULT_SESSION_AUTO_LOOSEN_HOT_HOLD_SEC = 600.0  # 10 min sustained hot before first step
+DEFAULT_SESSION_AUTO_LOOSEN_COOLDOWN_SEC = 300.0  # 5 min between loosen steps
+DEFAULT_SESSION_AUTO_LOOSEN_WIN_LEAN_STEP = 0.02
+DEFAULT_SESSION_AUTO_LOOSEN_LIQUIDITY_STEP_USD = 2500.0
 DEFAULT_SETUP_LEARNING_ENABLED = True
 DEFAULT_SETUP_LEARNING_MIN_TRADES = 5
 DEFAULT_SETUP_LEARNING_MAX_HISTORY = 100
@@ -1889,6 +1899,37 @@ class Config:
             str(DEFAULT_SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD),
         )
     )
+    SESSION_AUTO_LOOSEN_ENABLED = (
+        os.getenv(
+            "SESSION_AUTO_LOOSEN_ENABLED",
+            "true" if DEFAULT_SESSION_AUTO_LOOSEN_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    SESSION_AUTO_LOOSEN_HOT_HOLD_SEC = float(
+        os.getenv(
+            "SESSION_AUTO_LOOSEN_HOT_HOLD_SEC",
+            str(DEFAULT_SESSION_AUTO_LOOSEN_HOT_HOLD_SEC),
+        )
+    )
+    SESSION_AUTO_LOOSEN_COOLDOWN_SEC = float(
+        os.getenv(
+            "SESSION_AUTO_LOOSEN_COOLDOWN_SEC",
+            str(DEFAULT_SESSION_AUTO_LOOSEN_COOLDOWN_SEC),
+        )
+    )
+    SESSION_AUTO_LOOSEN_WIN_LEAN_STEP = float(
+        os.getenv(
+            "SESSION_AUTO_LOOSEN_WIN_LEAN_STEP",
+            str(DEFAULT_SESSION_AUTO_LOOSEN_WIN_LEAN_STEP),
+        )
+    )
+    SESSION_AUTO_LOOSEN_LIQUIDITY_STEP_USD = float(
+        os.getenv(
+            "SESSION_AUTO_LOOSEN_LIQUIDITY_STEP_USD",
+            str(DEFAULT_SESSION_AUTO_LOOSEN_LIQUIDITY_STEP_USD),
+        )
+    )
     MAX_DAILY_LOSS_SOL = float(os.getenv("MAX_DAILY_LOSS_SOL", "1.0"))
     MIN_SOL_RESERVE = float(os.getenv("MIN_SOL_RESERVE", "0.02"))
     MIN_FUND_SOL = float(os.getenv("MIN_FUND_SOL", str(DEFAULT_MIN_FUND_SOL)))
@@ -2993,6 +3034,11 @@ class Config:
             "session_auto_tighten_win_lean_cap": cls.SESSION_AUTO_TIGHTEN_WIN_LEAN_CAP,
             "session_auto_tighten_liquidity_step_usd": cls.SESSION_AUTO_TIGHTEN_LIQUIDITY_STEP_USD,
             "session_auto_tighten_liquidity_cap_usd": cls.SESSION_AUTO_TIGHTEN_LIQUIDITY_CAP_USD,
+            "session_auto_loosen_enabled": cls.SESSION_AUTO_LOOSEN_ENABLED,
+            "session_auto_loosen_hot_hold_sec": cls.SESSION_AUTO_LOOSEN_HOT_HOLD_SEC,
+            "session_auto_loosen_cooldown_sec": cls.SESSION_AUTO_LOOSEN_COOLDOWN_SEC,
+            "session_auto_loosen_win_lean_step": cls.SESSION_AUTO_LOOSEN_WIN_LEAN_STEP,
+            "session_auto_loosen_liquidity_step_usd": cls.SESSION_AUTO_LOOSEN_LIQUIDITY_STEP_USD,
         }
 
 

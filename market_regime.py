@@ -28,6 +28,7 @@ _snapshot: dict[str, Any] = {
     "sol_trend_4h_pct": None,
     "regime_gates": {},
     "hot_market_mode_enabled": False,
+    "hot_since": None,
     "updated_at": 0.0,
 }
 
@@ -44,6 +45,7 @@ def reset_market_regime_for_tests() -> None:
         "sol_trend_4h_pct": None,
         "regime_gates": _static_regime_gates(REGIME_NEUTRAL),
         "hot_market_mode_enabled": Config.HOT_MARKET_MODE_ENABLED,
+        "hot_since": None,
         "updated_at": 0.0,
     }
 
@@ -188,8 +190,16 @@ def update_market_regime(
     passing = count_scanner_passing(watchlist)
     gmgn_vol = sum_gmgn_volume_usd(watchlist)
     snap = sol_snapshot or {}
+    now = time.time()
 
     prev = _snapshot.get("market_regime")
+    prev_hot_since = _snapshot.get("hot_since")
+    if regime == REGIME_HOT:
+        # Sustain timer for session auto-loosen: first hot scan starts the clock.
+        hot_since = prev_hot_since if prev == REGIME_HOT and prev_hot_since else now
+    else:
+        hot_since = None
+
     _snapshot = {
         "market_regime": regime,
         "target_win_rate": _TARGET_WIN_RATES[regime](),
@@ -199,7 +209,8 @@ def update_market_regime(
         "sol_trend_4h_pct": snap.get("sol_trend_4h_pct"),
         "regime_gates": gates,
         "hot_market_mode_enabled": Config.HOT_MARKET_MODE_ENABLED,
-        "updated_at": time.time(),
+        "hot_since": hot_since,
+        "updated_at": now,
     }
     if regime != prev:
         logger.info(

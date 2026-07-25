@@ -51,6 +51,7 @@ from price_feed import PriceFeed
 from reentry_tracker import ReentryTracker
 from reentry_retry import reentry_retry_manager
 from session_entry_tuning import (
+    maybe_auto_loosen,
     maybe_auto_tighten,
     record_exit as record_session_exit,
     reset_session as reset_session_entry_tuning,
@@ -677,7 +678,17 @@ class TradingBot:
             self.sol_trend_snapshot, self.watchlist
         )
         target_wr = float(self.market_regime_snapshot.get("target_win_rate") or 0.55)
-        tighten = maybe_auto_tighten(target_wr)
+        regime = self.market_regime_snapshot.get("market_regime")
+        # Market pickup: sustained hot regime steps session tighten bumps back
+        # toward Steady/session base (entry only). While hot with bumps, tighten pauses.
+        loosen = maybe_auto_loosen(self.market_regime_snapshot)
+        if loosen.get("action") == "loosened":
+            self._record_action(
+                f"Session auto-loosen L{loosen.get('prev_tighten_level')}→"
+                f"L{loosen.get('tighten_level')}: hot {loosen.get('hot_for_sec', 0):.0f}s — "
+                f"win-lean={loosen.get('win_lean'):.2f}"
+            )
+        tighten = maybe_auto_tighten(target_wr, market_regime=regime)
         if tighten.get("action") == "tightened":
             self._record_action(
                 f"Session auto-tighten L{tighten.get('tighten_level')}: "
