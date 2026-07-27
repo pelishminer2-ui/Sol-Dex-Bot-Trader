@@ -1,3 +1,9 @@
+"""Sol Dex Bot Trader — CLI entry point.
+
+Copyright 2026 Bigbagsmedia.com
+Author: Pilisi, Vilmos Mihaly
+"""
+
 import argparse
 import asyncio
 import logging

@@ -28,10 +28,10 @@
 
 
 #define MyAppName "Sol Dex Bot Trader"
-#define MyAppPublisher "Sol Dex Bot Trader"
-#define MyAppURL "http://127.0.0.1:5000"
+#define MyAppPublisher "Bigbagsmedia.com"
+#define MyAppURL "https://bigbagsmedia.com"
 #define MyAppExeName "SolDexBotTrader.exe"
-#define MyAppCopyright "Copyright (C) 2026 Sol Dex Bot Trader"
+#define MyAppCopyright "Copyright 2026 Bigbagsmedia.com"
 #define MyAppTaskbarIcon "assets\icon-taskbar-cats.ico"
 #define MyAppDesktopIcon "assets\icon-desktop-pelish.ico"
 

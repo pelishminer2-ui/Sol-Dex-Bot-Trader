@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Sol Dex Bot Trader Windows app."""
+"""PyInstaller spec for Sol Dex Bot Trader Windows app.
+
+Copyright 2026 Bigbagsmedia.com
+Author: Pilisi, Vilmos Mihaly
+"""
 
 import sys
 from pathlib import Path

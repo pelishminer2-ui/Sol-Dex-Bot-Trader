@@ -1,3 +1,9 @@
+"""Sol Dex Bot Trader — Flask dashboard entry point.
+
+Copyright 2026 Bigbagsmedia.com
+Author: Pilisi, Vilmos Mihaly
+"""
+
 import atexit
 import logging
 import os

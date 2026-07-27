@@ -1,5 +1,7 @@
 ﻿# Solana Mover Trading Bot
 
+**Copyright 2026 Bigbagsmedia.com** · Author: Pilisi, Vilmos Mihaly
+
 ## Local-only (git)
 
 This project is **local-only**: no git remote is configured. All files and fixes stay under C:\Users\Owner\Desktop\Solana. See [LOCAL_ONLY.md](LOCAL_ONLY.md).

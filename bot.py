@@ -1,3 +1,9 @@
+"""Sol Dex Bot Trader — core trading loop.
+
+Copyright 2026 Bigbagsmedia.com
+Author: Pilisi, Vilmos Mihaly
+"""
+
 import asyncio
 import logging
 import signal
