@@ -176,6 +176,9 @@ class TradingBot:
         self.sol_trend_snapshot: dict = {}
         self.market_regime_snapshot: dict = {}
         self.session_entry_tuning: dict = {}
+        self.birdeye_trending_top5_status: dict = {}
+        self._last_trending_top5_fetch_ts: float = 0.0
+        self._cached_trending_top5: List[MoverCandidate] = []
 
     def apply_session_key(self, private_key: str) -> None:
         """Hot-apply a session private key for live Jupiter auto-sign.
@@ -1336,6 +1339,10 @@ class TradingBot:
         executable_pnl_pct: Optional[float] = None,
     ) -> bool:
         """True when worst PnL source is at or past configured stop-loss."""
+        from scheduled_rotation import is_scheduled_rotation_position
+
+        if is_scheduled_rotation_position(position):
+            return False
         if not stop_loss_applies_for_mint(position.mint):
             return False
         stop = effective_stop_loss_pct(position.mint)
@@ -2327,9 +2334,11 @@ class TradingBot:
 
         balance = await self.solana.get_balance()
         effective_balance = self.risk.effective_wallet_balance(balance, self.dry_run)
-        open_mints = [p.mint for p in self.strategy.positions]
+        from scheduled_rotation import trading_open_count, trading_open_mints
+
+        open_mints = trading_open_mints(self.strategy.positions)
         can_trade, reason = self.risk.can_open_position(
-            len(self.strategy.positions),
+            trading_open_count(self.strategy.positions),
             balance,
             dry_run=self.dry_run,
             open_mints=open_mints,
@@ -2554,7 +2563,9 @@ class TradingBot:
             "re-chase retry" if is_reentry_retry else (
                 "SOL trade" if candidate.source == "sol_trade" else (
                     "WETH trade" if candidate.source == "weth_trade" else (
-                        "watchlist" if candidate.source == "watchlist_mint" else "momentum"
+                        "birdeye trending top5" if candidate.source == "birdeye_trending_top5" else (
+                            "watchlist" if candidate.source == "watchlist_mint" else "momentum"
+                        )
                     )
                 )
             )
@@ -2564,8 +2575,52 @@ class TradingBot:
         )
         return True
 
-    async def _execute_dca_entry(self, position: Position, current_price: float) -> bool:
-        """Scale into an open position when ladder-timeout DCA path is chosen."""
+    async def manual_dca_position(
+        self,
+        position: Position,
+        *,
+        size_sol: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Manual DCA into open WBTC only — averages cost basis on the same mint."""
+        if not is_wbtc_watchlist_mint(position.mint):
+            logger.info("Manual DCA blocked: only WBTC supported (%s)", position.symbol)
+            return None
+        prices = self._fetch_position_prices([position.mint])
+        current_price = prices.get(position.mint) or position.entry_price
+        ok = await self._execute_dca_entry(
+            position,
+            current_price,
+            reason="buy_dca_manual",
+            size_sol=size_sol,
+            skip_entry_eligibility=True,
+        )
+        if not ok:
+            return None
+        prices = self._fetch_position_prices([position.mint])
+        mark = prices.get(position.mint) or current_price or position.entry_price
+        return {
+            "mint": position.mint,
+            "symbol": position.symbol,
+            "buy_count": position.buy_count,
+            "size_sol": position.size_sol,
+            "entry_price": position.entry_price,
+            "current_price": mark,
+            "pnl_pct": position.pnl_pct(mark),
+            "peak_pnl_pct": position.peak_pnl_pct,
+            "trough_pnl_pct": position.trough_pnl_pct,
+            "reason": "buy_dca_manual",
+        }
+
+    async def _execute_dca_entry(
+        self,
+        position: Position,
+        current_price: float,
+        *,
+        reason: str = "buy_dca_3rd_ladder_timeout",
+        size_sol: Optional[float] = None,
+        skip_entry_eligibility: bool = False,
+    ) -> bool:
+        """Scale into an open position (ladder-timeout or manual WBTC DCA)."""
         assert self.solana and self.jupiter
 
         if not self.should_run():
@@ -2575,7 +2630,10 @@ class TradingBot:
             return False
 
         balance = await self.solana.get_balance()
-        trade_size = self.risk.compute_trade_size(balance, dry_run=self.dry_run)
+        if size_sol is not None and float(size_sol) > 0:
+            trade_size = float(size_sol)
+        else:
+            trade_size = self.risk.compute_trade_size(balance, dry_run=self.dry_run)
         if trade_size <= 0:
             logger.info("DCA blocked: zero trade size for %s", position.symbol)
             return False
@@ -2599,22 +2657,23 @@ class TradingBot:
 
         sell_preview = self._preview_l1_sell_quote(position.mint, quote)
 
-        ok, check_reason = self.risk.check_entry_eligibility(
-            trade_size,
-            position.profile.get("liquidity_usd", 0.0),
-            quote.price_impact_pct,
-            skip_liquidity=position.profile.get("liquidity_usd", 0.0) <= 0,
-            mint=position.mint,
-            symbol=position.symbol,
-            jupiter_quote_buy=quote.raw,
-            jupiter_quote_sell=sell_preview.raw if sell_preview else None,
-            sell_preview_impact_pct=(
-                sell_preview.price_impact_pct if sell_preview else None
-            ),
-        )
-        if not ok:
-            logger.info("DCA blocked: %s", check_reason)
-            return False
+        if not skip_entry_eligibility:
+            ok, check_reason = self.risk.check_entry_eligibility(
+                trade_size,
+                position.profile.get("liquidity_usd", 0.0),
+                quote.price_impact_pct,
+                skip_liquidity=position.profile.get("liquidity_usd", 0.0) <= 0,
+                mint=position.mint,
+                symbol=position.symbol,
+                jupiter_quote_buy=quote.raw,
+                jupiter_quote_sell=sell_preview.raw if sell_preview else None,
+                sell_preview_impact_pct=(
+                    sell_preview.price_impact_pct if sell_preview else None
+                ),
+            )
+            if not ok:
+                logger.info("DCA blocked: %s", check_reason)
+                return False
 
         ok, check_reason = self.risk.pre_trade_check(
             balance,
@@ -2657,7 +2716,11 @@ class TradingBot:
             add_entry_price = current_price
 
         self.strategy.apply_dca_to_position(
-            position, sol_in, token_raw, add_entry_price
+            position,
+            sol_in,
+            token_raw,
+            add_entry_price,
+            mark_price=current_price,
         )
 
         candidate = MoverCandidate(
@@ -2684,7 +2747,7 @@ class TradingBot:
                 dry_run=self.dry_run,
                 sol_price_usd=sol_price,
                 token_decimals=quote.output_decimals,
-                reason="buy_dca_3rd_ladder_timeout",
+                reason=reason,
                 buy_count=position.buy_count,
             )
         )
@@ -2694,6 +2757,371 @@ class TradingBot:
             f"DCA buy #{position.buy_count} {position.symbol} — {sol_in:.4f} SOL @ ${add_entry_price:.8f}"
         )
         return True
+
+    def _scheduled_rotation_allowed(self) -> bool:
+        if not Config.SCHEDULED_ROTATION_ENABLED:
+            return False
+        if Config.SCHEDULED_ROTATION_LIVE_ONLY and self.dry_run:
+            return False
+        return True
+
+    async def _tick_scheduled_rotation(self) -> None:
+        """Buy next rotation mint when due; exits are handled by evaluate_exit (2h)."""
+        if not self._scheduled_rotation_allowed():
+            return
+        if not self.should_run() or not self.solana or not self.jupiter:
+            return
+
+        from scheduled_rotation import (
+            mark_skip,
+            mint_at_index,
+            rotation_open_positions,
+            sync_open_from_positions,
+        )
+
+        try:
+            state = sync_open_from_positions(self.strategy.positions)
+            open_rots = rotation_open_positions(self.strategy.positions)
+            max_open = max(1, int(Config.SCHEDULED_ROTATION_MAX_OPEN))
+            if len(open_rots) >= max_open or state.get("open_rotation"):
+                return
+
+            now = time.time()
+            next_due = float(state.get("next_due_ts") or 0)
+            if now < next_due:
+                return
+
+            idx = int(state.get("next_mint_index") or 0)
+            mint = mint_at_index(idx)
+            if not mint:
+                mark_skip("no_mints_configured")
+                return
+
+            if self.strategy.is_holding_mint(mint):
+                # Already holding this mint outside rotation tagging — defer.
+                mark_skip(f"mint_already_held:{mint[:8]}", retry_sec=Config.SCHEDULED_ROTATION_RETRY_SEC)
+                return
+
+            await self._execute_scheduled_rotation_buy(mint, mint_index=idx)
+        except Exception as exc:
+            logger.exception("Scheduled rotation tick error: %s", exc)
+            try:
+                mark_skip(f"tick_error:{exc}")
+            except Exception:
+                pass
+
+    async def _execute_scheduled_rotation_buy(self, mint: str, *, mint_index: int) -> bool:
+        """Buy $SIZE_USD of mint via Jupiter; tag as scheduled_rotation (slot-exempt)."""
+        assert self.solana and self.jupiter
+
+        from fee_estimator import extract_route_labels, get_fee_budget
+        from scheduled_rotation import mark_buy, mark_skip
+        from scanner import MoverCandidate
+
+        sol_usd = self._sol_price_usd()
+        if not sol_usd or sol_usd <= 0:
+            mark_skip("no_sol_usd_price")
+            logger.warning("Scheduled rotation skip: no SOL/USD price")
+            return False
+
+        size_usd = float(Config.SCHEDULED_ROTATION_SIZE_USD)
+        sol_amount = size_usd / float(sol_usd)
+        if sol_amount <= 0:
+            mark_skip("zero_sol_amount")
+            return False
+
+        balance = await self.solana.get_balance()
+        if not self.dry_run and balance < Config.MIN_SOL_RESERVE + sol_amount:
+            mark_skip("insufficient_sol_balance")
+            logger.info(
+                "Scheduled rotation skip: need %.6f SOL (+reserve), have %.6f",
+                sol_amount,
+                balance,
+            )
+            return False
+
+        # Seed a minimal candidate; enrich symbol/price from DexScreener when possible.
+        symbol = mint[:6]
+        name = "rotation"
+        price_usd = 0.0
+        liquidity_usd = 0.0
+        try:
+            pairs = get_dexscreener_client().get_token_pairs(mint)
+            best = None
+            best_liq = -1.0
+            for pair in pairs or []:
+                if pair.get("chainId") != "solana":
+                    continue
+                liq = float((pair.get("liquidity") or {}).get("usd") or 0)
+                if liq > best_liq:
+                    best_liq = liq
+                    best = pair
+            if best:
+                base = best.get("baseToken") or {}
+                symbol = str(base.get("symbol") or symbol)
+                name = str(base.get("name") or name)
+                price_usd = float(best.get("priceUsd") or 0) or 0.0
+                liquidity_usd = best_liq if best_liq >= 0 else 0.0
+        except Exception as exc:
+            logger.debug("Scheduled rotation DexScreener enrich failed: %s", exc)
+
+        candidate = MoverCandidate(
+            mint=mint,
+            symbol=symbol,
+            name=name,
+            pair_address="",
+            dex="scheduled_rotation",
+            price_usd=price_usd,
+            liquidity_usd=liquidity_usd,
+            volume_24h_usd=0.0,
+            momentum_pct=0.0,
+            source="scheduled_rotation",
+        )
+
+        # Ensure transfer guard allows this mint (watchlist OR open OR rotation allowlist).
+        if not any(c.mint == mint for c in (self.watchlist or [])):
+            self.watchlist = list(self.watchlist or []) + [candidate]
+
+        quote = self._jupiter_buy(mint, sol_amount, use_cache=False)
+        if not quote:
+            mark_skip(f"no_jupiter_route:{mint[:8]}")
+            logger.info(
+                "Scheduled rotation skip: no Jupiter route for %s (%s…)",
+                symbol,
+                mint[:8],
+            )
+            self._record_action(f"Rotation skip: no Jupiter route for {symbol}")
+            return False
+
+        signature = await self.jupiter.execute_quote(quote, self.solana)
+        if not signature:
+            mark_skip(f"swap_failed:{mint[:8]}")
+            self._record_action(f"Rotation buy failed: swap for {symbol}")
+            return False
+
+        token_raw = quote.out_amount
+        if not self.dry_run:
+            await asyncio.sleep(2)
+            wallet_raw = await self.solana.get_token_balance_raw(mint)
+            if wallet_raw is not None:
+                token_raw = wallet_raw
+
+        sol_in, _ = self._quote_sol_flow(quote)
+        if sol_in <= 0:
+            sol_in = sol_amount
+        token_ui = estimate_token_ui(
+            token_raw, quote.output_decimals, sol_in, price_usd or 1.0, sol_usd
+        )
+        if token_ui > 0 and sol_usd > 0:
+            entry_price = (sol_in * sol_usd) / token_ui
+        else:
+            entry_price = price_usd if price_usd > 0 else (sol_usd * sol_in / max(token_ui, 1e-12))
+
+        fee_budget = get_fee_budget(sol_in)
+        self.strategy.open_position(
+            candidate=candidate,
+            entry_price=entry_price,
+            size_sol=sol_in,
+            momentum=0.0,
+            token_amount_raw=token_raw,
+            token_decimals=quote.output_decimals,
+            fee_budget_sol=fee_budget,
+            estimated_fees_sol=fee_budget,
+        )
+        open_position = next(
+            (p for p in self.strategy.positions if p.mint == mint),
+            None,
+        )
+        if open_position:
+            route_labels = extract_route_labels(quote.raw)
+            open_position.profile["scheduled_rotation"] = True
+            open_position.profile["scanner_source"] = "scheduled_rotation"
+            open_position.profile["entry_price_impact_pct"] = quote.price_impact_pct
+            open_position.profile["is_pumpfun_route"] = any(
+                "Pump.fun" in str(label) for label in route_labels
+            )
+            open_position.profile["rotation_size_usd"] = size_usd
+            try:
+                from position_store import save_open_positions
+
+                save_open_positions(
+                    self.strategy.get_open_positions(),
+                    dry_run=self.dry_run,
+                )
+            except Exception:
+                logger.exception("Failed to persist rotation position tags")
+
+        mark_buy(
+            mint=mint,
+            symbol=symbol,
+            entry_ts=open_position.entry_time if open_position else time.time(),
+            mint_index=mint_index,
+        )
+
+        self.risk.journal_write(
+            build_buy_journal(
+                candidate=candidate,
+                entry_price=entry_price,
+                quote=quote,
+                trade_size=sol_in,
+                momentum=0.0,
+                signature=signature,
+                dry_run=self.dry_run,
+                sol_price_usd=sol_usd,
+                token_decimals=quote.output_decimals,
+                estimated_fees_sol=fee_budget,
+                fee_breakdown=None,
+            )
+        )
+        self._record_action(
+            f"Rotation bought {symbol} — ${size_usd:.2f} (~{sol_in:.6f} SOL) @ ${entry_price:.8f}"
+        )
+        logger.info(
+            "Scheduled rotation buy ok: %s mint=%s… size=%.6f SOL (~$%.2f) hold=%.0fs",
+            symbol,
+            mint[:8],
+            sol_in,
+            size_usd,
+            Config.SCHEDULED_ROTATION_HOLD_SEC,
+        )
+        return True
+
+    async def _tick_birdeye_trending_top5(self) -> None:
+        """Always-attempt Find Gems trending top-5 (win-lean exempt; slot-respecting)."""
+        from birdeye_scanner import (
+            BirdeyeScanner,
+            get_trending_top5_status,
+            update_trending_top5_attempt_reasons,
+        )
+
+        if not Config.birdeye_trending_top5_enabled():
+            return
+        if not self.should_run():
+            return
+
+        now = time.time()
+        interval = float(Config.BIRDEYE_TRENDING_TOP5_INTERVAL_SEC or Config.SCAN_INTERVAL_SEC)
+        need_fetch = (
+            not self._cached_trending_top5
+            or (now - self._last_trending_top5_fetch_ts) >= interval
+        )
+        if need_fetch:
+            try:
+                self._cached_trending_top5 = BirdeyeScanner().fetch_trending_top5()
+                self._last_trending_top5_fetch_ts = now
+            except Exception as exc:
+                logger.warning("top5 trending fetch failed: %s", exc)
+                update_trending_top5_attempt_reasons([f"fetch failed: {exc}"])
+                self.birdeye_trending_top5_status = get_trending_top5_status()
+                return
+
+        candidates = list(self._cached_trending_top5 or [])
+        self.birdeye_trending_top5_status = get_trending_top5_status()
+
+        if not self.strategy.can_open_more():
+            logger.info("top5 trending deferred: slots full")
+            update_trending_top5_attempt_reasons(["top5 trending deferred: slots full"])
+            self.birdeye_trending_top5_status = get_trending_top5_status()
+            return
+
+        if not candidates:
+            auth = self.birdeye_trending_top5_status.get("auth")
+            if auth in ("401", "403"):
+                logger.warning(
+                    "top5 trending: no candidates (Birdeye auth %s — rotate BIRDEYE_API_KEY)",
+                    auth,
+                )
+            else:
+                logger.info("top5 trending: no candidates this cycle")
+            update_trending_top5_attempt_reasons(["no candidates"])
+            self.birdeye_trending_top5_status = get_trending_top5_status()
+            return
+
+        held = {p.mint for p in self.strategy.positions}
+        mints = [c.mint for c in candidates if c.mint not in held]
+        prices = self.price_feed.update(mints) if mints else {}
+        for c in candidates:
+            if c.price_usd and c.price_usd > 0:
+                self.price_feed.set_dex_price(c.mint, c.price_usd)
+
+        # Fresh skip bucket so attempt reasons aren't polluted by prior cycles.
+        self._cycle_entry_skip_reason = None
+        attempt_reasons: List[str] = []
+        for rank, candidate in enumerate(candidates, start=1):
+            if not self.should_run():
+                break
+            tag = f"#{rank} {candidate.symbol}"
+            if candidate.mint in held:
+                msg = f"{tag}: already held"
+                logger.info("top5 trending skip: %s", msg)
+                attempt_reasons.append(msg)
+                continue
+            if not self.strategy.can_open_more(candidate.mint):
+                msg = "top5 trending deferred: slots full"
+                logger.info(msg)
+                attempt_reasons.append(msg)
+                break
+
+            current_price = prices.get(candidate.mint) or candidate.price_usd
+            if not current_price or current_price <= 0:
+                msg = f"{tag}: no price"
+                logger.info("top5 trending skip: %s", msg)
+                attempt_reasons.append(msg)
+                continue
+
+            momentum = self._entry_momentum(candidate.mint, current_price, candidate)
+            signal = self.strategy.evaluate_entry(
+                candidate,
+                current_price,
+                momentum,
+                sol_trend_snapshot=self.sol_trend_snapshot,
+                setup_learner=self.setup_learner,
+            )
+            if signal != SignalType.BUY:
+                skip_reason = self.strategy.entry_skip_reason(
+                    candidate,
+                    momentum,
+                    sol_trend_snapshot=self.sol_trend_snapshot,
+                    setup_learner=self.setup_learner,
+                ) or "no buy signal"
+                msg = f"{tag}: {skip_reason}"
+                logger.info("top5 trending skip: %s", msg)
+                attempt_reasons.append(msg)
+                self._note_entry_skip(skip_reason)
+                continue
+
+            logger.info(
+                "top5 trending attempt: %s mint=%s… source=%s",
+                tag,
+                candidate.mint[:8],
+                candidate.source,
+            )
+            prior_action = self.last_action
+            # Isolate per-candidate skip reason (first-write cycle bucket otherwise sticks).
+            self._cycle_entry_skip_reason = None
+            bought = await self._execute_entry(candidate, current_price, momentum)
+            if bought:
+                held.add(candidate.mint)
+                attempt_reasons.append(f"{tag}: bought")
+                self._record_action(f"top5 trending bought {candidate.symbol} (rank {rank})")
+                # One normal slot fill per cycle is enough; leave room for other paths.
+                break
+
+            fail = (
+                self._cycle_entry_skip_reason
+                or (
+                    self.last_action
+                    if self.last_action and self.last_action != prior_action
+                    else None
+                )
+                or "entry failed"
+            )
+            msg = f"{tag}: {fail}"
+            logger.info("top5 trending skip: %s", msg)
+            attempt_reasons.append(msg)
+
+        update_trending_top5_attempt_reasons(attempt_reasons)
+        self.birdeye_trending_top5_status = get_trending_top5_status()
 
     async def _try_entry(self):
         assert self.solana and self.jupiter
@@ -2870,6 +3298,8 @@ class TradingBot:
 
             while self.should_run():
                 try:
+                    from scheduled_rotation import trading_open_mints
+
                     if self.dry_run and paper_session_manager.is_session_expired():
                         await self._close_for_session_expiry()
                         paper_session_manager.end_session(stop_reason="session_expired")
@@ -2895,7 +3325,7 @@ class TradingBot:
                     if not self.should_run():
                         break
 
-                    open_mints = [p.mint for p in self.strategy.positions]
+                    open_mints = trading_open_mints(self.strategy.positions)
                     open_count = len(open_mints)
                     from config import max_allowed_open_positions
 
@@ -2938,7 +3368,22 @@ class TradingBot:
 
                     self.last_jupiter_health = get_jupiter_client().get_health()
 
+                    # Scheduled $1 rotation (slot-exempt): after exits, before normal entries.
+                    await self._tick_scheduled_rotation()
+
+                    if not self.should_run():
+                        break
+
+                    # Find Gems trending top5 (win-lean exempt): attempt when a free
+                    # normal slot exists; does not over-max or block scheduled rotation.
+                    # Always tick so "slots full" is logged clearly when deferred.
+                    await self._tick_birdeye_trending_top5()
+
+                    if not self.should_run():
+                        break
+
                     if self.strategy.can_open_more():
+                        open_mints = trading_open_mints(self.strategy.positions)
                         held = {p.mint for p in self.strategy.positions}
                         if companion_slot_open(open_mints) and not self._has_companion_memecoin_candidates(
                             held

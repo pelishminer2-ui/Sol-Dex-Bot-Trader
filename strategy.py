@@ -301,7 +301,9 @@ class MomentumStrategy:
         return any(p.mint == mint for p in self.positions)
 
     def can_open_more(self, candidate_mint: Optional[str] = None) -> bool:
-        open_mints = [p.mint for p in self.positions]
+        from scheduled_rotation import trading_open_mints
+
+        open_mints = trading_open_mints(self.positions)
         return can_open_more_positions(open_mints, candidate_mint)
 
     def evaluate_entry(
@@ -472,6 +474,27 @@ class MomentumStrategy:
                     )
                 return SignalType.BUY
             return SignalType.NONE
+        # Find Gems trending top5: always attempt when not held / slot free.
+        # Bypass min entry-momentum + win-lean; keep spike-trap / liquidity /
+        # SOL macro / Jupiter / transfer-guard (handled downstream).
+        if getattr(candidate, "source", "") == "birdeye_trending_top5":
+            if is_non_memecoin_proxy_mint(candidate.mint):
+                logger.info(
+                    "Entry blocked (asset sanity): %s is a non-memecoin proxy",
+                    candidate.symbol,
+                )
+                return SignalType.NONE
+            reason = entry_winrate_skip_reason(candidate, setup_learner)
+            if reason:
+                logger.info("Entry blocked (win-rate filter): %s", reason)
+                return SignalType.NONE
+            logger.info(
+                "Buy signal (birdeye trending top5): %s momentum=%s price=%.8f",
+                candidate.symbol,
+                f"{momentum:.4f}" if momentum is not None else "n/a",
+                current_price,
+            )
+            return SignalType.BUY
         if momentum is None:
             return SignalType.NONE
         if momentum >= Config.effective_entry_momentum_pct():
@@ -609,6 +632,12 @@ class MomentumStrategy:
             ):
                 return None
             return f"watchlist gain below threshold: {candidate.symbol}"
+        if getattr(candidate, "source", "") == "birdeye_trending_top5":
+            if is_non_memecoin_proxy_mint(candidate.mint):
+                return (
+                    f"non-memecoin proxy excluded from momentum entry: {candidate.symbol}"
+                )
+            return entry_winrate_skip_reason(candidate, setup_learner)
         if momentum is None:
             return f"no momentum data: {candidate.symbol}"
         if momentum < Config.effective_entry_momentum_pct():
@@ -1145,6 +1174,11 @@ class MomentumStrategy:
             return None
         if is_wbtc_watchlist_mint(position.mint):
             return None
+        from scheduled_rotation import is_scheduled_rotation_position
+
+        # Scheduled rotation holds for SCHEDULED_ROTATION_HOLD_SEC (2h); skip 15m cap.
+        if is_scheduled_rotation_position(position):
+            return None
         max_hold_sec = Config.MAX_HOLD_MINUTES_NON_WBTC * 60
         if hold_sec < max_hold_sec:
             return None
@@ -1238,6 +1272,11 @@ class MomentumStrategy:
         trough_pnl: Optional[float] = None,
     ) -> Optional[ExitSignal]:
         """Stop on worst of mark, quote, and trough PnL (catches stale feeds)."""
+        from scheduled_rotation import is_scheduled_rotation_position
+
+        # Rotation legs: no SL / emergency / catastrophic (fee drag must not dump).
+        if is_scheduled_rotation_position(position):
+            return None
         if not stop_loss_applies_for_mint(position.mint):
             return None
         stop = effective_stop_loss_pct(position.mint)
@@ -1357,20 +1396,11 @@ class MomentumStrategy:
         if stop_signal is not None:
             return stop_signal
 
-        if (
-            Config.ENABLE_L1_PROTECTION
-            and position.l1_protection_armed
-            and self._position_tp_levels(position)
-            and pnl <= Config.L1_PROTECTION_PCT
-        ):
-            logger.info(
-                "L1 protection: %s pnl=%.4f <= +%.2f%% floor",
-                position.symbol,
-                pnl,
-                Config.L1_PROTECTION_PCT * 100,
-            )
-            return ExitSignal(SignalType.SELL_L1_PROTECTION)
+        from scheduled_rotation import is_scheduled_rotation_position
 
+        # Instant +3.25%/+5% (mark/peak/quote) applies to scheduled rotation too —
+        # sell early when profitable; do not wait for the 2h hold clock.
+        # Order: SL → instant profit → mandatory 2h rotation time-exit → other exits.
         if is_sol_trade_mint(position.mint) and not is_wsol_trade_mint(position.mint):
             from sol_trading import sol_trend_exit_cold
 
@@ -1378,6 +1408,13 @@ class MomentumStrategy:
                 position, pnl, effective_pnl, executable_pnl_pct=executable_pnl_pct
             )
             if instant_signal is not None:
+                if is_scheduled_rotation_position(position):
+                    logger.info(
+                        "Scheduled rotation early instant profit: %s held=%.0fs "
+                        "(before 2h clock)",
+                        position.symbol,
+                        hold_sec,
+                    )
                 return instant_signal
             if sol_trend_exit_cold(sol_trend_snapshot):
                 snap = sol_trend_snapshot or {}
@@ -1393,6 +1430,13 @@ class MomentumStrategy:
                 position, pnl, effective_pnl, executable_pnl_pct=executable_pnl_pct
             )
             if instant_signal is not None:
+                if is_scheduled_rotation_position(position):
+                    logger.info(
+                        "Scheduled rotation early instant profit: %s held=%.0fs "
+                        "(before 2h clock)",
+                        position.symbol,
+                        hold_sec,
+                    )
                 return instant_signal
 
             wbtc_profit_signal = self._evaluate_wbtc_hold_until_profitable(
@@ -1400,6 +1444,33 @@ class MomentumStrategy:
             )
             if wbtc_profit_signal is not None:
                 return wbtc_profit_signal
+
+        # Mandatory 2h time-exit for scheduled rotation if still open (after SL + instant).
+        if is_scheduled_rotation_position(position):
+            hold_limit = float(Config.SCHEDULED_ROTATION_HOLD_SEC)
+            if hold_sec >= hold_limit:
+                logger.info(
+                    "Scheduled rotation time exit: %s held=%.0fs >= %.0fs pnl=%.4f",
+                    position.symbol,
+                    hold_sec,
+                    hold_limit,
+                    pnl,
+                )
+                return ExitSignal(SignalType.SELL_TIME)
+
+        if (
+            Config.ENABLE_L1_PROTECTION
+            and position.l1_protection_armed
+            and self._position_tp_levels(position)
+            and pnl <= Config.L1_PROTECTION_PCT
+        ):
+            logger.info(
+                "L1 protection: %s pnl=%.4f <= +%.2f%% floor",
+                position.symbol,
+                pnl,
+                Config.L1_PROTECTION_PCT * 100,
+            )
+            return ExitSignal(SignalType.SELL_L1_PROTECTION)
 
         if is_proxy_mainstream_mint(position.mint):
             proxy_green_signal = self._evaluate_proxy_time_exit_green(
@@ -1429,7 +1500,11 @@ class MomentumStrategy:
             )
 
         if Config.ENABLE_LADDER_TIME_EXITS and ladder_missed:
-            if not wbtc_hold_until_profit_mode(position.mint):
+            from scheduled_rotation import is_scheduled_rotation_position
+
+            if is_scheduled_rotation_position(position):
+                pass  # rotation uses dedicated 2h hold; skip ladder DCA/timeouts
+            elif not wbtc_hold_until_profit_mode(position.mint):
                 dca_sec = Config.LADDER_MISSED_NEGATIVE_DCA_MINUTES * 60
                 pos_exit_sec = Config.LADDER_MISSED_POSITIVE_EXIT_MINUTES * 60
                 if hold_sec >= dca_sec and pnl <= 0:
@@ -1473,7 +1548,11 @@ class MomentumStrategy:
                     )
 
         if hold_sec >= Config.TIME_STOP_MINUTES * 60:
-            if wbtc_hold_until_profit_mode(position.mint):
+            from scheduled_rotation import is_scheduled_rotation_position
+
+            if is_scheduled_rotation_position(position):
+                pass  # dedicated hold already handled above
+            elif wbtc_hold_until_profit_mode(position.mint):
                 pass
             elif not (
                 is_wbtc_watchlist_mint(position.mint)
@@ -1608,33 +1687,47 @@ class MomentumStrategy:
         add_sol: float,
         add_token_raw: int,
         add_entry_price: float,
+        *,
+        mark_price: Optional[float] = None,
     ) -> None:
-        """Scale into an existing position (same mint, increments buy_count)."""
-        decimals = position.token_decimals or 0
-        scale = 10**decimals if decimals else 1
-        old_ui = position.remaining_token_amount_raw / scale
-        add_ui = add_token_raw / scale
-        total_ui = old_ui + add_ui
-        if total_ui > 0 and add_entry_price > 0:
+        """Scale into an existing position (same mint, increments buy_count).
+
+        Cost basis is a token-weighted average of remaining inventory + new fill:
+        new_entry = (old_tokens * old_entry + add_tokens * add_entry) / total_tokens
+        Peak/trough and ladder hits reset so exit/% math uses the new average.
+        """
+        old_raw = max(0, int(position.remaining_token_amount_raw))
+        add_raw = max(0, int(add_token_raw))
+        total_raw = old_raw + add_raw
+        old_entry = float(position.entry_price or 0.0)
+        if total_raw > 0 and add_entry_price > 0 and old_entry > 0:
             position.entry_price = (
-                old_ui * position.entry_price + add_ui * add_entry_price
-            ) / total_ui
+                old_raw * old_entry + add_raw * float(add_entry_price)
+            ) / total_raw
+        elif add_entry_price > 0 and old_raw <= 0:
+            position.entry_price = float(add_entry_price)
         position.size_sol += add_sol
-        position.initial_token_amount_raw += add_token_raw
-        position.remaining_token_amount_raw += add_token_raw
+        position.initial_token_amount_raw += add_raw
+        position.remaining_token_amount_raw += add_raw
         position.token_amount_raw = position.remaining_token_amount_raw
         position.buy_count += 1
         position.entry_time = time.time()
+        # Stale peak/trough were vs pre-DCA entry — would skew instant profit / SL.
         position.peak_pnl_pct = 0.0
         position.trough_pnl_pct = 0.0
+        position.tp_levels_hit = []
+        position.l1_protection_armed = False
         position.tp_levels = compute_take_profit_levels(position.size_sol)
         position.fee_budget_sol = get_fee_budget(position.size_sol)
+        if mark_price is not None and mark_price > 0:
+            position.update_peak_pnl(float(mark_price))
         logger.info(
-            "DCA applied to %s: buy_count=%d size_sol=%.4f tokens=%d",
+            "DCA applied to %s: buy_count=%d size_sol=%.4f tokens=%d avg_entry=$%.8f",
             position.symbol,
             position.buy_count,
             position.size_sol,
             position.remaining_token_amount_raw,
+            position.entry_price,
         )
         self._persist_positions()
 
@@ -1689,6 +1782,13 @@ class MomentumStrategy:
         if profile.profitable:
             self.last_profitable_profile = profile
         self.positions = [p for p in self.positions if p.mint != position.mint]
+        try:
+            from scheduled_rotation import is_scheduled_rotation_position, mark_sell
+
+            if is_scheduled_rotation_position(position):
+                mark_sell(mint=position.mint)
+        except Exception as exc:
+            logger.debug("scheduled_rotation mark_sell skipped: %s", exc)
         logger.info(
             "Closed %s reason=%s pnl=%.4f hold=%.0fs",
             position.symbol,

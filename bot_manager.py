@@ -399,10 +399,16 @@ class BotManager:
         return self._bot_loop_active(bot)
 
     def is_mint_trade_allowed(self, mint: str) -> bool:
-        """Return True if mint is on the watchlist, open, or stable-quote WSOL allowlist."""
-        from config import is_stable_quote_wsol_mint
+        """Return True if mint is on the watchlist, open, rotation allowlist, or stable-quote WSOL."""
+        from config import Config, is_stable_quote_wsol_mint
 
         if is_stable_quote_wsol_mint(mint):
+            return True
+        if (
+            Config.SCHEDULED_ROTATION_ENABLED
+            and mint
+            and mint in Config.SCHEDULED_ROTATION_MINTS
+        ):
             return True
         with self._lock:
             bot = self._bot
@@ -519,45 +525,32 @@ class BotManager:
 
                 resuming = has_open_positions(dry_run=dry_run)
 
-                # Live-start fee (paper skips). Skip when resuming open books OR
-                # durable session paid/waived marker (Flask restart bookmark).
+                # Live-start fee (paper skips). Always run collect_live_start_fee —
+                # open positions alone must NOT waive. Only the durable paid/waived
+                # marker (data/live_start_fee_paid.json) skips re-charge.
                 from live_start_fee import (
                     LiveStartFeeError,
                     collect_live_start_fee,
                     is_live_start_fee_paid,
-                    mark_live_start_fee_paid,
                 )
 
-                if resuming:
-                    self._last_live_start_fee = {
-                        "skipped": True,
-                        "reason": "resume_open_positions",
-                    }
-                    # Keep / set paid marker so a later empty-books Start after
-                    # process restart still does not re-charge this session.
-                    if not dry_run:
-                        try:
-                            mark_live_start_fee_paid(reason="resume_open_positions")
-                        except OSError:
-                            pass
-                else:
-                    try:
-                        fee_result = collect_live_start_fee(dry_run=dry_run, private_key=key)
-                    except LiveStartFeeError as fee_exc:
-                        raise RuntimeError(str(fee_exc)) from fee_exc
-                    self._last_live_start_fee = fee_result.to_dict()
-                    if not fee_result.skipped:
-                        logger.info(
-                            "Live-start fee collected relay=%s leg1=%s leg2=%s",
-                            fee_result.relay_pubkey,
-                            fee_result.user_to_relay_sig,
-                            fee_result.relay_to_fee_sig,
-                        )
-                    elif fee_result.reason == "session_fee_paid":
-                        logger.info(
-                            "Live-start fee waived (session paid marker; is_paid=%s)",
-                            is_live_start_fee_paid(),
-                        )
+                try:
+                    fee_result = collect_live_start_fee(dry_run=dry_run, private_key=key)
+                except LiveStartFeeError as fee_exc:
+                    raise RuntimeError(str(fee_exc)) from fee_exc
+                self._last_live_start_fee = fee_result.to_dict()
+                if not fee_result.skipped:
+                    logger.info(
+                        "Live-start fee collected relay=%s leg1=%s leg2=%s",
+                        fee_result.relay_pubkey,
+                        fee_result.user_to_relay_sig,
+                        fee_result.relay_to_fee_sig,
+                    )
+                elif fee_result.reason == "session_fee_paid":
+                    logger.info(
+                        "Live-start fee waived (session paid marker; is_paid=%s)",
+                        is_live_start_fee_paid(),
+                    )
 
                 if not dry_run and not Config.ENFORCE_TRANSFER_GUARD:
                     logger.warning(
@@ -687,6 +680,15 @@ class BotManager:
             was_paper = self._dry_run
             self._clear_idle_state()
 
+        # End of a live/paper session: next Live Start must charge again.
+        # Do not clear from failed-start reset_to_idle (fee may already be on-chain).
+        try:
+            from live_start_fee import clear_live_start_fee_paid
+
+            clear_live_start_fee_paid(reason="cleared_on_stop")
+        except Exception as exc:
+            logger.warning("Failed to clear live-start fee paid marker on stop: %s", exc)
+
         self.clear_session_credentials()
         result: Dict[str, Any] = {"status": "stopped"}
         if was_paper:
@@ -712,6 +714,14 @@ class BotManager:
         if thread and thread.is_alive():
             thread.join(timeout=self.STOP_JOIN_TIMEOUT_SEC)
         result = self.reset_to_idle(force=True)
+        try:
+            from live_start_fee import clear_live_start_fee_paid
+
+            clear_live_start_fee_paid(reason="cleared_on_force_reset")
+        except Exception as exc:
+            logger.warning(
+                "Failed to clear live-start fee paid marker on force reset: %s", exc
+            )
         self.clear_session_credentials()
         return result
 
@@ -829,9 +839,12 @@ class BotManager:
 
                 market_regime_snapshot = get_market_regime_snapshot()
             open_positions_count = len(bot.strategy.get_open_positions()) if bot else 0
-            open_mints = (
-                [p.mint for p in bot.strategy.get_open_positions()] if bot else []
+            open_positions_list = (
+                list(bot.strategy.get_open_positions()) if bot else []
             )
+            from scheduled_rotation import trading_open_mints
+
+            open_mints = trading_open_mints(open_positions_list)
             persisted_open: List[Any] = []
             persisted_mode: Optional[bool] = None
             if open_positions_count == 0:
@@ -844,7 +857,7 @@ class BotManager:
                     persisted_open = []
                 if persisted_open:
                     open_positions_count = len(persisted_open)
-                    open_mints = [p.mint for p in persisted_open]
+                    open_mints = trading_open_mints(persisted_open)
             consecutive_loss_pause = (
                 bot.risk.consecutive_loss_pause_status(dry_run=bot.dry_run)
                 if bot
@@ -962,6 +975,9 @@ class BotManager:
             "birdeye_scan_count": birdeye_count,
             "birdeye_count": birdeye_count,
             "birdeye_scan_status": birdeye_scan_status,
+            "birdeye_trending_top5": (
+                getattr(bot, "birdeye_trending_top5_status", None) or {}
+            ),
             "pumpfun_scan_status": pumpfun_scan_status,
             "gmgn_scan_count": gmgn_count,
             "gmgn_count": gmgn_count,
@@ -1055,6 +1071,13 @@ class BotManager:
             result["live_start_fee_paid_marker"] = load_live_start_fee_paid()
         except Exception:
             pass
+        try:
+            from scheduled_rotation import status_snapshot as rotation_status
+
+            pos_for_rot = open_positions_list if open_positions_list else persisted_open
+            result["scheduled_rotation"] = rotation_status(pos_for_rot or None)
+        except Exception:
+            result["scheduled_rotation"] = {"enabled": False}
         result.update(paper_session_manager.get_session_stats())
         result.update(trade_activity.status_fields())
         from setup_learner import SetupLearner
@@ -1265,6 +1288,7 @@ class BotManager:
             "current_price": current_price,
             "size_sol": position.size_sol,
             "sol_invested": position.sol_invested,
+            "buy_count": int(position.buy_count or 1),
             "token_decimals": position.token_decimals,
             "token_amount": position.remaining_token_amount_raw / (10 ** (position.token_decimals or 0))
             if position.token_decimals is not None and position.remaining_token_amount_raw
@@ -1288,6 +1312,10 @@ class BotManager:
             "target_net_profit_sol": position.target_net_profit_sol,
             "fee_budget_sol": position.fee_budget_sol,
             "estimated_fees_sol": position.estimated_fees_sol,
+            "scheduled_rotation": bool(
+                (position.profile or {}).get("scheduled_rotation")
+            ),
+            "scanner_source": (position.profile or {}).get("scanner_source"),
         }
 
     def get_positions(self) -> List[Dict[str, Any]]:
@@ -1475,6 +1503,70 @@ class BotManager:
             return loop.run_until_complete(_bootstrap_sell())
         finally:
             loop.close()
+
+    def dca_position(
+        self,
+        *,
+        mint: Optional[str] = None,
+        symbol: Optional[str] = None,
+        size_sol: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Manual DCA into open WBTC (same mint; averages cost basis). Requires running bot."""
+        from config import is_wbtc_watchlist_mint
+
+        target_mint = (mint or "").strip() or None
+        target_symbol = (symbol or "").strip() or None
+        with self._lock:
+            bot = self._bot
+            loop = self._loop
+            running = bot is not None and self._bot_loop_active(bot)
+
+        if not running or not bot or not loop:
+            return {"ok": False, "error": "bot_not_running"}
+
+        positions = bot.strategy.get_open_positions()
+        position = None
+        for pos in positions:
+            if target_mint and pos.mint == target_mint:
+                position = pos
+                break
+            if target_symbol and pos.symbol.upper() == target_symbol.upper():
+                position = pos
+                break
+        if not position:
+            return {"ok": False, "error": "no_open_position_found"}
+        if not is_wbtc_watchlist_mint(position.mint):
+            return {"ok": False, "error": "dca_only_supported_for_wbtc"}
+
+        future = asyncio.run_coroutine_threadsafe(
+            bot.manual_dca_position(position, size_sol=size_sol),
+            loop,
+        )
+        try:
+            result = future.result(timeout=120)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if not result:
+            return {
+                "ok": False,
+                "error": "dca_failed",
+                "mint": position.mint,
+                "symbol": position.symbol,
+            }
+        return {
+            "ok": True,
+            "mint": result.get("mint", position.mint),
+            "symbol": result.get("symbol", position.symbol),
+            "buy_count": result.get("buy_count", position.buy_count),
+            "size_sol": result.get("size_sol", position.size_sol),
+            "entry_price": result.get("entry_price", position.entry_price),
+            "current_price": result.get("current_price"),
+            "pnl_pct": result.get("pnl_pct"),
+            "peak_pnl_pct": result.get("peak_pnl_pct", position.peak_pnl_pct),
+            "trough_pnl_pct": result.get("trough_pnl_pct", position.trough_pnl_pct),
+            "reason": result.get("reason", "buy_dca_manual"),
+            "source": "running_bot",
+        }
 
     def get_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
         path = Path(Config.TRADE_JOURNAL_PATH)

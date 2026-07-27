@@ -230,6 +230,20 @@ DEFAULT_MAX_OPEN_POSITIONS_WBTC = 2
 # positions (typically one memecoin momentum pick alongside the stable proxy leg).
 DEFAULT_COMPANION_TRADE_ENABLED = True
 DEFAULT_COMPANION_TRADE_MAX = 1
+# Scheduled $1 USD mint rotation (live): buy every 6h, hold 2h, rotate A→B→C.
+DEFAULT_SCHEDULED_ROTATION_ENABLED = True
+DEFAULT_SCHEDULED_ROTATION_LIVE_ONLY = True
+DEFAULT_SCHEDULED_ROTATION_INTERVAL_SEC = 6 * 3600
+DEFAULT_SCHEDULED_ROTATION_HOLD_SEC = 2 * 3600
+DEFAULT_SCHEDULED_ROTATION_SIZE_USD = 1.0
+DEFAULT_SCHEDULED_ROTATION_MAX_OPEN = 1
+DEFAULT_SCHEDULED_ROTATION_RETRY_SEC = 30 * 60
+DEFAULT_SCHEDULED_ROTATION_STATE_PATH = "data/scheduled_rotation_state.json"
+DEFAULT_SCHEDULED_ROTATION_MINTS = (
+    "2ggeqB3ZhbGCqGi7q4BkoTPZP1sb2WMVsfdFSpLGVETT",
+    "7YoAymCyauHAXus3snMEKcLgRx546MrHuBW3EuUNKKQs",
+    "6M8z5Wzmhk93ns6BaQzCuMYvkEpFcx9CDXsgFwK58NPf",
+)
 DEFAULT_REENTRY_DIP_PCT = 0.10
 DEFAULT_SOL_TREND_FILTER_ENABLED = True
 # DexScreener percent points (e.g. -1.5 = allow down to -1.5% on 1h). Loosened so
@@ -520,9 +534,21 @@ def wbtc_hold_until_profit_mode(mint: str) -> bool:
 
 
 def stop_loss_applies_for_mint(mint: str) -> bool:
-    """False for WBTC when WBTC_STOP_LOSS_ENABLED=false; always True for memecoins."""
+    """False for WBTC when WBTC_STOP_LOSS_ENABLED=false; always True for memecoins.
+
+    Scheduled-rotation mints are exempt (no 1.5% SL / emergency / catastrophic):
+    $1 legs must not dump on round-trip fee drag. Exits are instant +3.25%/+5%
+    or the mandatory 2h time exit only.
+    """
+    if not mint:
+        return True
     if is_wbtc_watchlist_mint(mint):
         return Config.WBTC_STOP_LOSS_ENABLED
+    if (
+        Config.SCHEDULED_ROTATION_ENABLED
+        and mint in Config.SCHEDULED_ROTATION_MINTS
+    ):
+        return False
     return True
 
 
@@ -1047,6 +1073,21 @@ def _parse_mint_list(env_val: str) -> frozenset[str]:
     return frozenset(m.strip() for m in env_val.split(",") if m.strip())
 
 
+def _parse_mint_list_ordered(env_val: str) -> tuple[str, ...]:
+    """Comma-separated mints preserving order (rotation schedule)."""
+    if not env_val or not env_val.strip():
+        return tuple()
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in env_val.split(","):
+        mint = part.strip()
+        if not mint or mint in seen:
+            continue
+        seen.add(mint)
+        out.append(mint)
+    return tuple(out)
+
+
 def normalize_entry_momentum_pct(value: float) -> float:
     """Map entry momentum to an allowed fraction (0.25%, 0.50%, or 0.75%)."""
     for allowed in ALLOWED_ENTRY_MOMENTUM_PCT:
@@ -1220,7 +1261,7 @@ class Config:
     BIRDEYE_FIND_GEMS_PATH = "/defi/v3/token/meme/list"
     BIRDEYE_MEME_LIST_PATH = "/defi/v3/token/list"
     BIRDEYE_OVERVIEW_PATH = "/defi/token_overview"
-    GMGN_API_BASE = "https://gmgn.ai"
+    GMGN_API_BASE = os.getenv("GMGN_API_BASE", "https://openapi.gmgn.ai").rstrip("/")
     DEXSCREENER_API_KEY = os.getenv("DEXSCREENER_API_KEY", "")
     PUMPFUN_API_KEY = os.getenv("PUMPFUN_API_KEY", "")
     PUMPFUN_API_BASE = os.getenv(
@@ -1482,6 +1523,19 @@ class Config:
         os.getenv("BIRDEYE_FIND_GEMS_ENABLED", "true").lower() == "true"
     )
     BIRDEYE_GAINER_TIMEFRAME = os.getenv("BIRDEYE_GAINER_TIMEFRAME", "1h").strip().lower()
+    # Find Gems ?type=trending → GET /defi/token_trending (rank asc). Always-attempt path.
+    BIRDEYE_TRENDING_TOP5_ENABLED = (
+        os.getenv("BIRDEYE_TRENDING_TOP5_ENABLED", "true").lower() == "true"
+    )
+    BIRDEYE_TRENDING_TOP5_LIMIT = max(
+        1, int(os.getenv("BIRDEYE_TRENDING_TOP5_LIMIT", "5"))
+    )
+    BIRDEYE_TRENDING_TOP5_INTERVAL_SEC = float(
+        os.getenv(
+            "BIRDEYE_TRENDING_TOP5_INTERVAL_SEC",
+            str(os.getenv("SCAN_INTERVAL_SEC", "30")),
+        )
+    )
     GMGN_API_KEY = os.getenv("GMGN_API_KEY", "")
     _scan_gmgn = os.getenv("SCAN_GMGN")
     _gmgn_enabled = os.getenv("GMGN_ENABLED", "true")
@@ -1668,6 +1722,64 @@ class Config:
     )
     COMPANION_TRADE_MAX = int(
         os.getenv("COMPANION_TRADE_MAX", str(DEFAULT_COMPANION_TRADE_MAX))
+    )
+    SCHEDULED_ROTATION_ENABLED = (
+        os.getenv(
+            "SCHEDULED_ROTATION_ENABLED",
+            "true" if DEFAULT_SCHEDULED_ROTATION_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    SCHEDULED_ROTATION_LIVE_ONLY = (
+        os.getenv(
+            "SCHEDULED_ROTATION_LIVE_ONLY",
+            "true" if DEFAULT_SCHEDULED_ROTATION_LIVE_ONLY else "false",
+        ).lower()
+        == "true"
+    )
+    _sched_mints_env = os.getenv("SCHEDULED_ROTATION_MINTS", "").strip()
+    SCHEDULED_ROTATION_MINTS = (
+        _parse_mint_list_ordered(_sched_mints_env)
+        if _sched_mints_env
+        else tuple(DEFAULT_SCHEDULED_ROTATION_MINTS)
+    )
+    SCHEDULED_ROTATION_INTERVAL_SEC = float(
+        os.getenv(
+            "SCHEDULED_ROTATION_INTERVAL_SEC",
+            str(DEFAULT_SCHEDULED_ROTATION_INTERVAL_SEC),
+        )
+    )
+    SCHEDULED_ROTATION_HOLD_SEC = float(
+        os.getenv(
+            "SCHEDULED_ROTATION_HOLD_SEC",
+            str(DEFAULT_SCHEDULED_ROTATION_HOLD_SEC),
+        )
+    )
+    SCHEDULED_ROTATION_SIZE_USD = float(
+        os.getenv(
+            "SCHEDULED_ROTATION_SIZE_USD",
+            str(DEFAULT_SCHEDULED_ROTATION_SIZE_USD),
+        )
+    )
+    SCHEDULED_ROTATION_MAX_OPEN = int(
+        os.getenv(
+            "SCHEDULED_ROTATION_MAX_OPEN",
+            str(DEFAULT_SCHEDULED_ROTATION_MAX_OPEN),
+        )
+    )
+    SCHEDULED_ROTATION_RETRY_SEC = float(
+        os.getenv(
+            "SCHEDULED_ROTATION_RETRY_SEC",
+            str(DEFAULT_SCHEDULED_ROTATION_RETRY_SEC),
+        )
+    )
+    SCHEDULED_ROTATION_STATE_PATH = str(
+        resolve_data_path(
+            os.getenv(
+                "SCHEDULED_ROTATION_STATE_PATH",
+                DEFAULT_SCHEDULED_ROTATION_STATE_PATH,
+            )
+        )
     )
     REENTRY_DIP_PCT = float(
         os.getenv("REENTRY_DIP_PCT", str(DEFAULT_REENTRY_DIP_PCT))
@@ -2334,25 +2446,24 @@ class Config:
 
     @classmethod
     def gmgn_headers(cls) -> dict:
-        """Headers for GMGN public quotation API (browser-like; optional API key)."""
+        """Headers for GMGN OpenAPI (`openapi.gmgn.ai`); key via X-APIKEY like gmgn-cli."""
         headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://gmgn.ai/?chain=sol",
-            "Origin": "https://gmgn.ai",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "sol-dex-bot/gmgn-scanner",
         }
         if cls.GMGN_API_KEY:
-            headers["Authorization"] = f"Bearer {cls.GMGN_API_KEY}"
+            headers["X-APIKEY"] = cls.GMGN_API_KEY
         return headers
 
     @classmethod
     def birdeye_find_gems_enabled(cls) -> bool:
         return cls.BIRDEYE_FIND_GEMS_ENABLED and cls.scan_birdeye_enabled()
+
+    @classmethod
+    def birdeye_trending_top5_enabled(cls) -> bool:
+        """Always-attempt entries on Find Gems trending top-N (win-lean exempt)."""
+        return cls.BIRDEYE_TRENDING_TOP5_ENABLED and cls.scan_birdeye_enabled()
 
     @classmethod
     def birdeye_gainer_sort_by(cls) -> str:
@@ -2880,6 +2991,9 @@ class Config:
             "scan_birdeye": cls.SCAN_BIRDEYE,
             "birdeye_find_gems_enabled": cls.BIRDEYE_FIND_GEMS_ENABLED,
             "birdeye_gainer_timeframe": cls.BIRDEYE_GAINER_TIMEFRAME,
+            "birdeye_trending_top5_enabled": cls.BIRDEYE_TRENDING_TOP5_ENABLED,
+            "birdeye_trending_top5_limit": cls.BIRDEYE_TRENDING_TOP5_LIMIT,
+            "birdeye_trending_top5_interval_sec": cls.BIRDEYE_TRENDING_TOP5_INTERVAL_SEC,
             "birdeye_min_liquidity_usd": cls.effective_birdeye_min_liquidity(),
             "birdeye_min_volume_24h_usd": cls.effective_birdeye_min_volume(),
             "scan_gmgn": cls.SCAN_GMGN,
@@ -2934,6 +3048,13 @@ class Config:
             "weth_min_expected_gain_pct": weth_min_expected_gain_pct(),
             "companion_trade_enabled": cls.COMPANION_TRADE_ENABLED,
             "companion_trade_max": cls.COMPANION_TRADE_MAX,
+            "scheduled_rotation_enabled": cls.SCHEDULED_ROTATION_ENABLED,
+            "scheduled_rotation_live_only": cls.SCHEDULED_ROTATION_LIVE_ONLY,
+            "scheduled_rotation_mints": list(cls.SCHEDULED_ROTATION_MINTS),
+            "scheduled_rotation_interval_sec": cls.SCHEDULED_ROTATION_INTERVAL_SEC,
+            "scheduled_rotation_hold_sec": cls.SCHEDULED_ROTATION_HOLD_SEC,
+            "scheduled_rotation_size_usd": cls.SCHEDULED_ROTATION_SIZE_USD,
+            "scheduled_rotation_max_open": cls.SCHEDULED_ROTATION_MAX_OPEN,
             "max_loss_per_trade_sol": cls.MAX_LOSS_PER_TRADE_SOL,
             "max_entry_price_impact_pct": cls.MAX_ENTRY_PRICE_IMPACT_PCT,
             "max_exit_price_impact_pct": cls.MAX_EXIT_PRICE_IMPACT_PCT,

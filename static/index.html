@@ -768,6 +768,21 @@
     }
     .btn-sell-position:hover { opacity: 0.85; background: rgba(239, 68, 68, 0.12); }
     .btn-sell-position:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-dca-position {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 4px;
+      padding: 0.12rem 0.45rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .btn-dca-position:hover { opacity: 0.85; background: rgba(34, 197, 94, 0.12); }
+    .btn-dca-position:disabled { opacity: 0.4; cursor: not-allowed; }
     .unified-pnl-cell .pnl-stat-grid { margin-top: 0; }
     .unified-recent-label { margin-top: 0.65rem; margin-bottom: 0.25rem; }
     @media (max-width: 900px) {
@@ -947,16 +962,16 @@
                 <div class="compact-hint" id="paperStartingBalanceLabel">Configured: <span id="paperStartingBalance">—</span></div>
               </td>
               <td>
+                <div class="paper-quote-currency" id="quoteCurrencyPanel" role="radiogroup" aria-label="Funding quote currency">
+                  <label><input type="radio" name="paperQuoteCurrency" value="usdc" id="paperQuoteUsdc"> USDC</label>
+                  <label><input type="radio" name="paperQuoteCurrency" value="usdt" id="paperQuoteUsdt"> USDT</label>
+                  <label><input type="radio" name="paperQuoteCurrency" value="sol" id="paperQuoteSol" checked> Solana</label>
+                </div>
+                <label id="stableQuoteSolWsolRow" class="paper-quote-currency" style="display:none;margin-top:0">
+                  <input type="checkbox" id="stableQuoteTradeSolWsol">
+                  Trade SOL/WSOL when daily +$5
+                </label>
                 <div id="paperBalancePanel">
-                  <div class="paper-quote-currency" role="radiogroup" aria-label="Paper quote currency">
-                    <label><input type="radio" name="paperQuoteCurrency" value="usdc" id="paperQuoteUsdc"> USDC</label>
-                    <label><input type="radio" name="paperQuoteCurrency" value="usdt" id="paperQuoteUsdt"> USDT</label>
-                    <label><input type="radio" name="paperQuoteCurrency" value="sol" id="paperQuoteSol" checked> Solana</label>
-                  </div>
-                  <label id="stableQuoteSolWsolRow" class="paper-quote-currency" style="display:none;margin-top:0">
-                    <input type="checkbox" id="stableQuoteTradeSolWsol">
-                    Trade SOL/WSOL when daily +$5
-                  </label>
                   <div class="setup-inline" style="margin-top:0.25rem">
                     <select id="paperBalanceInput" aria-label="Paper balance amount">
                       <option value="0.75">0.75 SOL</option>
@@ -993,7 +1008,8 @@
                     <button class="btn-secondary" type="button" id="btnSetLiveTradeable">Set</button>
                     <button class="btn-secondary" type="button" id="btnResetLiveTradeable">Reset</button>
                   </div>
-                  <p class="compact-hint">0.75–5 SOL · caps live trade sizing</p>
+                  <p class="compact-hint" id="liveTradeableHint">0.75–5 SOL · caps live trade sizing</p>
+                  <p class="compact-hint" id="liveTradeableConversion" style="display:none"></p>
                 </div>
               </td>
             </tr>
@@ -2582,58 +2598,84 @@
       }
     }
 
+    function updateLiveTradeableOptionLabels() {
+      const el = document.getElementById("liveTradeableInput");
+      if (!el || !el.options) return;
+      const currency = getSelectedPaperQuoteCurrency();
+      for (const opt of el.options) {
+        opt.textContent = formatPaperAmountLabel(opt.value, currency, latestSolPriceUsd);
+      }
+    }
+
     function updatePaperBalanceHint() {
       const hint = document.getElementById("paperBalanceHint");
       const conv = document.getElementById("paperBalanceConversion");
+      const liveHint = document.getElementById("liveTradeableHint");
+      const liveConv = document.getElementById("liveTradeableConversion");
       const solWsolRow = document.getElementById("stableQuoteSolWsolRow");
       const solWsolCb = document.getElementById("stableQuoteTradeSolWsol");
-      if (!hint) return;
+      if (!hint && !liveHint) return;
       const currency = getSelectedPaperQuoteCurrency();
       if (solWsolRow) {
         solWsolRow.style.display = (currency === "usdc" || currency === "usdt") ? "inline-flex" : "none";
       }
       if (solWsolCb) solWsolCb.checked = !!stableQuoteTradeSolWsol;
       const minFundUsd = solToStableUsd(minPaperFundSol, latestSolPriceUsd);
-      if (currency === "sol") {
-        hint.textContent =
-          "0.75-5 SOL · start needs >=" + minPaperFundSol.toFixed(2) +
-          " · resets when you Stop Bot";
-      } else {
-        const unit = paperQuoteLabel(currency);
-        const fundTxt = minFundUsd != null
-          ? ("~" + formatUsdAmount(minFundUsd) + " " + unit)
-          : (minPaperFundSol.toFixed(2) + " SOL-eq");
-        hint.textContent =
-          "0.75-5 SOL-equivalent in " + unit +
-          " · start needs >=" + minPaperFundSol.toFixed(2) + " SOL (" + fundTxt + ")" +
-          " · wallet simulated in SOL · resets when you Stop Bot";
-        if (stableQuoteTradeSolWsol) {
-          hint.textContent += " · WSOL when SOL 24h day ≥ +$5";
-        }
-        if (!liveStableQuoteEnabled) {
-          hint.textContent += " · live stables gated (paper only)";
-        }
-      }
-      if (conv) {
-        if (currency === "sol" || latestSolPriceUsd == null) {
-          conv.style.display = "none";
-          conv.textContent = "";
+      if (hint) {
+        if (currency === "sol") {
+          hint.textContent =
+            "0.75-5 SOL · start needs >=" + minPaperFundSol.toFixed(2) +
+            " · resets when you Stop Bot";
         } else {
-          const selected = document.getElementById("paperBalanceInput");
-          const solAmt = selected ? parseFloat(selected.value) : paperStartingBalanceSol;
-          const usd = solToStableUsd(solAmt, latestSolPriceUsd);
-          conv.style.display = "block";
-          conv.textContent =
-            "SOL " + formatUsdAmount(latestSolPriceUsd) +
-            " · selected ≈ " +
-            (usd != null ? formatUsdAmount(usd) : "—") +
-            " " + paperQuoteLabel(currency);
+          const unit = paperQuoteLabel(currency);
+          const fundTxt = minFundUsd != null
+            ? ("~" + formatUsdAmount(minFundUsd) + " " + unit)
+            : (minPaperFundSol.toFixed(2) + " SOL-eq");
+          hint.textContent =
+            "0.75-5 SOL-equivalent in " + unit +
+            " · start needs >=" + minPaperFundSol.toFixed(2) + " SOL (" + fundTxt + ")" +
+            " · wallet simulated in SOL · resets when you Stop Bot";
+          if (stableQuoteTradeSolWsol) {
+            hint.textContent += " · WSOL when SOL 24h day ≥ +$5";
+          }
         }
       }
+      if (liveHint) {
+        if (currency === "sol") {
+          liveHint.textContent = "0.75–5 SOL · caps live trade sizing";
+        } else {
+          liveHint.textContent =
+            "0.75–5 SOL-equivalent in " + paperQuoteLabel(currency) +
+            " · caps live trade sizing (wallet still spends SOL unless WSOL path is on)";
+          if (stableQuoteTradeSolWsol) {
+            liveHint.textContent += " · WSOL when SOL 24h day ≥ +$5";
+          }
+        }
+      }
+      function fillConversion(el, selectId, fallbackSol) {
+        if (!el) return;
+        if (currency === "sol" || latestSolPriceUsd == null) {
+          el.style.display = "none";
+          el.textContent = "";
+          return;
+        }
+        const selected = document.getElementById(selectId);
+        const solAmt = selected ? parseFloat(selected.value) : fallbackSol;
+        const usd = solToStableUsd(solAmt, latestSolPriceUsd);
+        el.style.display = "block";
+        el.textContent =
+          "SOL " + formatUsdAmount(latestSolPriceUsd) +
+          " · selected ≈ " +
+          (usd != null ? formatUsdAmount(usd) : "—") +
+          " " + paperQuoteLabel(currency);
+      }
+      fillConversion(conv, "paperBalanceInput", paperStartingBalanceSol);
+      fillConversion(liveConv, "liveTradeableInput", liveTradeableBalanceSol);
     }
 
     function refreshPaperQuoteCurrencyDisplay() {
       updatePaperBalanceOptionLabels();
+      updateLiveTradeableOptionLabels();
       updatePaperBalanceHint();
     }
 
@@ -2671,6 +2713,7 @@
       const exact = Array.from(el.options).find((o) => o.value === target);
       if (exact) {
         el.value = target;
+        refreshPaperQuoteCurrencyDisplay();
         return;
       }
       let best = el.options[0].value;
@@ -2683,6 +2726,7 @@
         }
       }
       el.value = best;
+      refreshPaperQuoteCurrencyDisplay();
     }
 
     function updatePaperBalanceControls(paperTrade, forceSelect = false) {
@@ -4034,19 +4078,24 @@
       const sizeSol = pos.sol_invested ?? pos.size_sol;
       const mintAttr = String(pos.mint || "").replace(/"/g, "&quot;");
       const symAttr = String(pos.symbol || "?").replace(/"/g, "&quot;");
+      const isWbtc = String(pos.mint || "") === "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh"
+        || String(pos.symbol || "").toUpperCase() === "WBTC";
+      const dcaBtn = (isWbtc && pos.mint)
+        ? `<button type="button" class="btn-dca-position" data-mint="${mintAttr}" data-symbol="${symAttr}" title="Dollar-cost average more into WBTC">DCA</button>`
+        : "";
       const sellBtn = pos.mint
         ? `<button type="button" class="btn-sell-position" data-mint="${mintAttr}" data-symbol="${symAttr}" title="Manual sell ${symAttr}">Sell</button>`
         : "";
       return `
         <div class="unified-position-row">
           <div class="unified-position-main">
-            <span class="sym">${pos.symbol}${wlBadge}${ladderMarks}${sellBtn}</span>
+            <span class="sym">${pos.symbol}${wlBadge}${ladderMarks}${dcaBtn}${sellBtn}</span>
             <span class="position-card-pnl ${cls}">${pct(pos.pnl_pct)}</span>
           </div>
           <div class="unified-position-detail">
-            entry <strong>$${pos.entry_price.toFixed(8)}</strong>
-            · current <strong>$${pos.current_price.toFixed(8)}</strong>
-            · <strong>${sizeSol} SOL</strong>
+            entry <strong>$${Number(pos.entry_price).toFixed(8)}</strong>
+            · current <strong>$${Number(pos.current_price).toFixed(8)}</strong>
+            · <strong>${sizeSol} SOL</strong>${pos.buy_count != null && pos.buy_count > 1 ? ` · buys ${pos.buy_count}` : ""}
             · ${Math.round(pos.hold_sec)}s
           </div>
         </div>`;
@@ -4057,6 +4106,11 @@
       root.querySelectorAll(".btn-sell-position").forEach(function (btn) {
         btn.addEventListener("click", function () {
           manualSellPosition(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), btn);
+        });
+      });
+      root.querySelectorAll(".btn-dca-position").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          manualDcaPosition(btn.getAttribute("data-mint"), btn.getAttribute("data-symbol"), btn);
         });
       });
     }
@@ -4081,6 +4135,40 @@
         await refresh();
       } catch (e) {
         alert("Sell failed: " + (e.message || e));
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function manualDcaPosition(mint, symbol, btn) {
+      const sym = symbol || (mint ? mint.slice(0, 8) : "?");
+      if (!mint) {
+        alert("Cannot DCA: missing mint");
+        return;
+      }
+      const sizeEl = document.getElementById("tradeSize");
+      const sizeSol = sizeEl ? parseFloat(sizeEl.value) : NaN;
+      const sizeTxt = Number.isFinite(sizeSol) && sizeSol > 0
+        ? sizeSol.toFixed(2) + " SOL"
+        : "computed trade size";
+      if (!confirm("DCA buy more " + sym + " with " + sizeTxt + " into the same position?")) return;
+      if (btn) btn.disabled = true;
+      try {
+        const body = { mint: mint, symbol: symbol || undefined };
+        if (Number.isFinite(sizeSol) && sizeSol > 0) body.size_sol = sizeSol;
+        const result = await api("/api/positions/dca", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        if (!result.ok) {
+          throw new Error(result.error || "dca_failed");
+        }
+        const avg = result.entry_price != null ? " · avg entry $" + Number(result.entry_price).toFixed(8) : "";
+        const sz = result.size_sol != null ? " · size " + Number(result.size_sol).toFixed(4) + " SOL" : "";
+        const pnlTxt = result.pnl_pct != null ? " · " + pct(result.pnl_pct) : "";
+        logActivity("DCA " + sym + " buy #" + (result.buy_count != null ? result.buy_count : "?") + avg + sz + pnlTxt);
+        await refresh();
+      } catch (e) {
+        alert("DCA failed: " + (e.message || e));
         if (btn) btn.disabled = false;
       }
     }
@@ -4512,6 +4600,7 @@
 
     bindChange("liveTradeableInput", () => {
       liveTradeableTouched = true;
+      refreshPaperQuoteCurrencyDisplay();
     });
 
     document.querySelectorAll('input[name="paperQuoteCurrency"]').forEach((radio) => {
@@ -4545,7 +4634,7 @@
             stableQuoteTradeSolWsol = !!r.stable_quote_trade_sol_wsol;
           }
           refreshPaperQuoteCurrencyDisplay();
-          logActivity("Paper quote currency set to " + paperQuoteLabel(currency));
+          logActivity("Funding quote currency set to " + paperQuoteLabel(currency));
         } catch (e) {
           console.warn("Failed to persist paper quote currency:", e);
         }

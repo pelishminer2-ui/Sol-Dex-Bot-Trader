@@ -1,5 +1,6 @@
 """Validate live-start fee gate: paper skips; live requires successful fee (mocked)."""
 
+import json
 from unittest.mock import patch
 
 from app import app
@@ -129,9 +130,15 @@ def test_status_exposes_session_wallet_not_ephemeral():
 
 
 def test_blockhash_retry_helper():
-    from live_start_fee import _is_blockhash_error, _is_retryable_fee_send_error, _resolve_live_fee_rpc_url
+    from live_start_fee import (
+        _is_blockhash_error,
+        _is_retryable_fee_send_error,
+        _resolve_live_fee_rpc_url,
+        _status_is_confirmed_ok,
+    )
     from config import Config, is_public_rpc_url
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
+    import asyncio
 
     assert _is_blockhash_error(Exception("BlockhashNotFound"))
     assert _is_blockhash_error(Exception("Transaction simulation failed: Blockhash not found"))
@@ -141,7 +148,26 @@ def test_blockhash_retry_helper():
     assert not _is_blockhash_error(Exception("insufficient funds"))
     assert _is_retryable_fee_send_error(Exception("BlockhashNotFound"))
     assert _is_retryable_fee_send_error(Exception("Connection reset by peer"))
+    assert _is_retryable_fee_send_error(
+        Exception("Unable to confirm transaction Sig111111111111111111111111111111111111111111111111111111111111111")
+    )
+    assert _is_retryable_fee_send_error(
+        Exception("Sig111 has expired: block height exceeded")
+    )
     assert not _is_retryable_fee_send_error(Exception("insufficient funds"))
+    assert not _is_retryable_fee_send_error(
+        Exception("Fee transfer failed on-chain: Sig111 err={'InstructionError': [0, 'InvalidAccountData']}")
+    )
+
+    ok_status = MagicMock()
+    ok_status.err = None
+    ok_status.confirmation_status = "confirmed"
+    ok_status.confirmations = None
+    assert _status_is_confirmed_ok(ok_status) is True
+    fail_status = MagicMock()
+    fail_status.err = {"InstructionError": [0, "Custom"]}
+    fail_status.confirmation_status = "confirmed"
+    assert _status_is_confirmed_ok(fail_status) is False
 
     with patch.object(Config, "get_rpc_endpoint", return_value="https://api.mainnet-beta.solana.com"):
         try:
@@ -153,6 +179,30 @@ def test_blockhash_retry_helper():
         url = _resolve_live_fee_rpc_url()
         assert "helius" in url.lower()
         assert not is_public_rpc_url(url)
+
+    # Already-confirmed signature must succeed even if wall-clock would expire.
+    from live_start_fee import _confirm_fee_signature
+    from solders.keypair import Keypair
+
+    fake_sig = str(Keypair().sign_message(b"fee-confirm-unit-test"))
+
+    class _FakeClient:
+        async def get_signature_statuses(self, _sigs, search_transaction_history=False):
+            st = MagicMock()
+            st.err = None
+            st.confirmation_status = "confirmed"
+            st.confirmations = 32
+            st.slot = 1
+            resp = MagicMock()
+            resp.value = [st]
+            return resp
+
+        async def get_block_height(self, commitment=None):
+            resp = MagicMock()
+            resp.value = 1
+            return resp
+
+    asyncio.run(_confirm_fee_signature(_FakeClient(), fake_sig, last_valid_block_height=999))
     print("PASS: blockhash error detector + live fee RPC guard")
 
 
@@ -344,6 +394,39 @@ def test_bot_start_skips_fee_when_session_paid():
     print("PASS: live start skips fee when session paid marker set")
 
 
+def test_stop_clears_fee_paid_marker():
+    """Stop/Force Reset clear paid marker so the next Live Start charges again."""
+    from live_start_fee import (
+        clear_live_start_fee_paid,
+        is_live_start_fee_paid,
+        load_live_start_fee_paid,
+        mark_live_start_fee_paid,
+    )
+    from pathlib import Path
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "live_start_fee_paid.json"
+        with patch("live_start_fee.Config.LIVE_START_FEE_PAID_PATH", str(path)):
+            mark_live_start_fee_paid(reason="session_bookmark", fee_sol=0.025)
+            assert is_live_start_fee_paid() is True
+            clear_live_start_fee_paid(reason="cleared_on_stop")
+            assert is_live_start_fee_paid() is False
+            cleared = json.loads(path.read_text(encoding="utf-8"))
+            assert cleared.get("paid") is False
+            assert cleared.get("waived") is False
+            assert cleared.get("reason") == "cleared_on_stop"
+            assert load_live_start_fee_paid() is None
+
+            # force_reset always clears (idle stop early-returns without fee clear).
+            bot_manager.reset_to_idle(force=True)
+            mark_live_start_fee_paid(reason="session_bookmark")
+            assert is_live_start_fee_paid() is True
+            bot_manager.force_reset()
+            assert is_live_start_fee_paid() is False
+    print("PASS: stop clears fee paid marker for next charge")
+
+
 def main():
     test_paper_skips_fee()
     test_fee_disabled_skips()
@@ -356,6 +439,7 @@ def main():
     test_bot_start_live_succeeds_with_mocked_fee()
     test_session_fee_paid_skips_chain()
     test_bot_start_skips_fee_when_session_paid()
+    test_stop_clears_fee_paid_marker()
     test_api_live_rpc_required_error_code()
     test_api_start_fee_error_code()
     test_config_exposes_fee_fields()

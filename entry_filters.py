@@ -287,12 +287,19 @@ def spike_trap_reason(
     return None
 
 
+def is_birdeye_trending_top5(candidate) -> bool:
+    """True for the Find Gems trending always-attempt path (win-lean exempt)."""
+    return getattr(candidate, "source", "") == "birdeye_trending_top5"
+
+
 def win_lean_reason(candidate, setup_learner) -> Optional[str]:
     """
     Return a skip reason when a candidate leans toward the learned LOSS profile,
     else ``None``. Falls back to allow (returns ``None``) when the gate is
     disabled, no learner is supplied, or the learner has insufficient data.
     """
+    if is_birdeye_trending_top5(candidate):
+        return None
     if not Config.SETUP_LEARNING_ENTRY_GATE_ENABLED:
         return None
     if setup_learner is None:
@@ -326,6 +333,10 @@ def entry_winrate_skip_reason(
     reason = spike_trap_reason(candidate, sell_preview_impact_pct)
     if reason:
         return reason
+    # Find Gems trending top5: always attempt — spike/instant-dump still apply,
+    # but win-lean must not silently drop these ranked picks.
+    if is_birdeye_trending_top5(candidate):
+        return None
     if Config.SPIKE_TRAP_FILTER_ENABLED and is_high_momentum(candidate):
         return None
     return win_lean_reason(candidate, setup_learner)

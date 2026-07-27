@@ -122,7 +122,8 @@ def test_log_missing_scanner_key_once():
 def test_gmgn_headers_without_key():
     with patch.object(Config, "GMGN_API_KEY", ""):
         headers = Config.gmgn_headers()
-    assert headers["Referer"] == "https://gmgn.ai/?chain=sol"
+    assert headers["Accept"] == "application/json"
+    assert "X-APIKEY" not in headers
     assert "Authorization" not in headers
     print("PASS: gmgn_headers_without_key")
 
@@ -130,7 +131,8 @@ def test_gmgn_headers_without_key():
 def test_gmgn_headers_with_key():
     with patch.object(Config, "GMGN_API_KEY", "gmgn-key"):
         headers = Config.gmgn_headers()
-    assert headers["Authorization"] == "Bearer gmgn-key"
+    assert headers["X-APIKEY"] == "gmgn-key"
+    assert "Authorization" not in headers
     print("PASS: gmgn_headers_with_key")
 
 

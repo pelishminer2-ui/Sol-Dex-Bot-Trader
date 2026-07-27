@@ -11,8 +11,10 @@ Flow:
 Skip (no chain tx) when:
   - paper / dry-run
   - FEE_ENABLED=false
-  - resuming open positions (bot_manager)
   - durable session paid/waived marker on disk (Flask restart bookmark)
+
+Open positions alone do NOT waive. Stop / Force Reset clear the paid marker so
+the next Live Start charges again (bookmark resumes stay free until Stop).
 
 The fee path signs SystemProgram transfers directly and does NOT go through
 tx_authorizer (which only allows Jupiter swap flows). This is intentional:
@@ -38,6 +40,7 @@ from solana.rpc.commitment import Confirmed, Processed
 from solana.rpc.models import TxOpts
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
@@ -50,6 +53,11 @@ LAMPORTS_PER_SOL = 1_000_000_000
 # BlockhashNotFound — that only rebroadcasts the same dead bytes.
 _FEE_SEND_ATTEMPTS = 5
 _FEE_RETRY_BASE_SLEEP_SEC = 0.35
+# Confirm polls: fixed wall-clock floor plus blockhash expiry, then a short
+# post-expiry history search so RPC lag cannot mark a landed fee as unpaid.
+_FEE_CONFIRM_POLL_SEC = 0.75
+_FEE_CONFIRM_MIN_TIMEOUT_SEC = 90.0
+_FEE_CONFIRM_POST_EXPIRY_GRACE_SEC = 20.0
 
 
 class LiveStartFeeError(RuntimeError):
@@ -112,6 +120,10 @@ def _is_retryable_fee_send_error(exc: BaseException) -> bool:
     return (
         "timeout" in msg
         or "timed out" in msg
+        or "unable to confirm" in msg
+        or "unconfirmed" in msg
+        or "block height exceeded" in msg
+        or "expired" in msg
         or "connection" in msg
         or "temporarily unavailable" in msg
         or "429" in msg
@@ -120,6 +132,8 @@ def _is_retryable_fee_send_error(exc: BaseException) -> bool:
         or "httpstatuserror" in name
         or "connecterror" in name
         or "readtimeout" in name
+        or "unconfirmedtxerror" in name
+        or "transactionexpiredblockheightexceedederror" in name
     )
 
 
@@ -146,8 +160,8 @@ def _resolve_live_fee_rpc_url() -> str:
     return rpc_url
 
 
-async def _fetch_fresh_blockhash(client: AsyncClient):
-    """Fetch a fresh blockhash immediately before signing (never reuse).
+async def _fetch_fresh_blockhash(client: AsyncClient) -> tuple[Any, Optional[int]]:
+    """Fetch a fresh blockhash (+ last_valid_block_height) before signing.
 
     Prefer processed (freshest), then confirmed. Raises if both fail.
     """
@@ -156,7 +170,13 @@ async def _fetch_fresh_blockhash(client: AsyncClient):
         try:
             blockhash_resp = await client.get_latest_blockhash(commitment=commitment)
             if blockhash_resp.value is not None:
-                return blockhash_resp.value.blockhash
+                value = blockhash_resp.value
+                last_valid = getattr(value, "last_valid_block_height", None)
+                try:
+                    last_valid_i = int(last_valid) if last_valid is not None else None
+                except (TypeError, ValueError):
+                    last_valid_i = None
+                return value.blockhash, last_valid_i
         except Exception as exc:
             last_exc = exc
             logger.warning(
@@ -167,6 +187,152 @@ async def _fetch_fresh_blockhash(client: AsyncClient):
     raise LiveStartFeeError(
         f"Failed to fetch recent blockhash for fee payment: {last_exc}"
     )
+
+
+def _confirmation_rank(status: Any) -> Optional[int]:
+    """Map confirmation_status to rank: processed=0, confirmed=1, finalized=2."""
+    if status is None:
+        return None
+    conf = getattr(status, "confirmation_status", None)
+    if conf is None:
+        return None
+    try:
+        return int(conf)
+    except (TypeError, ValueError):
+        name = str(conf).lower()
+        if "finalized" in name:
+            return 2
+        if "confirmed" in name:
+            return 1
+        if "processed" in name:
+            return 0
+        return None
+
+
+def _status_is_confirmed_ok(status: Any) -> bool:
+    """True when signature is confirmed/finalized with no on-chain error."""
+    if status is None:
+        return False
+    if getattr(status, "err", None) is not None:
+        return False
+    rank = _confirmation_rank(status)
+    if rank is not None and rank >= 1:
+        return True
+    # Some nodes omit confirmation_status but still return a landed status.
+    if getattr(status, "confirmations", None) is not None:
+        return True
+    return False
+
+
+async def _get_signature_status(
+    client: AsyncClient,
+    sig: Signature,
+    *,
+    search_history: bool = False,
+) -> Any:
+    resp = await client.get_signature_statuses(
+        [sig], search_transaction_history=search_history
+    )
+    if not resp.value:
+        return None
+    return resp.value[0]
+
+
+async def _confirm_fee_signature(
+    client: AsyncClient,
+    sig_str: str,
+    *,
+    last_valid_block_height: Optional[int] = None,
+) -> None:
+    """Wait until signature reaches Confirmed (or fails on-chain).
+
+    Polls getSignatureStatuses. Uses last_valid_block_height when available so
+    we do not abandon a still-valid tx early. After expiry (or min timeout),
+    a history search catches RPC lag. Already-confirmed sigs succeed.
+    """
+    try:
+        sig = Signature.from_string(sig_str)
+    except Exception as exc:
+        raise LiveStartFeeError(f"Invalid fee signature: {sig_str}") from exc
+
+    deadline = time.monotonic() + _FEE_CONFIRM_MIN_TIMEOUT_SEC
+    expired = False
+    last_status = None
+
+    while True:
+        now = time.monotonic()
+        try:
+            last_status = await _get_signature_status(
+                client, sig, search_history=expired
+            )
+        except Exception as exc:
+            logger.warning(
+                "Live-start fee getSignatureStatuses(%s) failed: %s",
+                sig_str,
+                exc,
+            )
+            last_status = None
+
+        if last_status is not None:
+            err = getattr(last_status, "err", None)
+            if err is not None:
+                raise LiveStartFeeError(
+                    f"Fee transfer failed on-chain: {sig_str} err={err}"
+                )
+            if _status_is_confirmed_ok(last_status):
+                return
+
+        if last_valid_block_height is not None and not expired:
+            try:
+                height_resp = await client.get_block_height(commitment=Confirmed)
+                current_h = int(height_resp.value or 0)
+            except Exception as exc:
+                logger.warning(
+                    "Live-start fee getBlockHeight failed during confirm: %s", exc
+                )
+                current_h = 0
+            if current_h > int(last_valid_block_height):
+                expired = True
+                deadline = max(
+                    deadline, time.monotonic() + _FEE_CONFIRM_POST_EXPIRY_GRACE_SEC
+                )
+                logger.info(
+                    "Live-start fee sig=%s blockhash expired at height=%s; "
+                    "grace-polling history for %.0fs",
+                    sig_str,
+                    current_h,
+                    _FEE_CONFIRM_POST_EXPIRY_GRACE_SEC,
+                )
+
+        if now >= deadline:
+            break
+        await asyncio.sleep(_FEE_CONFIRM_POLL_SEC)
+
+    # Final history lookup — treat already-confirmed as success.
+    try:
+        last_status = await _get_signature_status(client, sig, search_history=True)
+    except Exception as exc:
+        logger.warning(
+            "Live-start fee final history status for %s failed: %s", sig_str, exc
+        )
+        last_status = None
+
+    if last_status is not None:
+        err = getattr(last_status, "err", None)
+        if err is not None:
+            raise LiveStartFeeError(
+                f"Fee transfer failed on-chain: {sig_str} err={err}"
+            )
+        if _status_is_confirmed_ok(last_status) or (
+            err is None and getattr(last_status, "slot", None) is not None
+        ):
+            logger.info(
+                "Live-start fee sig=%s confirmed via history search after slow RPC",
+                sig_str,
+            )
+            return
+
+    raise LiveStartFeeError(f"Unable to confirm transaction {sig_str}")
 
 
 async def _open_fee_client(rpc_url: str) -> AsyncClient:
@@ -199,6 +365,7 @@ async def _send_sol(
         # First attempt: preflight on. Later attempts: skip preflight so a stale
         # simulation BlockhashNotFound cannot block a freshly signed tx.
         skip_preflight = attempt > 0
+        broadcast_sig: Optional[str] = None
         try:
             if attempt > 0 and attempt % 2 == 0:
                 # Hot-recreate client mid-retry in case the HTTP session went stale.
@@ -212,7 +379,7 @@ async def _send_sol(
                     _rpc_host_for_log(rpc_url),
                     attempt + 1,
                 )
-            recent = await _fetch_fresh_blockhash(active)
+            recent, last_valid_h = await _fetch_fresh_blockhash(active)
             tx = Transaction.new_signed_with_payer(
                 [ix],
                 payer.pubkey(),
@@ -225,17 +392,56 @@ async def _send_sol(
             )
             if not resp.value:
                 raise LiveStartFeeError("Fee transfer broadcast returned no signature")
-            sig = str(resp.value)
-            conf = await active.confirm_transaction(resp.value, commitment=Confirmed)
-            if not conf.value:
-                raise LiveStartFeeError(f"Fee transfer not confirmed: {sig}")
-            status = conf.value[0]
-            if status is None or status.err is not None:
-                raise LiveStartFeeError(
-                    f"Fee transfer failed on-chain: {sig} err={getattr(status, 'err', None)}"
-                )
-            return sig, active
-        except LiveStartFeeError:
+            broadcast_sig = str(resp.value)
+            await _confirm_fee_signature(
+                active,
+                broadcast_sig,
+                last_valid_block_height=last_valid_h,
+            )
+            return broadcast_sig, active
+        except LiveStartFeeError as fee_exc:
+            # On-chain failure for a broadcast sig must not be retried as a new send.
+            msg = str(fee_exc).lower()
+            if "failed on-chain" in msg:
+                raise
+            # Unable to confirm / expired: only resend when that sig never landed.
+            if broadcast_sig and _is_retryable_fee_send_error(fee_exc):
+                try:
+                    sig_obj = Signature.from_string(broadcast_sig)
+                    landed = await _get_signature_status(
+                        active, sig_obj, search_history=True
+                    )
+                except Exception:
+                    landed = None
+                if landed is not None:
+                    err = getattr(landed, "err", None)
+                    if err is not None:
+                        raise LiveStartFeeError(
+                            f"Fee transfer failed on-chain: {broadcast_sig} err={err}"
+                        ) from fee_exc
+                    if _status_is_confirmed_ok(landed) or (
+                        err is None and getattr(landed, "slot", None) is not None
+                    ):
+                        logger.info(
+                            "Live-start fee sig=%s already confirmed after confirm error; "
+                            "treating as success",
+                            broadcast_sig,
+                        )
+                        return broadcast_sig, active
+                last_exc = fee_exc
+                if attempt < _FEE_SEND_ATTEMPTS - 1:
+                    logger.warning(
+                        "Live-start fee confirm unresolved "
+                        "(attempt %s/%s, sig=%s, rpc=%s): %s — "
+                        "refetching fresh blockhash and retrying send",
+                        attempt + 1,
+                        _FEE_SEND_ATTEMPTS,
+                        broadcast_sig,
+                        _rpc_host_for_log(rpc_url),
+                        fee_exc,
+                    )
+                    await asyncio.sleep(_FEE_RETRY_BASE_SLEEP_SEC * (attempt + 1))
+                    continue
             raise
         except Exception as exc:
             last_exc = exc
@@ -364,6 +570,48 @@ def load_live_start_fee_paid() -> Optional[dict[str, Any]]:
 
 def is_live_start_fee_paid() -> bool:
     return load_live_start_fee_paid() is not None
+
+
+def clear_live_start_fee_paid(*, reason: str = "cleared_on_stop") -> None:
+    """Clear durable paid/waived marker so the next Live Start charges again.
+
+    Called from Stop / Force Reset only — not from failed-start idle reset —
+    so a successful on-chain fee is not wiped if start fails afterward.
+    """
+    path = _fee_paid_path()
+    prev = load_live_start_fee_paid() or {}
+    payload: dict[str, Any] = {
+        "paid": False,
+        "waived": False,
+        "reason": reason or "cleared_on_stop",
+        "fee_sol": float(
+            prev.get("fee_sol")
+            or getattr(Config, "LIVE_START_FEE_SOL", 0.025)
+            or 0.025
+        ),
+        "fee_wallet": (
+            prev.get("fee_wallet") or getattr(Config, "FEE_WALLET", "") or ""
+        ).strip(),
+        "paid_at": None,
+        "updated_at": time.time(),
+        "cleared_at": time.time(),
+        "user_to_relay_sig": None,
+        "relay_to_fee_sig": None,
+        "relay_pubkey": None,
+        "prior_reason": prev.get("reason"),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info("Live-start fee paid marker cleared (%s)", reason)
+    except OSError as exc:
+        logger.error("Failed to clear live-start fee paid marker: %s", exc)
+        # Best-effort unlink so next start still charges if write failed mid-way.
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
 
 
 def mark_live_start_fee_paid(

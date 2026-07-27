@@ -725,7 +725,10 @@ def movers():
 @app.route("/api/positions")
 def positions():
     pos_list = bot_manager.get_positions()
-    open_mints = [p.get("mint", "") for p in pos_list if p.get("mint")]
+    from scheduled_rotation import trading_open_mints
+
+    # Prefer profile-tagged filter so rotation legs don't skew companion/max.
+    open_mints = trading_open_mints(pos_list)
     effective_max = max_allowed_open_positions(open_mints)
     return jsonify(
         {
@@ -754,6 +757,37 @@ def positions_sell():
     reason = (data.get("reason") or "sell_manual").strip() or "sell_manual"
     try:
         result = bot_manager.force_sell(mint=mint or None, symbol=symbol or None, reason=reason)
+        if not result.get("ok"):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.route("/api/positions/dca", methods=["POST"])
+@app.route("/api/bot/dca", methods=["POST"])
+def positions_dca():
+    """Manual DCA buy into open WBTC (same mint; averages entry). No live-start fee."""
+    data = request.get_json(silent=True) or {}
+    mint = (data.get("mint") or data.get("token_mint") or "").strip()
+    symbol = (data.get("symbol") or "").strip()
+    if not mint and not symbol:
+        return jsonify({"ok": False, "error": "mint or symbol is required"}), 400
+    size_raw = data.get("size_sol")
+    size_sol = None
+    if size_raw is not None and str(size_raw).strip() != "":
+        try:
+            size_sol = float(size_raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "size_sol must be a number"}), 400
+        if size_sol <= 0:
+            return jsonify({"ok": False, "error": "size_sol must be positive"}), 400
+    try:
+        result = bot_manager.dca_position(
+            mint=mint or None,
+            symbol=symbol or None,
+            size_sol=size_sol,
+        )
         if not result.get("ok"):
             return jsonify(result), 400
         return jsonify(result)

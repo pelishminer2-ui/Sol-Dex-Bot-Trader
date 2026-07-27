@@ -44,7 +44,7 @@ The bot is tuned to **target real net profit after fees**, not break-even scalps
 - DexScreener mover scanner with liquidity, volume, and pool-age filters
 - **Pump.fun token scanner** â€” merges pump.fun launches with DexScreener movers into one watchlist (toggle via `INCLUDE_PUMPFUN` or GUI checkbox)
 - **Birdeye Find Gems scanner** â€” merges [Birdeye find-gems](https://birdeye.so/solana/find-gems) **1h % gainers** (mint/CA addresses) into the unified watchlist (toggle via `SCAN_BIRDEYE` or GUI checkbox)
-- **GMGN.ai scanner** â€” merges [GMGN Solana trending](https://gmgn.ai/?chain=sol) tokens (skills market at [gmgn.ai/ai](https://gmgn.ai/ai?chain=sol&tab=skills_market) is for Agent API keys; token CAs come from the quotation rank API) into the unified watchlist (toggle via `SCAN_GMGN` / `GMGN_ENABLED` or GUI checkbox)
+- **GMGN.ai scanner** â€” merges [GMGN Solana trending](https://gmgn.ai/?chain=sol) tokens via OpenAPI `GET /v1/market/rank` (same as `gmgn-cli`; key from [gmgn.ai/ai](https://gmgn.ai/ai?chain=sol&tab=skills_market)) into the unified watchlist (toggle via `SCAN_GMGN` / `GMGN_ENABLED` or GUI checkbox)
 - **Pinned watchlist mint** â€” optionally tracks a specific mint (`WATCHLIST_MINT`) and adds it as a trade candidate when USD price rises **â‰¥ `WATCHLIST_MIN_USD_GAIN`** (default **$75**) from the rolling baseline (`BASELINE_WINDOW_SEC`); same ladder/exit rules apply
 - Rolling baseline momentum detection (+0.5% entry trigger by default)
 - Laddered take-profit (+1.5% / +3% / +7% / +10%, 25% each); selectable stop-loss (-1.5%, -3.0%, or -5.0%), breakeven SL after L1, instant full exit at **+5% profit**, global trend-weakening exit at **â‰¥2% profit**, early full exit on momentum slowdown after L2/L3, and time-stop exits
@@ -376,7 +376,7 @@ C:\Users\Owner\Desktop\Solana\
   scanner.py        DexScreener mover scanner + unified merge
   pumpfun_scanner.py pump.fun token scanner (API + DexScreener fallback)
   birdeye_scanner.py Birdeye Find Gems scanner (1h gainers via meme-list API)
-  gmgn_scanner.py   GMGN.ai Solana trending scanner (quotation rank API + DexScreener fallback)
+  gmgn_scanner.py   GMGN.ai Solana trending scanner (OpenAPI /v1/market/rank + DexScreener fallback)
   price_feed.py     Jupiter price polling + baselines
   strategy.py       Entry/exit logic
   reentry_tracker.py Per-mint exit price tracking for dip re-entry
@@ -438,7 +438,7 @@ Add keys to your `.env` file in the project root (`C:\Users\Owner\Desktop\Solana
 | `DEXSCREENER_API_KEY` | No | [docs.dexscreener.com](https://docs.dexscreener.com/api/reference) | Official public API needs **no key** (60 req/min). Env var is optional for future/premium access; bot uses public endpoints if empty. |
 | `PUMPFUN_API_KEY` | No | [pump.fun](https://pump.fun) wallet login â†’ JWT | Public `frontend-api.pump.fun` coin lists work without auth. Optional JWT (`Authorization: Bearer â€¦`) from wallet login may help on protected v3 routes. |
 | `BIRDEYE_API_KEY` | **Recommended** | [birdeye.so](https://birdeye.so) â†’ Developer â†’ API Key | Free tier available. Sent as `X-API-KEY` with `x-chain: solana`. Primary endpoint: [`GET /defi/v2/tokens/new_listing`](https://docs.birdeye.so/reference/get-defi-v2-tokens-new_listing). Without it, Birdeye API is skipped and DexScreener trending fallback is used instead. |
-| `GMGN_API_KEY` | No | [gmgn.ai/ai](https://gmgn.ai/ai?chain=sol&tab=skills_market) â†’ create Agent API key | Public quotation API (`/defi/quotation/v1/rank/sol/swaps/...`) works without a key. Optional key enables the official Agent API (`GET /v1/market/rank` via `gmgn-cli`). |
+| `GMGN_API_KEY` | Yes (for GMGN scan) | [gmgn.ai/ai](https://gmgn.ai/ai?chain=sol&tab=skills_market) â†’ create Agent API key | Required for OpenAPI `GET https://openapi.gmgn.ai/v1/market/rank` (same key/header as `gmgn-cli`). |
 
 **Birdeye setup (one-time):**
 
@@ -488,24 +488,23 @@ Trades execute via **Jupiter** when a route exists (graduated or liquid curve to
 
 ### GMGN.ai scanner
 
-Solana trending tokens from [GMGN.ai](https://gmgn.ai/?chain=sol) are fetched via the public **quotation rank API** and merged into the unified watchlist. The [skills market tab](https://gmgn.ai/ai?chain=sol&tab=skills_market) is GMGN's Agent API key portal (for `gmgn-cli` / MCP skills like `/gmgn-market`); it does **not** return token lists directly. Token contract addresses (CAs) come from rank responses (`address` field).
+Solana trending tokens from [GMGN.ai](https://gmgn.ai/?chain=sol) are fetched via the official **OpenAPI rank endpoint** (same path as `gmgn-cli market trending`) and merged into the unified watchlist. The [skills market tab](https://gmgn.ai/ai?chain=sol&tab=skills_market) is GMGN's Agent API key portal; token contract addresses (CAs) come from rank responses (`address` field).
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `SCAN_GMGN` / `GMGN_ENABLED` | true | Include GMGN trending tokens in the watchlist |
-| `GMGN_API_KEY` | (empty) | Optional Agent API key from [gmgn.ai/ai](https://gmgn.ai/ai) â€” public quotation API works without it |
-| `GMGN_TIMEFRAME` | 1h | Rank window (`5m`, `1h`, `6h`, `24h`, etc.) |
+| `GMGN_API_KEY` | (empty) | Required Agent API key from [gmgn.ai/ai](https://gmgn.ai/ai) â€” sent as `X-APIKEY` |
+| `GMGN_API_BASE` | `https://openapi.gmgn.ai` | OpenAPI host |
+| `GMGN_TIMEFRAME` | 1h | Rank window (`1m`, `5m`, `1h`, `6h`, `24h`) |
 | `GMGN_TRENDING_LIMIT` | 30 | Max tokens fetched per rank query (40 with max potential) |
 | `GMGN_REQUEST_DELAY_SEC` | 1.0 | Pace between GMGN HTTP requests |
-| `GMGN_SAFETY_FILTERS` | `not_honeypot` | Comma-separated GMGN `filters[]` values (e.g. `not_honeypot,verified`) |
+| `GMGN_SAFETY_FILTERS` | `not_honeypot` | Comma-separated OpenAPI `filters` values (SOL: `renounced,frozen`; EVM: `not_honeypot,verified`) |
 | `GMGN_MIN_LIQUIDITY_USD` | (same as `MIN_LIQUIDITY_USD`) | Optional liquidity override for GMGN candidates |
 | `GMGN_MIN_VOLUME_24H_USD` | (same as `MIN_VOLUME_24H_USD`) | Optional volume override for GMGN candidates |
 
-**Endpoints used (mint in `address`):**
+**Endpoint used (mint in `address`):**
 
-- `GET https://gmgn.ai/defi/quotation/v1/rank/sol/swaps/{timeframe}?orderby=volume&direction=desc&limit=N&filters[]=not_honeypot`
-- `GET https://gmgn.ai/defi/quotation/v1/rank/sol/swaps/{timeframe}?orderby=swaps|price_change|smartmoney&...`
-- `GET https://gmgn.ai/defi/quotation/v1/rank/sol/pump/{timeframe}?orderby=volume&...` (near-completion pump.fun tokens)
+- `GET https://openapi.gmgn.ai/v1/market/rank?chain=sol&interval={timeframe}&order_by=volume|swaps|change1h|smart_degen_count&direction=desc&limit=N` (+ `timestamp` / `client_id` auth query params)
 
 Candidates missing liquidity/momentum fields are enriched via DexScreener pair lookup (same fallback pattern as Birdeye).
 

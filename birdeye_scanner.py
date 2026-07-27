@@ -1,5 +1,6 @@
 """Scan Birdeye Find Gems (1h gainers), new listings, and trending via the Birdeye public API."""
 import logging
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -21,6 +22,9 @@ OVERVIEW_PATH = Config.BIRDEYE_OVERVIEW_PATH
 NEW_LISTING_API_MAX_LIMIT = 20
 FIND_GEMS_API_MAX_LIMIT = 100
 
+# Find Gems ?type=trending — dedicated always-attempt entry path (win-lean exempt).
+BIRDEYE_TRENDING_TOP5_SOURCE = "birdeye_trending_top5"
+
 DEXSCREENER_FALLBACK_PATHS = (
     "/token-boosts/top/v1",
     "/token-boosts/latest/v1",
@@ -30,6 +34,18 @@ DEXSCREENER_FALLBACK_SEARCH = ("trending", "SOL/USDC")
 
 _last_birdeye_scan_status: str = "idle"
 _birdeye_auth_warned = False
+_last_birdeye_auth_status: str = "idle"  # ok | 401 | missing_key | idle
+_last_trending_top5_status: Dict = {
+    "enabled": False,
+    "auth": "idle",
+    "source": None,
+    "symbols": [],
+    "mints": [],
+    "ranks": [],
+    "last_fetch_ts": None,
+    "last_attempt_reasons": [],
+    "last_error": None,
+}
 
 
 def get_last_birdeye_scan_status() -> str:
@@ -37,9 +53,37 @@ def get_last_birdeye_scan_status() -> str:
     return _last_birdeye_scan_status
 
 
+def get_last_birdeye_auth_status() -> str:
+    """Return last Birdeye auth probe: ok, 401, missing_key, or idle."""
+    return _last_birdeye_auth_status
+
+
+def get_trending_top5_status() -> dict:
+    """Lightweight in-memory status for Find Gems trending top-5 attempts."""
+    return dict(_last_trending_top5_status)
+
+
+def update_trending_top5_attempt_reasons(reasons: List[str]) -> None:
+    global _last_trending_top5_status
+    _last_trending_top5_status = {
+        **_last_trending_top5_status,
+        "last_attempt_reasons": list(reasons or [])[:20],
+    }
+
+
 def _set_birdeye_scan_status(status: str) -> None:
     global _last_birdeye_scan_status
     _last_birdeye_scan_status = status
+
+
+def _set_birdeye_auth_status(status: str) -> None:
+    global _last_birdeye_auth_status
+    _last_birdeye_auth_status = status
+
+
+def _set_trending_top5_status(**kwargs) -> None:
+    global _last_trending_top5_status
+    _last_trending_top5_status = {**_last_trending_top5_status, **kwargs}
 
 
 def parse_birdeye_pair(pair: dict) -> Optional[MoverCandidate]:
@@ -136,6 +180,73 @@ def parse_birdeye_token(
     )
 
 
+def parse_birdeye_trending_top5_token(
+    token: dict,
+    overview: Optional[dict] = None,
+    *,
+    source: str = BIRDEYE_TRENDING_TOP5_SOURCE,
+) -> Optional[MoverCandidate]:
+    """Parse a Find Gems trending token for the always-attempt top-5 path.
+
+    Liquidity floor only (Balanced/current Birdeye min). Does NOT drop on
+    volume/momentum floors — those would silently prevent a real attempt.
+    Win-lean is bypassed later via ``source == birdeye_trending_top5``.
+    """
+    mint = token.get("address")
+    if not mint:
+        return None
+
+    data = overview or {}
+    liquidity = float(token.get("liquidity") or data.get("liquidity") or 0)
+    volume_24h = float(
+        token.get("volume24hUSD")
+        or token.get("volume_24h_usd")
+        or data.get("v24hUSD")
+        or data.get("volume24h")
+        or 0
+    )
+    price_usd = float(token.get("price") or data.get("price") or 0)
+    min_liq = Config.effective_birdeye_min_liquidity()
+    if liquidity < min_liq:
+        logger.info(
+            "top5 trending skip parse (liquidity): %s liq=$%.0f < $%.0f",
+            token.get("symbol") or mint[:8],
+            liquidity,
+            min_liq,
+        )
+        return None
+    if price_usd <= 0:
+        # Allow through with a tiny placeholder; price feed / Jupiter still gate.
+        price_usd = float(data.get("price") or 0) or 1e-12
+
+    merged = {**data, **token}
+    # Normalize common trending field aliases into price_changes_from_external shape.
+    if "price24hChangePercent" in merged and "priceChange24hPercent" not in merged:
+        merged["priceChange24hPercent"] = merged["price24hChangePercent"]
+    changes = price_changes_from_external(merged)
+    momentum = changes.discovery_momentum()
+    symbol = token.get("symbol") or data.get("symbol") or "UNKNOWN"
+    name = token.get("name") or data.get("name") or symbol
+
+    return MoverCandidate(
+        mint=mint,
+        symbol=symbol,
+        name=name,
+        pair_address="",
+        dex=token.get("source") or "birdeye",
+        price_usd=price_usd,
+        liquidity_usd=liquidity,
+        volume_24h_usd=volume_24h,
+        momentum_pct=momentum,
+        price_change_5m=changes.change_5m,
+        price_change_1h=changes.change_1h,
+        price_change_6h=changes.change_6h,
+        price_change_24h=changes.change_24h,
+        pool_created_at=_parse_liquidity_added_at(token.get("liquidityAddedAt")),
+        source=source,
+    )
+
+
 class BirdeyeScanner:
     """Fetch Find Gems 1h gainers, newly listed, and trending Solana tokens from Birdeye."""
 
@@ -148,6 +259,7 @@ class BirdeyeScanner:
         self.dex_base = Config.DEXSCREENER_BASE
         self._dex_client = get_dexscreener_client()
         if not Config.birdeye_api_available():
+            _set_birdeye_auth_status("missing_key")
             Config.log_missing_scanner_key_once(
                 "birdeye",
                 "BIRDEYE_API_KEY not set — Birdeye Find Gems (1h gainers) skipped; using "
@@ -157,9 +269,10 @@ class BirdeyeScanner:
 
     def _log_auth_failure(self, status_code: int) -> None:
         global _birdeye_auth_warned
+        _set_birdeye_auth_status(str(status_code))
         message = (
             f"Birdeye API auth failed ({status_code}) — set BIRDEYE_API_KEY from "
-            "https://birdeye.so"
+            "https://birdeye.so (trending top5 attempts blocked until key works)"
         )
         if not _birdeye_auth_warned:
             logger.warning(message)
@@ -169,6 +282,7 @@ class BirdeyeScanner:
 
     def _get_birdeye(self, path: str, params: Optional[dict] = None, timeout: int = 15) -> Optional[object]:
         if not Config.birdeye_api_available():
+            _set_birdeye_auth_status("missing_key")
             return None
         try:
             response = self.session.get(
@@ -183,6 +297,7 @@ class BirdeyeScanner:
                 logger.warning("Birdeye API rate limited; skipping birdeye scan this cycle")
                 return None
             response.raise_for_status()
+            _set_birdeye_auth_status("ok")
             return response.json()
         except requests.RequestException as exc:
             logger.warning("Birdeye request failed for %s: %s", path, exc)
@@ -380,6 +495,144 @@ class BirdeyeScanner:
         existing = candidates.get(candidate.mint)
         if not existing or candidate.momentum_pct > existing.momentum_pct:
             candidates[candidate.mint] = candidate
+
+    def _fetch_trending_rank_tokens(self, limit: int) -> List[dict]:
+        """Find Gems trending board: GET /defi/token_trending sorted by rank ascending."""
+        data = self._get_birdeye(
+            TRENDING_PATH,
+            params={
+                "sort_by": "rank",
+                "sort_type": "asc",
+                "offset": 0,
+                "limit": limit,
+            },
+        )
+        tokens = self._extract_tokens(data)
+        # Preserve API rank order (do not re-sort by momentum).
+        return tokens[:limit]
+
+    def _trending_top5_from_dexscreener(self, limit: int) -> List[MoverCandidate]:
+        """Labeled DexScreener fallback used only when Birdeye trending auth fails."""
+        seed_mints = self._collect_dexscreener_seed_mints()[: max(limit * 4, limit)]
+        if not seed_mints:
+            logger.warning(
+                "top5 trending: Birdeye unavailable and DexScreener fallback has no seeds"
+            )
+            return []
+
+        ordered: List[MoverCandidate] = []
+        seen: set[str] = set()
+        for mint in seed_mints:
+            if len(ordered) >= limit:
+                break
+            for pair in self._fetch_pairs_for_mint(mint):
+                raw = parse_pair(
+                    pair,
+                    min_liquidity_usd=Config.effective_birdeye_min_liquidity(),
+                    source=BIRDEYE_TRENDING_TOP5_SOURCE,
+                )
+                if not raw or raw.mint in seen:
+                    continue
+                # Retag explicitly for win-lean bypass path.
+                raw.source = BIRDEYE_TRENDING_TOP5_SOURCE
+                seen.add(raw.mint)
+                ordered.append(raw)
+                break
+        logger.warning(
+            "top5 trending (DexScreener fallback — Birdeye auth/unavailable): %s",
+            ", ".join(c.symbol for c in ordered) or "(none)",
+        )
+        return ordered
+
+    def fetch_trending_top5(self) -> List[MoverCandidate]:
+        """Top N Find Gems trending tokens (same ranking as /find-gems?type=trending).
+
+        Uses GET /defi/token_trending?sort_by=rank&sort_type=asc. Preserves rank
+        order. On Birdeye 401/unavailable, falls back to DexScreener boosts/trending
+        with a clear label (same pattern as the main Birdeye scanner fallback).
+        """
+        limit = int(Config.BIRDEYE_TRENDING_TOP5_LIMIT)
+        _set_trending_top5_status(
+            enabled=Config.birdeye_trending_top5_enabled(),
+            last_fetch_ts=time.time(),
+            last_error=None,
+        )
+
+        tokens: List[dict] = []
+        fetch_source = "birdeye"
+        if Config.birdeye_api_available():
+            tokens = self._fetch_trending_rank_tokens(limit)
+            if not tokens and _last_birdeye_auth_status in ("401", "403"):
+                fetch_source = "dexscreener_fallback"
+                logger.warning(
+                    "top5 trending blocked on Birdeye auth (%s) — using DexScreener "
+                    "fallback until BIRDEYE_API_KEY is rotated",
+                    _last_birdeye_auth_status,
+                )
+        else:
+            fetch_source = "dexscreener_fallback"
+            _set_birdeye_auth_status("missing_key")
+
+        candidates: List[MoverCandidate] = []
+        if tokens and fetch_source == "birdeye":
+            for idx, token in enumerate(tokens):
+                mint = token.get("address")
+                if not mint:
+                    continue
+                cand = parse_birdeye_trending_top5_token(token)
+                if cand is None:
+                    # Try overview enrichment when list row lacks price/liq detail.
+                    overview = self._fetch_token_overview(mint)
+                    cand = parse_birdeye_trending_top5_token(token, overview)
+                if cand is None:
+                    # Last resort: DexScreener pair liquidity for this mint only.
+                    for pair in self._fetch_pairs_for_mint(mint):
+                        pair_cand = parse_pair(
+                            pair,
+                            min_liquidity_usd=Config.effective_birdeye_min_liquidity(),
+                            source=BIRDEYE_TRENDING_TOP5_SOURCE,
+                        )
+                        if pair_cand:
+                            pair_cand.source = BIRDEYE_TRENDING_TOP5_SOURCE
+                            cand = pair_cand
+                            break
+                if cand is None:
+                    logger.info(
+                        "top5 trending skip: could not build candidate for rank=%s %s",
+                        token.get("rank", idx),
+                        token.get("symbol") or mint[:8],
+                    )
+                    continue
+                candidates.append(cand)
+        else:
+            candidates = self._trending_top5_from_dexscreener(limit)
+            fetch_source = "dexscreener_fallback"
+
+        symbols = [c.symbol for c in candidates]
+        mints = [c.mint for c in candidates]
+        ranks = list(range(1, len(candidates) + 1))
+        _set_trending_top5_status(
+            enabled=Config.birdeye_trending_top5_enabled(),
+            auth=_last_birdeye_auth_status,
+            source=fetch_source,
+            symbols=symbols,
+            mints=mints,
+            ranks=ranks,
+            last_fetch_ts=time.time(),
+            last_error=(
+                f"birdeye_auth_{_last_birdeye_auth_status}"
+                if fetch_source == "dexscreener_fallback"
+                and _last_birdeye_auth_status in ("401", "403", "missing_key")
+                else None
+            ),
+        )
+        logger.info(
+            "top5 trending fetched (%s, auth=%s): %s",
+            fetch_source,
+            _last_birdeye_auth_status,
+            ", ".join(f"{i+1}.{s}" for i, s in enumerate(symbols)) or "(none)",
+        )
+        return candidates
 
     def scan(self, *, fast_mode: bool = False) -> List[MoverCandidate]:
         if not Config.birdeye_api_available():

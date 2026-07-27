@@ -253,6 +253,7 @@ class RiskManager:
         self._reset_daily_if_needed()
         mints = open_mints or []
         position_limit = max_allowed_open_positions(mints, candidate_mint)
+        # open_positions / open_mints must already exclude scheduled_rotation legs.
         if open_positions >= position_limit:
             return False, "max open positions reached"
         if self.state.daily_loss_sol >= Config.MAX_DAILY_LOSS_SOL:

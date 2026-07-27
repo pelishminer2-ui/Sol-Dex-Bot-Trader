@@ -1,7 +1,9 @@
-"""Scan GMGN.ai Solana trending tokens via the public quotation API."""
+"""Scan GMGN Solana trending tokens via the official OpenAPI (`/v1/market/rank`)."""
 import logging
 import time
-from typing import Dict, List, Optional
+import uuid
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 
 import requests
 
@@ -13,8 +15,23 @@ from scanner_momentum import price_changes_from_external
 logger = logging.getLogger(__name__)
 
 GMGN_SOURCE_TAG = "gmgn"
-GMGN_RANK_PATH = "/defi/quotation/v1/rank/sol/swaps/{timeframe}"
-GMGN_PUMP_RANK_PATH = "/defi/quotation/v1/rank/sol/pump/{timeframe}"
+GMGN_RANK_PATH = "/v1/market/rank"
+GMGN_CHAIN = "sol"
+
+# Map legacy quotation orderby names → OpenAPI `order_by` values.
+_ORDER_BY_MAP = {
+    "volume": "volume",
+    "swaps": "swaps",
+    "price_change": "change1h",
+    "change1h": "change1h",
+    "change5m": "change5m",
+    "change1m": "change1m",
+    "smartmoney": "smart_degen_count",
+    "smart_degen_count": "smart_degen_count",
+    "liquidity": "liquidity",
+    "marketcap": "marketcap",
+    "default": "default",
+}
 
 _last_gmgn_scan_status: str = "idle"
 _gmgn_api_warned = False
@@ -42,6 +59,16 @@ def _gmgn_pace() -> None:
     _last_gmgn_request_at = time.time()
 
 
+def _map_order_by(orderby: str, timeframe: str) -> str:
+    key = (orderby or "volume").strip().lower()
+    if key == "price_change":
+        tf = (timeframe or "1h").strip().lower()
+        if tf in ("1m", "5m"):
+            return f"change{tf}"
+        return "change1h"
+    return _ORDER_BY_MAP.get(key, key)
+
+
 def parse_gmgn_pair(pair: dict) -> Optional[MoverCandidate]:
     """Parse a DexScreener pair as a GMGN candidate with GMGN-specific filters."""
     candidate = parse_pair(
@@ -62,17 +89,26 @@ def parse_gmgn_pair(pair: dict) -> Optional[MoverCandidate]:
 
 
 def parse_gmgn_token(token: dict) -> Optional[MoverCandidate]:
-    """Build a candidate from a GMGN rank token object."""
+    """Build a candidate from a GMGN OpenAPI rank token object."""
     mint = token.get("address")
     if not mint:
         return None
 
     liquidity = float(token.get("liquidity") or 0)
+    # OpenAPI `volume` is for the queried interval (not always 24h).
     volume = float(token.get("volume") or 0)
     price_usd = float(token.get("price") or 0)
 
     changes = price_changes_from_external(token)
     momentum = changes.discovery_momentum()
+    # Fall back to interval percent when window-specific fields are absent.
+    if momentum <= 0:
+        try:
+            interval_pct = float(token.get("price_change_percent") or 0)
+        except (TypeError, ValueError):
+            interval_pct = 0.0
+        if interval_pct:
+            momentum = interval_pct / 100.0
 
     min_liq = Config.effective_gmgn_min_liquidity()
     min_vol = Config.effective_min_volume_for_mint(mint)
@@ -98,7 +134,13 @@ def parse_gmgn_token(token: dict) -> Optional[MoverCandidate]:
 
     symbol = token.get("symbol") or "UNKNOWN"
     name = token.get("name") or symbol
-    launchpad = token.get("launchpad") or token.get("pool_type_str") or "gmgn"
+    launchpad = (
+        token.get("launchpad_platform")
+        or token.get("launchpad")
+        or token.get("exchange")
+        or token.get("pool_type_str")
+        or "gmgn"
+    )
 
     return MoverCandidate(
         mint=mint,
@@ -120,7 +162,7 @@ def parse_gmgn_token(token: dict) -> Optional[MoverCandidate]:
 
 
 class GmgnScanner:
-    """Fetch trending Solana tokens from GMGN.ai (https://gmgn.ai/?chain=sol)."""
+    """Fetch trending Solana tokens from GMGN OpenAPI (`openapi.gmgn.ai`)."""
 
     def __init__(self):
         self.base_url = Config.GMGN_API_BASE.rstrip("/")
@@ -130,8 +172,8 @@ class GmgnScanner:
         if not Config.GMGN_API_KEY:
             Config.log_missing_scanner_key_once(
                 "gmgn",
-                "GMGN_API_KEY not set — using public GMGN quotation API "
-                "(optional key from https://gmgn.ai/ai for Agent API access)",
+                "GMGN_API_KEY not set — OpenAPI /v1/market/rank requires a key "
+                "from https://gmgn.ai/ai (same key as gmgn-cli)",
             )
 
     def _log_api_failure(self, message: str) -> None:
@@ -142,16 +184,42 @@ class GmgnScanner:
         else:
             logger.debug(message)
 
+    def _auth_query(self) -> List[Tuple[str, str]]:
+        """Exist-auth query params required by OpenAPI (timestamp ±5s, unique client_id)."""
+        return [
+            ("timestamp", str(int(time.time()))),
+            ("client_id", str(uuid.uuid4())),
+        ]
+
     def _extract_rank_tokens(self, data: Optional[object]) -> List[dict]:
+        """Unwrap OpenAPI payloads — host may nest `{code,data:{code,data:{rank}}}`.
+
+        Accepts bare `{rank:[...]}` or a list of token dicts as well.
+        """
+        if data is None:
+            return []
+        if isinstance(data, list):
+            return [t for t in data if isinstance(t, dict)]
         if not isinstance(data, dict):
             return []
-        if data.get("code") not in (0, None) and not data.get("success"):
-            return []
-        payload = data.get("data") or {}
-        if not isinstance(payload, dict):
-            return []
-        tokens = payload.get("rank") or []
-        return [t for t in tokens if isinstance(t, dict)]
+
+        node: object = data
+        for _ in range(4):
+            if not isinstance(node, dict):
+                break
+            if node.get("code") not in (0, None) and not node.get("success"):
+                return []
+            rank = node.get("rank")
+            if isinstance(rank, list):
+                return [t for t in rank if isinstance(t, dict)]
+            nested = node.get("data")
+            if nested is None:
+                break
+            node = nested
+
+        if isinstance(node, list):
+            return [t for t in node if isinstance(t, dict)]
+        return []
 
     def _fetch_rank_tokens(
         self,
@@ -159,34 +227,54 @@ class GmgnScanner:
         orderby: str,
         *,
         limit: int,
-        rank_path: str = GMGN_RANK_PATH,
     ) -> List[dict]:
-        path = rank_path.format(timeframe=timeframe)
-        query_pairs = [
-            ("orderby", orderby),
+        if not Config.GMGN_API_KEY:
+            self._log_api_failure(
+                "GMGN OpenAPI skipped — GMGN_API_KEY required for /v1/market/rank"
+            )
+            return []
+
+        order_by = _map_order_by(orderby, timeframe)
+        query_pairs: List[Tuple[str, str]] = [
+            ("chain", GMGN_CHAIN),
+            ("interval", timeframe),
+            ("order_by", order_by),
             ("direction", "desc"),
-            ("limit", str(limit)),
+            ("limit", str(max(1, min(int(limit), 100)))),
         ]
         for filt in Config.gmgn_safety_filters():
-            query_pairs.append(("filters[]", filt))
+            query_pairs.append(("filters", filt))
+        query_pairs.extend(self._auth_query())
 
         _gmgn_pace()
+        url = f"{self.base_url}{GMGN_RANK_PATH}"
         try:
             response = self.session.get(
-                f"{self.base_url}{path}",
+                url,
                 params=query_pairs,
                 timeout=15,
             )
+            if response.status_code == 401:
+                self._log_api_failure("GMGN OpenAPI unauthorized (401); check GMGN_API_KEY")
+                return []
             if response.status_code == 403:
-                self._log_api_failure("GMGN API blocked (403); skipping rank fetch")
+                self._log_api_failure("GMGN OpenAPI blocked (403); skipping rank fetch")
                 return []
             if response.status_code == 429:
-                logger.warning("GMGN API rate limited")
+                logger.warning("GMGN OpenAPI rate limited")
+                return []
+            if response.status_code == 404:
+                self._log_api_failure(
+                    f"GMGN OpenAPI 404 for {url}?{urlencode(query_pairs[:5])}…"
+                )
                 return []
             response.raise_for_status()
             return self._extract_rank_tokens(response.json())
         except requests.RequestException as exc:
-            self._log_api_failure(f"GMGN rank fetch failed ({orderby}/{timeframe}): {exc}")
+            self._log_api_failure(f"GMGN rank fetch failed ({order_by}/{timeframe}): {exc}")
+            return []
+        except ValueError as exc:
+            self._log_api_failure(f"GMGN rank JSON parse failed: {exc}")
             return []
 
     def _collect_seed_tokens(self, *, fast_mode: bool = False) -> List[dict]:
@@ -215,16 +303,6 @@ class GmgnScanner:
         if not fast_mode and len(tokens) < limit // 2:
             remaining = limit - len(tokens)
             _add(self._fetch_rank_tokens(timeframe, "smartmoney", limit=remaining))
-        if not fast_mode and len(tokens) < limit // 2:
-            remaining = limit - len(tokens)
-            _add(
-                self._fetch_rank_tokens(
-                    timeframe,
-                    "volume",
-                    limit=remaining,
-                    rank_path=GMGN_PUMP_RANK_PATH,
-                )
-            )
 
         return tokens[:limit]
 

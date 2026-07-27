@@ -210,16 +210,47 @@ def test_ladder_hit_skips_10m_exit():
 def test_apply_dca_increments_buy_count():
     strategy = MomentumStrategy()
     pos = _make_position(size_sol=0.05, token_raw=10000)
+    pos.entry_price = 1.0
     pos.entry_time = 0.0
-    with patch("strategy.time.time", return_value=1000.0):
-        strategy.apply_dca_to_position(pos, 0.05, 5000, 0.95)
+    pos.peak_pnl_pct = 0.05
+    pos.trough_pnl_pct = -0.02
+    pos.tp_levels_hit = [0]
+    pos.l1_protection_armed = True
+    with patch.object(strategy, "_persist_positions"):
+        with patch("strategy.time.time", return_value=1000.0):
+            strategy.apply_dca_to_position(pos, 0.05, 5000, 0.95, mark_price=0.98)
     assert pos.buy_count == 2
     assert pos.size_sol == 0.10
     assert pos.remaining_token_amount_raw == 15000
     assert pos.initial_token_amount_raw == 15000
-    assert len(pos.tp_levels) == 2
+    # Weighted avg: (10000*1.0 + 5000*0.95) / 15000 = 0.98333...
+    assert abs(pos.entry_price - (10000 * 1.0 + 5000 * 0.95) / 15000) < 1e-12
     assert pos.entry_time == 1000.0
+    assert pos.tp_levels_hit == []
+    assert pos.l1_protection_armed is False
+    # mark 0.98 vs avg ~0.98333 → slight negative; peak/trough seeded from mark
+    expected_pnl = (0.98 - pos.entry_price) / pos.entry_price
+    assert abs(pos.pnl_pct(0.98) - expected_pnl) < 1e-12
+    assert abs(pos.peak_pnl_pct - 0.0) < 1e-12  # negative mark does not raise peak
+    assert abs(pos.trough_pnl_pct - expected_pnl) < 1e-12
+    assert pos.tp_levels == compute_take_profit_levels(pos.size_sol)
     print("PASS: apply_dca increments buy_count and rescales ladder")
+
+
+def test_apply_dca_weighted_avg_entry_and_pnl():
+    """Open-trades % must use post-DCA average entry, not the pre-DCA entry."""
+    strategy = MomentumStrategy()
+    pos = _make_position(entry_price=100.0, token_raw=2, size_sol=0.1)
+    pos.peak_pnl_pct = 0.10  # stale +10% vs old entry
+    with patch.object(strategy, "_persist_positions"):
+        strategy.apply_dca_to_position(pos, 0.1, 2, 80.0, mark_price=90.0)
+    # (2*100 + 2*80) / 4 = 90
+    assert abs(pos.entry_price - 90.0) < 1e-12
+    assert abs(pos.pnl_pct(90.0) - 0.0) < 1e-12
+    assert abs(pos.pnl_pct(99.0) - 0.1) < 1e-12  # +10% vs NEW avg, not old
+    # Stale +10% peak must not survive
+    assert pos.peak_pnl_pct < 0.05
+    print("PASS: DCA weighted avg entry drives PnL %; stale peak cleared")
 
 
 def test_dca_resets_ladder_timeout_clock():
@@ -227,8 +258,9 @@ def test_dca_resets_ladder_timeout_clock():
     pos = _make_position()
     pos.entry_time = 0
     t = Config.LADDER_MISSED_NEGATIVE_DCA_MINUTES * 60 + 1
-    with patch("strategy.time.time", return_value=t):
-        strategy.apply_dca_to_position(pos, 0.05, 5000, 0.95)
+    with patch.object(strategy, "_persist_positions"):
+        with patch("strategy.time.time", return_value=t):
+            strategy.apply_dca_to_position(pos, 0.05, 5000, 0.95)
     with _without_instant_exit():
         with patch("strategy.time.time", return_value=t + 60):
             # Blended entry ~0.983 after DCA; stay below +0.10% L1 and above -1.5% SL
@@ -289,6 +321,7 @@ def main():
     test_stop_loss_before_ladder_time_exit()
     test_ladder_hit_skips_10m_exit()
     test_apply_dca_increments_buy_count()
+    test_apply_dca_weighted_avg_entry_and_pnl()
     test_dca_resets_ladder_timeout_clock()
     test_disabled_ladder_time_exits()
     print("\nAll ladder time exit tests passed.")
