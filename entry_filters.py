@@ -43,17 +43,20 @@ completed round-trips):
     strongest flat-book signal (can't exit above stop => instant loss).
 
 Levers implemented here:
-  1. spike_trap_reason  — absurd ceiling + high-momentum pop-vs-drop discriminator.
+  1. spike_trap_reason  — absurd ceiling + high-momentum pop-vs-dump discriminator.
   2. win_lean_reason    — lean toward the learned WIN centroid over LOSS (normal
                           momentum only; high-momentum quality pops bypass it
                           because the raw cosine is dominated by momentum scale).
   3. pop_vs_drop_score  — continuous [-1, 1] runner-vs-dump score (logging/tuning).
+  4. double_top_reason  — short-horizon M-top / failed second-peak avoid for longs
+                          (entry only; never weakens exits).
 """
 
 import logging
 from typing import Optional
 
 from config import Config
+from pattern_structure import structure_scores_from_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -317,20 +320,45 @@ def win_lean_reason(candidate, setup_learner) -> Optional[str]:
     return None
 
 
+def double_top_reason(candidate) -> Optional[str]:
+    """
+    Skip longs that look like a short-horizon double top / failed second peak.
+
+    Entry-selection only. Blue-sky Instant pops (flat 6h/24h) score near zero and
+    are not blocked. Falls back to allow when the gate is disabled.
+    """
+    if not getattr(Config, "STRUCTURE_DOUBLE_TOP_GATE_ENABLED", False):
+        return None
+    if candidate is None:
+        return None
+    scores = structure_scores_from_candidate(candidate)
+    dt = float(scores.get("double_top_score", 0.0))
+    threshold = float(getattr(Config, "STRUCTURE_DOUBLE_TOP_MAX", 0.65))
+    if dt < threshold:
+        return None
+    symbol = getattr(candidate, "symbol", "?")
+    return f"double-top avoid {dt:.2f} >= {threshold:.2f}: {symbol}"
+
+
 def entry_winrate_skip_reason(
     candidate, setup_learner, sell_preview_impact_pct: Optional[float] = None
 ) -> Optional[str]:
     """
-    Combined spike-trap + win-lean skip reason for memecoin momentum entries.
-    Returns the first blocking reason, or ``None`` when the candidate passes.
+    Combined spike-trap + double-top + win-lean skip reason for memecoin momentum
+    entries. Returns the first blocking reason, or ``None`` when the candidate
+    passes.
 
     A high-momentum candidate that clears the pop-vs-drop discriminator bypasses
     the win-lean gate: the raw win-lean cosine is dominated by the (unnormalized)
     momentum feature, so it would falsely reject every high-momentum pop and
     defeat the point of momentum trading. Normal-momentum candidates still go
-    through the win-lean gate as before.
+    through the win-lean gate as before. Double-top avoid still applies (a
+    quality fresh pop has near-zero double-top score).
     """
     reason = spike_trap_reason(candidate, sell_preview_impact_pct)
+    if reason:
+        return reason
+    reason = double_top_reason(candidate)
     if reason:
         return reason
     # Find Gems trending top5: always attempt — spike/instant-dump still apply,

@@ -257,6 +257,8 @@ class TradingBot:
             return "entry_momentum"
         if "spike trap" in lower or "price spike" in lower:
             return "spike_trap"
+        if "double-top" in lower:
+            return "double_top"
         if "win-lean" in lower:
             return "win_lean"
         if "non-memecoin proxy" in lower or "asset sanity" in lower:

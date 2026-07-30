@@ -5,15 +5,23 @@ import logging
 import math
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from config import Config, is_proxy_mainstream_mint, resolve_data_path
+from pattern_structure import (
+    STRUCTURE_FEATURE_KEYS,
+    enrich_features_with_structure,
+    structure_preference_score,
+    structure_scores_from_features,
+)
 from scanner import MoverCandidate
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE_PATH = resolve_data_path("data/setup_learning.json")
-STORE_VERSION = 3
+# v4: short-horizon structure proxies (blue-sky / flag / cup / triangle /
+# volume expansion / double-top avoid) + Instant-win centroid weighting.
+STORE_VERSION = 4
 
 FEATURE_KEYS = [
     "momentum_pct",
@@ -27,6 +35,16 @@ FEATURE_KEYS = [
     "is_pumpfun_route",
     "hold_time_sec",
     "scanner_source",
+    # Structure proxies (see pattern_structure.py). Gold Instant exemplars
+    # friend/SASS lean high blue_sky + volume_expansion + structure_edge;
+    # double_top_score is an avoid feature for longs.
+    "blue_sky_score",
+    "flag_continuation_score",
+    "cup_handle_score",
+    "ascending_triangle_score",
+    "volume_expansion_score",
+    "double_top_score",
+    "structure_edge",
 ]
 
 PROXY_FEATURE_KEYS = [
@@ -75,19 +93,48 @@ def _is_pumpfun_route(route_labels) -> bool:
 
 def normalize_setup_features(features: dict) -> Dict[str, float]:
     """Normalize raw setup features into a comparable vector."""
+    # Structure scores use raw USD + window changes before log scaling.
+    enriched = enrich_features_with_structure(features)
     return {
-        "momentum_pct": _float(features.get("momentum_pct")),
-        "liquidity_usd": math.log10(max(_float(features.get("liquidity_usd"), 1.0), 1.0)),
-        "volume_24h_usd": math.log10(max(_float(features.get("volume_24h_usd"), 1.0), 1.0)),
-        "price_change_5m": _float(features.get("price_change_5m")),
-        "price_change_1h": _float(features.get("price_change_1h")),
-        "price_change_6h": _float(features.get("price_change_6h")),
-        "price_change_24h": _float(features.get("price_change_24h")),
-        "entry_price_impact_pct": _float(features.get("entry_price_impact_pct")),
-        "is_pumpfun_route": 1.0 if features.get("is_pumpfun_route") else 0.0,
-        "hold_time_sec": min(_float(features.get("hold_time_sec")) / 3600.0, 24.0),
-        "scanner_source": _encode_scanner_source(features.get("scanner_source")),
+        "momentum_pct": _float(enriched.get("momentum_pct")),
+        "liquidity_usd": math.log10(max(_float(enriched.get("liquidity_usd"), 1.0), 1.0)),
+        "volume_24h_usd": math.log10(max(_float(enriched.get("volume_24h_usd"), 1.0), 1.0)),
+        "price_change_5m": _float(enriched.get("price_change_5m")),
+        "price_change_1h": _float(enriched.get("price_change_1h")),
+        "price_change_6h": _float(enriched.get("price_change_6h")),
+        "price_change_24h": _float(enriched.get("price_change_24h")),
+        "entry_price_impact_pct": _float(enriched.get("entry_price_impact_pct")),
+        "is_pumpfun_route": 1.0 if enriched.get("is_pumpfun_route") else 0.0,
+        "hold_time_sec": min(_float(enriched.get("hold_time_sec")) / 3600.0, 24.0),
+        "scanner_source": _encode_scanner_source(enriched.get("scanner_source")),
+        "blue_sky_score": _float(enriched.get("blue_sky_score")),
+        "flag_continuation_score": _float(enriched.get("flag_continuation_score")),
+        "cup_handle_score": _float(enriched.get("cup_handle_score")),
+        "ascending_triangle_score": _float(enriched.get("ascending_triangle_score")),
+        "volume_expansion_score": _float(enriched.get("volume_expansion_score")),
+        "double_top_score": _float(enriched.get("double_top_score")),
+        "structure_edge": _float(enriched.get("structure_edge")),
     }
+
+
+def _is_instant_win_row(row: dict) -> bool:
+    """True for Instant / take-profit wins (friend/SASS-style exemplars)."""
+    if not row.get("win") or row.get("fee_assist"):
+        return False
+    cat = str(row.get("exit_reason_category") or "")
+    reason = str(row.get("exit_reason") or "").lower()
+    return cat == "take_profit" or "instant" in reason
+
+
+def _row_centroid_weight(row: dict) -> float:
+    """Extra weight for Instant take-profit wins so WIN centroid leans toward them."""
+    if not _is_instant_win_row(row):
+        return 1.0
+    try:
+        boost = float(getattr(Config, "SETUP_LEARNING_INSTANT_WIN_WEIGHT", 1.75))
+    except (TypeError, ValueError):
+        boost = 1.75
+    return max(1.0, boost)
 
 
 def normalize_proxy_features(features: dict) -> Dict[str, float]:
@@ -127,6 +174,17 @@ def _candidate_vector(candidate: MoverCandidate) -> Dict[str, float]:
     )
 
 
+def _ensure_structure_on_vector(features: dict) -> Dict[str, float]:
+    """Backfill structure keys on an already-normalized history vector."""
+    vec = dict(features or {})
+    if all(k in vec for k in STRUCTURE_FEATURE_KEYS):
+        return vec
+    # Stored liq/vol are log10; structure_scores_from_features accepts logish USD.
+    scores = structure_scores_from_features(vec)
+    vec.update(scores)
+    return vec
+
+
 def _cosine_similarity(a: Dict[str, float], b: Dict[str, float]) -> float:
     dot = sum(a.get(k, 0.0) * b.get(k, 0.0) for k in FEATURE_KEYS)
     norm_a = math.sqrt(sum(a.get(k, 0.0) ** 2 for k in FEATURE_KEYS))
@@ -139,9 +197,14 @@ def _cosine_similarity(a: Dict[str, float], b: Dict[str, float]) -> float:
 def _mean_centroid(rows: List[dict]) -> Optional[Dict[str, float]]:
     if not rows:
         return None
-    vecs = [row.get("features", {}) for row in rows]
+    weighted: List[Tuple[dict, float]] = [
+        (row.get("features", {}), _row_centroid_weight(row)) for row in rows
+    ]
+    total_w = sum(w for _, w in weighted)
+    if total_w <= 0:
+        return None
     return {
-        key: sum(vec.get(key, 0.0) for vec in vecs) / len(vecs)
+        key: sum(vec.get(key, 0.0) * w for vec, w in weighted) / total_w
         for key in FEATURE_KEYS
     }
 
@@ -411,8 +474,8 @@ class SetupLearner:
                 self.trades_since_condense = int(payload.get("trades_since_condense", 0))
                 self._bootstrapped = bool(payload.get("bootstrapped"))
                 version = int(payload.get("version", 1))
-                if version < STORE_VERSION and self.history and not self.has_patterns:
-                    self._migrate_v1_store()
+                if version < STORE_VERSION:
+                    self._migrate_store(version)
             except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("Could not load setup learning store: %s", exc)
                 self.history = []
@@ -427,16 +490,28 @@ class SetupLearner:
         if not self.history and not self._bootstrapped:
             self._bootstrap_from_journal()
 
-    def _migrate_v1_store(self) -> None:
+    def _migrate_store(self, from_version: int) -> None:
+        """Upgrade on-disk store to current STORE_VERSION (structure features)."""
         logger.info(
-            "Migrating setup learning store v1 -> v%d (%d trades)",
+            "Migrating setup learning store v%d -> v%d (%d trades)",
+            from_version,
             STORE_VERSION,
             len(self.history),
         )
-        self._update_patterns_from_history(list(self.history))
-        self._trim_history()
+        for row in self.history:
+            feats = row.get("features") or {}
+            row["features"] = _ensure_structure_on_vector(feats)
+        # Rebuild centroids from raw history so new structure dims and Instant-win
+        # weighting apply immediately (one-time; condensed-beyond-raw is reset).
+        self.patterns = None
+        if self.history:
+            self._update_patterns_from_history(list(self.history))
+            self._trim_history()
         self.trades_since_condense = 0
         self.save()
+
+    def _migrate_v1_store(self) -> None:
+        self._migrate_store(1)
 
     def save(self) -> None:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -557,7 +632,11 @@ class SetupLearner:
 
     def score_candidate(self, candidate: MoverCandidate) -> float:
         if not self.learning_active:
-            return _discovery_score(candidate)
+            base = _discovery_score(candidate)
+            if getattr(Config, "STRUCTURE_ENTRY_BOOST_ENABLED", True):
+                weight = float(getattr(Config, "STRUCTURE_ENTRY_BOOST_WEIGHT", 0.15))
+                base += weight * structure_preference_score(candidate)
+            return base
         candidate_vec = _candidate_vector(candidate)
         base_momentum = max(candidate.momentum_pct, 0.0)
 
@@ -569,7 +648,11 @@ class SetupLearner:
         else:
             similarity = self._raw_similarity_score(candidate_vec)
 
-        return similarity + base_momentum * 0.4
+        score = similarity + base_momentum * 0.4
+        if getattr(Config, "STRUCTURE_ENTRY_BOOST_ENABLED", True):
+            weight = float(getattr(Config, "STRUCTURE_ENTRY_BOOST_WEIGHT", 0.15))
+            score += weight * structure_preference_score(candidate)
+        return score
 
     def win_lean_score(self, candidate: MoverCandidate) -> Optional[float]:
         """
@@ -667,6 +750,15 @@ class SetupLearner:
             "centroid_weight": Config.SETUP_LEARNING_CENTROID_WEIGHT,
             "win_weight": Config.SETUP_LEARNING_WIN_WEIGHT,
             "loss_weight": Config.SETUP_LEARNING_LOSS_WEIGHT,
+            "instant_win_weight": float(
+                getattr(Config, "SETUP_LEARNING_INSTANT_WIN_WEIGHT", 1.75)
+            ),
+            "structure_entry_boost_enabled": bool(
+                getattr(Config, "STRUCTURE_ENTRY_BOOST_ENABLED", True)
+            ),
+            "structure_double_top_gate_enabled": bool(
+                getattr(Config, "STRUCTURE_DOUBLE_TOP_GATE_ENABLED", True)
+            ),
             "avg_win_setup_score": avg_win_score,
             "avg_loss_setup_score": avg_loss_score,
             "last_updated": last_updated,

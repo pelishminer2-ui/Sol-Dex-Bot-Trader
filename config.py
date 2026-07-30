@@ -372,6 +372,16 @@ DEFAULT_SPIKE_MAX_ROUNDTRIP_IMPACT_PCT = 0.0
 # to "allow" when the learner has insufficient data.
 DEFAULT_SETUP_LEARNING_ENTRY_GATE_ENABLED = True
 DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN = 0.08
+# Structure-aware learning / soft entry preference (pattern_structure.py).
+# Always recorded into setup feature vectors when learning is on. Boost + double-top
+# gate are ENTRY only — never weaken exits. Instant take-profit wins (friend/SASS
+# shape) get extra centroid weight so the WIN profile leans toward those pops.
+DEFAULT_SETUP_LEARNING_INSTANT_WIN_WEIGHT = 1.75
+DEFAULT_STRUCTURE_ENTRY_BOOST_ENABLED = True
+DEFAULT_STRUCTURE_ENTRY_BOOST_WEIGHT = 0.15
+# Mild avoid: skip only clear short-horizon M-top / failed second-peak proxies.
+DEFAULT_STRUCTURE_DOUBLE_TOP_GATE_ENABLED = True
+DEFAULT_STRUCTURE_DOUBLE_TOP_MAX = 0.65
 
 
 def is_wbtc_watchlist_mint(mint: str) -> bool:
@@ -2358,6 +2368,38 @@ class Config:
             str(DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN),
         )
     )
+    SETUP_LEARNING_INSTANT_WIN_WEIGHT = float(
+        os.getenv(
+            "SETUP_LEARNING_INSTANT_WIN_WEIGHT",
+            str(DEFAULT_SETUP_LEARNING_INSTANT_WIN_WEIGHT),
+        )
+    )
+    STRUCTURE_ENTRY_BOOST_ENABLED = (
+        os.getenv(
+            "STRUCTURE_ENTRY_BOOST_ENABLED",
+            "true" if DEFAULT_STRUCTURE_ENTRY_BOOST_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    STRUCTURE_ENTRY_BOOST_WEIGHT = float(
+        os.getenv(
+            "STRUCTURE_ENTRY_BOOST_WEIGHT",
+            str(DEFAULT_STRUCTURE_ENTRY_BOOST_WEIGHT),
+        )
+    )
+    STRUCTURE_DOUBLE_TOP_GATE_ENABLED = (
+        os.getenv(
+            "STRUCTURE_DOUBLE_TOP_GATE_ENABLED",
+            "true" if DEFAULT_STRUCTURE_DOUBLE_TOP_GATE_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    STRUCTURE_DOUBLE_TOP_MAX = float(
+        os.getenv(
+            "STRUCTURE_DOUBLE_TOP_MAX",
+            str(DEFAULT_STRUCTURE_DOUBLE_TOP_MAX),
+        )
+    )
 
     TRADE_JOURNAL_PATH = str(resolve_data_path(os.getenv("TRADE_JOURNAL_PATH", "trades.jsonl")))
     SESSION_PNL_PATH = str(resolve_data_path(os.getenv("SESSION_PNL_PATH", "session_pnl.json")))
@@ -2775,6 +2817,11 @@ class Config:
         "SPIKE_MAX_ROUNDTRIP_IMPACT_PCT": float,
         "SETUP_LEARNING_ENTRY_GATE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "SETUP_LEARNING_MIN_WIN_LEAN": float,
+        "SETUP_LEARNING_INSTANT_WIN_WEIGHT": float,
+        "STRUCTURE_ENTRY_BOOST_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "STRUCTURE_ENTRY_BOOST_WEIGHT": float,
+        "STRUCTURE_DOUBLE_TOP_GATE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "STRUCTURE_DOUBLE_TOP_MAX": float,
         "GMGN_MIN_LIQUIDITY_USD": float,
         "MAX_CONSECUTIVE_LOSSES": int,
     }
@@ -3212,6 +3259,11 @@ class Config:
             "spike_max_roundtrip_impact_pct": cls.SPIKE_MAX_ROUNDTRIP_IMPACT_PCT,
             "setup_learning_entry_gate_enabled": cls.SETUP_LEARNING_ENTRY_GATE_ENABLED,
             "setup_learning_min_win_lean": cls.SETUP_LEARNING_MIN_WIN_LEAN,
+            "setup_learning_instant_win_weight": cls.SETUP_LEARNING_INSTANT_WIN_WEIGHT,
+            "structure_entry_boost_enabled": cls.STRUCTURE_ENTRY_BOOST_ENABLED,
+            "structure_entry_boost_weight": cls.STRUCTURE_ENTRY_BOOST_WEIGHT,
+            "structure_double_top_gate_enabled": cls.STRUCTURE_DOUBLE_TOP_GATE_ENABLED,
+            "structure_double_top_max": cls.STRUCTURE_DOUBLE_TOP_MAX,
             "session_auto_tighten_enabled": cls.SESSION_AUTO_TIGHTEN_ENABLED,
             "session_auto_tighten_min_trades": cls.SESSION_AUTO_TIGHTEN_MIN_TRADES,
             "session_auto_tighten_win_lean_step": cls.SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP,
