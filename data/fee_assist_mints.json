@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "updated_at": 1785350000.0,
+  "mints": {
+    "2ggeqB3ZhbGCqGi7q4BkoTPZP1sb2WMVsfdFSpLGVETT": {
+      "mint": "2ggeqB3ZhbGCqGi7q4BkoTPZP1sb2WMVsfdFSpLGVETT",
+      "symbol": "$VETT",
+      "note": "scheduled rotation / chart-assist fee volume",
+      "added_at": 1785350000.0
+    },
+    "6M8z5Wzmhk93ns6BaQzCuMYvkEpFcx9CDXsgFwK58NPf": {
+      "mint": "6M8z5Wzmhk93ns6BaQzCuMYvkEpFcx9CDXsgFwK58NPf",
+      "symbol": "COC",
+      "note": "scheduled rotation / chart-assist fee volume",
+      "added_at": 1785350000.0
+    },
+    "7YoAymCyauHAXus3snMEKcLgRx546MrHuBW3EuUNKKQs": {
+      "mint": "7YoAymCyauHAXus3snMEKcLgRx546MrHuBW3EuUNKKQs",
+      "symbol": "BONGA",
+      "note": "scheduled rotation / chart-assist fee volume",
+      "added_at": 1785350000.0
+    }
+  }
+}

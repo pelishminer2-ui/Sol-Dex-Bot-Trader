@@ -72,6 +72,7 @@ class JupiterExecutor:
         self.public_key = public_key
         self.dry_run = dry_run
         self._client = get_jupiter_client()
+        self.last_error: Optional[str] = None
 
     def get_quote(
         self,
@@ -256,6 +257,7 @@ class JupiterExecutor:
             tx_authorizer,
         )
 
+        self.last_error = None
         if self.dry_run:
             return "dry-run-signature"
 
@@ -271,15 +273,18 @@ class JupiterExecutor:
             elif self.validate_quote(fresh):
                 quote = fresh
         elif not forced_exit and not self.validate_quote(quote):
+            self.last_error = "stale_or_invalid_quote"
             return None
 
         if not trading_lock.is_authorized(
             bot_manager.is_running, dry_run=self.dry_run
         ):
+            self.last_error = "trading_lock_blocked"
             logger.error("SECURITY: execute_quote blocked by trading lock")
             return None
         tx_bytes = self.build_swap_transaction(quote)
         if not tx_bytes:
+            self.last_error = "build_swap_tx_failed"
             return None
 
         trade_context = context_from_quote(quote)
@@ -291,6 +296,7 @@ class JupiterExecutor:
                 is_running=bot_manager.is_running,
             )
         except UnauthorizedTransferError as exc:
+            self.last_error = f"transfer_guard:{exc}"
             logger.error("SECURITY: execute_quote authorization failed: %s", exc)
             return None
 
@@ -299,15 +305,18 @@ class JupiterExecutor:
                 tx_bytes, auth_token=auth_token
             )
         except UnauthorizedTransferError as exc:
+            self.last_error = f"transfer_guard_send:{exc}"
             logger.error("SECURITY: execute_quote send blocked: %s", exc)
             return None
 
         if not signature:
+            self.last_error = "tx_send_failed"
             return None
 
         tx_authorizer.verify_journal_match(trade_context, signature)
         confirmed = await solana_client.confirm_transaction(signature)
         if not confirmed:
+            self.last_error = f"tx_not_confirmed:{signature}"
             logger.error("Transaction not confirmed: %s", signature)
             return None
         logger.info("Swap confirmed: %s", signature)

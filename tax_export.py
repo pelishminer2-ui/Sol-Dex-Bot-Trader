@@ -34,6 +34,7 @@ CSV_COLUMNS = [
     "tx_signature",
     "entry_price_usd",
     "exit_price_usd",
+    "trade_kind",
     "Profit",
     "Losses",
 ]
@@ -46,6 +47,9 @@ MONTHLY_COLUMNS = [
     "total_losses_sol",
     "net_pnl_sol",
     "trade_count",
+    "win_count",
+    "loss_count",
+    "fee_assist_count",
 ]
 
 YEARLY_COLUMNS = [
@@ -55,6 +59,9 @@ YEARLY_COLUMNS = [
     "total_losses_sol",
     "net_pnl_sol",
     "trade_count",
+    "win_count",
+    "loss_count",
+    "fee_assist_count",
 ]
 
 
@@ -108,14 +115,35 @@ def _parse_pnl(value: Any) -> Optional[float]:
         return None
 
 
+def _is_fee_assist_row(row: dict[str, Any]) -> bool:
+    """Fee/volume assist rows appear in the ledger but do not count as W/L."""
+    kind = str(row.get("trade_kind") or "").strip().lower()
+    if kind in ("fee_volume_assist", "fee_assist", "chart_assist"):
+        return True
+    flag = str(row.get("fee_assist") or "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        return True
+    try:
+        from fee_assist_mints import is_fee_assist_mint
+
+        return is_fee_assist_mint(str(row.get("contract_address") or row.get("mint") or ""))
+    except Exception:
+        return False
+
+
 def _format_sol(value: float) -> str:
     return f"{value:.9f}".rstrip("0").rstrip(".") if value else "0"
 
 
-def _calc_totals(trade_rows: list[dict[str, Any]]) -> tuple[float, float]:
+def _calc_totals(trade_rows: list[dict[str, Any]]) -> tuple[float, float, int, int]:
+    """Return (profit_sol, losses_sol, win_count, loss_count) for real P&L rows only."""
     total_profit = 0.0
     total_losses = 0.0
+    win_count = 0
+    loss_count = 0
     for row in trade_rows:
+        if _is_fee_assist_row(row):
+            continue
         pnl = _parse_pnl(row.get("net_pnl_sol"))
         if pnl is None:
             pnl = _parse_pnl(row.get("pnl_sol"))
@@ -123,12 +151,20 @@ def _calc_totals(trade_rows: list[dict[str, Any]]) -> tuple[float, float]:
             continue
         if pnl > 0:
             total_profit += pnl
+            win_count += 1
         elif pnl < 0:
             total_losses += abs(pnl)
-    return total_profit, total_losses
+            loss_count += 1
+    return total_profit, total_losses, win_count, loss_count
 
 
-def _summary_row(total_profit: float, total_losses: float) -> dict[str, Any]:
+def _summary_row(
+    total_profit: float,
+    total_losses: float,
+    *,
+    win_count: int = 0,
+    loss_count: int = 0,
+) -> dict[str, Any]:
     return {
         "timestamp": SUMMARY_MARKER,
         "wallet_address": "",
@@ -143,6 +179,7 @@ def _summary_row(total_profit: float, total_losses: float) -> dict[str, Any]:
         "tx_signature": "",
         "entry_price_usd": "",
         "exit_price_usd": "",
+        "trade_kind": f"wins={win_count};losses={loss_count}",
         "Profit": _format_sol(total_profit),
         "Losses": _format_sol(total_losses),
     }
@@ -166,14 +203,21 @@ def _trade_rows_only(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _write_csv(path: Path, trade_rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    total_profit, total_losses = _calc_totals(trade_rows)
+    total_profit, total_losses, win_count, loss_count = _calc_totals(trade_rows)
     with path.open("w", encoding=CSV_ENCODING, newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
         writer.writeheader()
         for row in trade_rows:
             out = {col: row.get(col, "") for col in CSV_COLUMNS}
             writer.writerow(out)
-        writer.writerow(_summary_row(total_profit, total_losses))
+        writer.writerow(
+            _summary_row(
+                total_profit,
+                total_losses,
+                win_count=win_count,
+                loss_count=loss_count,
+            )
+        )
 
 
 def _aggregate_rows(trade_rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -185,11 +229,19 @@ def _aggregate_rows(trade_rows: list[dict[str, str]]) -> tuple[list[dict[str, st
         if dt is None:
             continue
         wallet = row.get("wallet_address", "") or ""
+        fee_assist = _is_fee_assist_row(row)
         pnl = _parse_pnl(row.get("net_pnl_sol"))
         if pnl is None:
             pnl = _parse_pnl(row.get("pnl_sol"))
-        profit = pnl if pnl is not None and pnl > 0 else 0.0
-        loss = abs(pnl) if pnl is not None and pnl < 0 else 0.0
+        # Fee-assist rows count toward volume (trade_count) only — not W/L totals.
+        if fee_assist:
+            profit = 0.0
+            loss = 0.0
+            pnl_for_net = 0.0
+        else:
+            profit = pnl if pnl is not None and pnl > 0 else 0.0
+            loss = abs(pnl) if pnl is not None and pnl < 0 else 0.0
+            pnl_for_net = pnl or 0.0
 
         m_key = (dt.year, dt.month, wallet)
         if m_key not in monthly:
@@ -201,11 +253,20 @@ def _aggregate_rows(trade_rows: list[dict[str, str]]) -> tuple[list[dict[str, st
                 "total_losses_sol": 0.0,
                 "net_pnl_sol": 0.0,
                 "trade_count": 0,
+                "win_count": 0,
+                "loss_count": 0,
+                "fee_assist_count": 0,
             }
         monthly[m_key]["total_profit_sol"] += profit
         monthly[m_key]["total_losses_sol"] += loss
-        monthly[m_key]["net_pnl_sol"] += pnl or 0.0
+        monthly[m_key]["net_pnl_sol"] += pnl_for_net
         monthly[m_key]["trade_count"] += 1
+        if fee_assist:
+            monthly[m_key]["fee_assist_count"] += 1
+        elif pnl is not None and pnl > 0:
+            monthly[m_key]["win_count"] += 1
+        elif pnl is not None and pnl < 0:
+            monthly[m_key]["loss_count"] += 1
 
         y_key = (dt.year, wallet)
         if y_key not in yearly:
@@ -216,11 +277,20 @@ def _aggregate_rows(trade_rows: list[dict[str, str]]) -> tuple[list[dict[str, st
                 "total_losses_sol": 0.0,
                 "net_pnl_sol": 0.0,
                 "trade_count": 0,
+                "win_count": 0,
+                "loss_count": 0,
+                "fee_assist_count": 0,
             }
         yearly[y_key]["total_profit_sol"] += profit
         yearly[y_key]["total_losses_sol"] += loss
-        yearly[y_key]["net_pnl_sol"] += pnl or 0.0
+        yearly[y_key]["net_pnl_sol"] += pnl_for_net
         yearly[y_key]["trade_count"] += 1
+        if fee_assist:
+            yearly[y_key]["fee_assist_count"] += 1
+        elif pnl is not None and pnl > 0:
+            yearly[y_key]["win_count"] += 1
+        elif pnl is not None and pnl < 0:
+            yearly[y_key]["loss_count"] += 1
 
     monthly_rows = sorted(
         monthly.values(),
@@ -237,6 +307,9 @@ def _aggregate_rows(trade_rows: list[dict[str, str]]) -> tuple[list[dict[str, st
             row["total_losses_sol"] = _format_sol(row["total_losses_sol"])
             row["net_pnl_sol"] = _format_sol(row["net_pnl_sol"])
             row["trade_count"] = str(row["trade_count"])
+            row["win_count"] = str(row.get("win_count", 0))
+            row["loss_count"] = str(row.get("loss_count", 0))
+            row["fee_assist_count"] = str(row.get("fee_assist_count", 0))
 
     return monthly_rows, yearly_rows
 
@@ -264,6 +337,17 @@ def _journal_to_row(journal_event: dict, wallet_address: str) -> dict[str, Any]:
     sol_in = journal_event.get("sol_in")
     if sol_in is None:
         sol_in = journal_event.get("sol_in_basis", 0.0)
+    fee_assist = bool(
+        journal_event.get("fee_assist")
+        or str(journal_event.get("trade_kind") or "") == "fee_volume_assist"
+    )
+    if not fee_assist:
+        try:
+            from fee_assist_mints import is_fee_assist_mint
+
+            fee_assist = is_fee_assist_mint(str(journal_event.get("mint") or ""))
+        except Exception:
+            fee_assist = False
     return {
         "timestamp": _format_timestamp(journal_event.get("timestamp")),
         "wallet_address": wallet_address,
@@ -281,6 +365,7 @@ def _journal_to_row(journal_event: dict, wallet_address: str) -> dict[str, Any]:
         "tx_signature": journal_event.get("signature", ""),
         "entry_price_usd": journal_event.get("entry_price", ""),
         "exit_price_usd": journal_event.get("exit_price", ""),
+        "trade_kind": "fee_volume_assist" if fee_assist else "live_pnl",
         "Profit": "",
         "Losses": "",
     }
@@ -356,18 +441,29 @@ def count_tax_rows() -> int:
 
 
 def get_tax_totals() -> dict[str, float]:
-    """Return aggregate profit and loss totals from trade rows."""
+    """Return aggregate profit/loss SOL and win/loss counts (fee-assist excluded)."""
     path = get_tax_csv_path()
     with _lock:
         trade_rows = _trade_rows_only(_read_all_rows(path))
-    total_profit, total_losses = _calc_totals(trade_rows)
-    return {"total_profit_sol": total_profit, "total_losses_sol": total_losses}
+    total_profit, total_losses, win_count, loss_count = _calc_totals(trade_rows)
+    fee_assist_count = sum(1 for row in trade_rows if _is_fee_assist_row(row))
+    return {
+        "total_profit_sol": total_profit,
+        "total_losses_sol": total_losses,
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "fee_assist_count": fee_assist_count,
+        "trade_count": len(trade_rows),
+    }
 
 
 def _period_totals(trade_rows: list[dict[str, str]], year: int, month: Optional[int] = None) -> dict[str, float]:
     profit = 0.0
     losses = 0.0
     count = 0
+    win_count = 0
+    loss_count = 0
+    fee_assist_count = 0
     for row in trade_rows:
         dt = _parse_timestamp(row.get("timestamp"))
         if dt is None:
@@ -376,21 +472,29 @@ def _period_totals(trade_rows: list[dict[str, str]], year: int, month: Optional[
             continue
         if month is not None and dt.month != month:
             continue
+        count += 1
+        if _is_fee_assist_row(row):
+            fee_assist_count += 1
+            continue
         pnl = _parse_pnl(row.get("net_pnl_sol"))
         if pnl is None:
             pnl = _parse_pnl(row.get("pnl_sol"))
         if pnl is None:
             continue
-        count += 1
         if pnl > 0:
             profit += pnl
+            win_count += 1
         elif pnl < 0:
             losses += abs(pnl)
+            loss_count += 1
     return {
         "total_profit_sol": profit,
         "total_losses_sol": losses,
         "net_pnl_sol": profit - losses,
         "trade_count": count,
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "fee_assist_count": fee_assist_count,
     }
 
 
@@ -404,6 +508,7 @@ def get_tax_summary() -> dict[str, Any]:
 
     current_month = _period_totals(trade_rows, now.year, now.month)
     current_year = _period_totals(trade_rows, now.year)
+    totals = _calc_totals(trade_rows)
 
     return {
         "current_month": {
@@ -415,6 +520,9 @@ def get_tax_summary() -> dict[str, Any]:
             "year": now.year,
             **current_year,
         },
+        "win_count": totals[2],
+        "loss_count": totals[3],
+        "fee_assist_count": sum(1 for row in trade_rows if _is_fee_assist_row(row)),
         "monthly": monthly_rows[-12:],
         "yearly": yearly_rows,
         "paths": {

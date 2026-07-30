@@ -86,15 +86,21 @@ class PnlTracker:
         except (TypeError, ValueError):
             return
 
+        from fee_assist_mints import journal_is_fee_assist
+
+        fee_assist = journal_is_fee_assist(journal)
+
         with self._lock:
             if not self._session.active:
                 return
 
+            # Fee-assist / chart-volume: count toward trade volume only, not P&L.
             self._session.total_trade_count += 1
-            if pnl >= 0:
-                self._session.total_profit_sol += pnl
-            else:
-                self._session.total_losses_sol += abs(pnl)
+            if not fee_assist:
+                if pnl >= 0:
+                    self._session.total_profit_sol += pnl
+                else:
+                    self._session.total_losses_sol += abs(pnl)
 
             ts = journal.get("timestamp") or self._clock()
             cumulative_net = self._session.net_pnl_sol
@@ -124,18 +130,23 @@ class PnlTracker:
             marks_suffix = ""
             if ladder_marks:
                 marks_suffix = " ✓ " + " ".join(ladder_marks)
+            if fee_assist:
+                label = f"fee/vol {sign}{pnl:.4f} SOL {symbol}{marks_suffix}"
+            else:
+                label = f"{sign}{pnl:.4f} SOL {symbol}{marks_suffix}"
             self._session.recent_trades.insert(
                 0,
                 {
                     "symbol": symbol,
                     "pnl_sol": pnl,
-                    "label": f"{sign}{pnl:.4f} SOL {symbol}{marks_suffix}",
+                    "label": label,
                     "timestamp": ts,
                     "l1_hit": "L1" in ladder_marks,
                     "l2_hit": "L2" in ladder_marks,
                     "instant_hit": "+5%" in ladder_marks,
                     "reason": reason or None,
                     "tp_level": tp_level,
+                    "fee_assist": fee_assist,
                 },
             )
             if len(self._session.recent_trades) > MAX_RECENT_TRADES:

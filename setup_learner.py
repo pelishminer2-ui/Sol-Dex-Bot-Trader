@@ -265,10 +265,18 @@ class SetupLearner:
         return False
 
     def _wins(self) -> List[dict]:
-        return [row for row in self.history if row.get("win")]
+        return [
+            row
+            for row in self.history
+            if row.get("win") and not row.get("fee_assist")
+        ]
 
     def _losses(self) -> List[dict]:
-        return [row for row in self.history if not row.get("win")]
+        return [
+            row
+            for row in self.history
+            if (not row.get("win")) and not row.get("fee_assist")
+        ]
 
     def _age_cutoff(self) -> float:
         return time.time() - Config.SETUP_LEARNING_MAX_AGE_DAYS * 86400.0
@@ -287,8 +295,10 @@ class SetupLearner:
         )
 
     def _update_patterns_from_history(self, source_history: List[dict]) -> None:
-        memecoin_rows = [row for row in source_history if not row.get("is_proxy")]
-        proxy_rows = [row for row in source_history if row.get("is_proxy")]
+        # Fee-assist / chart-volume legs never enter WIN/LOSS centroids.
+        learnable = [row for row in source_history if not row.get("fee_assist")]
+        memecoin_rows = [row for row in learnable if not row.get("is_proxy")]
+        proxy_rows = [row for row in learnable if row.get("is_proxy")]
         wins = [row for row in memecoin_rows if row.get("win")]
         losses = [row for row in memecoin_rows if not row.get("win")]
         win_centroid = _mean_centroid(wins)
@@ -463,6 +473,9 @@ class SetupLearner:
     ) -> None:
         if not Config.SETUP_LEARNING_ENABLED:
             return
+        from fee_assist_mints import is_fee_assist_mint
+
+        fee_assist = is_fee_assist_mint(mint or "")
         win = net_pnl_sol > 0
         scanner_source = features.get("scanner_source")
         is_proxy = _trade_is_proxy(mint=mint, scanner_source=scanner_source)
@@ -476,10 +489,23 @@ class SetupLearner:
             "net_pnl_sol": float(net_pnl_sol),
             "pnl_pct": float(pnl_pct if pnl_pct is not None else 0.0),
             "win": win,
+            "fee_assist": fee_assist,
             "exit_reason": exit_reason,
             "exit_reason_category": _exit_reason_category(exit_reason or ""),
         }
         self.history.append(row)
+        # Fee-assist rows are audit-only; do not advance condense / centroid updates.
+        if fee_assist:
+            self.save()
+            logger.info(
+                "Setup learning recorded FEE_ASSIST %s net=%.4f SOL reason=%s "
+                "(excluded from centroids, history=%d)",
+                symbol or mint or "?",
+                net_pnl_sol,
+                exit_reason or "?",
+                len(self.history),
+            )
+            return
         self.trades_since_condense += 1
         if self._should_condense():
             self._condense()

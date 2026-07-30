@@ -34,7 +34,12 @@ DEXSCREENER_FALLBACK_SEARCH = ("trending", "SOL/USDC")
 
 _last_birdeye_scan_status: str = "idle"
 _birdeye_auth_warned = False
-_last_birdeye_auth_status: str = "idle"  # ok | 401 | missing_key | idle
+_birdeye_cu_warned = False
+_last_birdeye_auth_status: str = "idle"  # ok | 401 | 403 | missing_key | cu_limit | idle
+_last_birdeye_error: Optional[str] = None
+# Free-tier CU exhaustion: pause Birdeye list calls and use DexScreener fallback.
+_BIRDEYE_CU_COOLDOWN_SEC = 900.0  # 15 min
+_birdeye_cu_cooldown_until: float = 0.0
 _last_trending_top5_status: Dict = {
     "enabled": False,
     "auth": "idle",
@@ -54,8 +59,18 @@ def get_last_birdeye_scan_status() -> str:
 
 
 def get_last_birdeye_auth_status() -> str:
-    """Return last Birdeye auth probe: ok, 401, missing_key, or idle."""
+    """Return last Birdeye auth probe: ok, 401, missing_key, cu_limit, or idle."""
     return _last_birdeye_auth_status
+
+
+def get_last_birdeye_error() -> Optional[str]:
+    """Last Birdeye HTTP/body error string (masked; no secrets)."""
+    return _last_birdeye_error
+
+
+def birdeye_cu_cooldown_active() -> bool:
+    """True while free-tier compute-unit quota is exhausted."""
+    return time.time() < float(_birdeye_cu_cooldown_until or 0.0)
 
 
 def get_trending_top5_status() -> dict:
@@ -79,6 +94,41 @@ def _set_birdeye_scan_status(status: str) -> None:
 def _set_birdeye_auth_status(status: str) -> None:
     global _last_birdeye_auth_status
     _last_birdeye_auth_status = status
+
+
+def _set_birdeye_error(message: Optional[str]) -> None:
+    global _last_birdeye_error
+    _last_birdeye_error = (message or None)
+
+
+def _mark_birdeye_cu_limit(message: str) -> None:
+    """Record CU exhaustion and start cooldown so we stop burning list endpoints."""
+    global _birdeye_cu_cooldown_until, _birdeye_cu_warned
+    _set_birdeye_auth_status("cu_limit")
+    _set_birdeye_error(message)
+    _birdeye_cu_cooldown_until = time.time() + _BIRDEYE_CU_COOLDOWN_SEC
+    if not _birdeye_cu_warned:
+        logger.warning(
+            "Birdeye compute-unit limit exceeded — using DexScreener fallback for ~%dm "
+            "(key ok for /defi/price; list endpoints throttled). Message: %s",
+            int(_BIRDEYE_CU_COOLDOWN_SEC // 60),
+            message,
+        )
+        _birdeye_cu_warned = True
+    else:
+        logger.debug("Birdeye CU limit still active: %s", message)
+
+
+def _is_cu_limit_payload(status_code: int, body_text: str) -> bool:
+    if status_code not in (400, 429):
+        return False
+    low = (body_text or "").lower()
+    return (
+        "compute units" in low
+        or "compute unit" in low
+        or "usage limit exceeded" in low
+        or "cu limit" in low
+    )
 
 
 def _set_trending_top5_status(**kwargs) -> None:
@@ -283,6 +333,10 @@ class BirdeyeScanner:
     def _get_birdeye(self, path: str, params: Optional[dict] = None, timeout: int = 15) -> Optional[object]:
         if not Config.birdeye_api_available():
             _set_birdeye_auth_status("missing_key")
+            _set_birdeye_error("missing_key")
+            return None
+        if birdeye_cu_cooldown_active():
+            _set_birdeye_auth_status("cu_limit")
             return None
         try:
             response = self.session.get(
@@ -290,16 +344,44 @@ class BirdeyeScanner:
                 params=params,
                 timeout=timeout,
             )
+            body_text = ""
+            try:
+                body_text = response.text or ""
+            except Exception:
+                body_text = ""
             if response.status_code in (401, 403):
                 self._log_auth_failure(response.status_code)
+                _set_birdeye_error(f"auth_{response.status_code}")
+                return None
+            if _is_cu_limit_payload(response.status_code, body_text):
+                msg = "Compute units usage limit exceeded"
+                try:
+                    payload = response.json()
+                    if isinstance(payload, dict) and payload.get("message"):
+                        msg = str(payload.get("message"))
+                except Exception:
+                    pass
+                _mark_birdeye_cu_limit(msg)
                 return None
             if response.status_code == 429:
                 logger.warning("Birdeye API rate limited; skipping birdeye scan this cycle")
+                _set_birdeye_error("rate_limited_429")
+                return None
+            if response.status_code >= 400:
+                _set_birdeye_error(f"http_{response.status_code}:{body_text[:120]}")
+                logger.warning(
+                    "Birdeye HTTP %s for %s: %s",
+                    response.status_code,
+                    path,
+                    body_text[:200],
+                )
                 return None
             response.raise_for_status()
             _set_birdeye_auth_status("ok")
+            _set_birdeye_error(None)
             return response.json()
         except requests.RequestException as exc:
+            _set_birdeye_error(f"request_failed:{exc}")
             logger.warning("Birdeye request failed for %s: %s", path, exc)
             return None
 
@@ -445,10 +527,10 @@ class BirdeyeScanner:
         _add(self._fetch_find_gems_gainers(limit))
 
         remaining = limit - len(tokens)
-        if remaining > 0:
+        if remaining > 0 and not birdeye_cu_cooldown_active():
             _add(self._fetch_new_listing_tokens(remaining))
 
-        if len(tokens) < limit // 2:
+        if len(tokens) < limit // 2 and not birdeye_cu_cooldown_active():
             trending = self._get_birdeye(
                 TRENDING_PATH,
                 params={
@@ -460,7 +542,7 @@ class BirdeyeScanner:
             )
             _add(self._extract_tokens(trending))
 
-        if len(tokens) < limit // 2:
+        if len(tokens) < limit // 2 and not birdeye_cu_cooldown_active():
             meme_list = self._get_birdeye(
                 MEME_LIST_PATH,
                 params={
@@ -560,18 +642,21 @@ class BirdeyeScanner:
 
         tokens: List[dict] = []
         fetch_source = "birdeye"
-        if Config.birdeye_api_available():
+        if Config.birdeye_api_available() and not birdeye_cu_cooldown_active():
             tokens = self._fetch_trending_rank_tokens(limit)
-            if not tokens and _last_birdeye_auth_status in ("401", "403"):
+            if not tokens and _last_birdeye_auth_status in ("401", "403", "cu_limit"):
                 fetch_source = "dexscreener_fallback"
                 logger.warning(
-                    "top5 trending blocked on Birdeye auth (%s) — using DexScreener "
-                    "fallback until BIRDEYE_API_KEY is rotated",
+                    "top5 trending blocked on Birdeye (%s) — using DexScreener "
+                    "fallback until quota/key recovers",
                     _last_birdeye_auth_status,
                 )
         else:
             fetch_source = "dexscreener_fallback"
-            _set_birdeye_auth_status("missing_key")
+            if not Config.birdeye_api_available():
+                _set_birdeye_auth_status("missing_key")
+            elif birdeye_cu_cooldown_active():
+                _set_birdeye_auth_status("cu_limit")
 
         candidates: List[MoverCandidate] = []
         if tokens and fetch_source == "birdeye":
@@ -637,6 +722,9 @@ class BirdeyeScanner:
     def scan(self, *, fast_mode: bool = False) -> List[MoverCandidate]:
         if not Config.birdeye_api_available():
             return self._scan_dexscreener_fallback(fast_mode=fast_mode)
+        # Free-tier CU exhausted: skip list endpoints entirely (key still valid for price).
+        if birdeye_cu_cooldown_active() or get_last_birdeye_auth_status() == "cu_limit":
+            return self._scan_dexscreener_fallback(fast_mode=fast_mode)
 
         if fast_mode and Config.FIRST_SCAN_FAST_MODE:
             _set_birdeye_scan_status("active")
@@ -675,8 +763,15 @@ class BirdeyeScanner:
         tokens = self._fetch_trending_tokens()
         if not tokens:
             global _birdeye_auth_warned
+            # CU limit / empty list → DexScreener fallback (same pattern as missing key).
+            if (
+                birdeye_cu_cooldown_active()
+                or get_last_birdeye_auth_status() == "cu_limit"
+            ):
+                return self._scan_dexscreener_fallback(fast_mode=fast_mode)
             if _birdeye_auth_warned:
                 _set_birdeye_scan_status("failed")
+                return self._scan_dexscreener_fallback(fast_mode=fast_mode)
             logger.info("Scanner found 0 birdeye gems")
             return []
 

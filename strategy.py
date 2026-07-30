@@ -243,9 +243,14 @@ class MomentumStrategy:
         self, mint: str, *, symbol: str = "", name: str = ""
     ) -> Dict[str, Any]:
         """Return active session-level blocks for a mint."""
+        from blocked_mints import is_mint_permanently_blocked, is_symbol_permanently_blocked
         from stock_token_filter import is_stock_related_token
 
         blocks: List[str] = []
+        if is_mint_permanently_blocked(mint):
+            blocks.append("permanent_block")
+        if is_symbol_permanently_blocked(symbol):
+            blocks.append("permanent_ticker_block")
         if is_stock_related_token(mint=mint, symbol=symbol, name=name):
             blocks.append("stock_filter")
         if mint in self.traded_mints_cooldown:
@@ -317,9 +322,16 @@ class MomentumStrategy:
         setup_learner=None,
         skip_loss_cooldown_check: bool = False,
     ) -> SignalType:
+        from blocked_mints import (
+            is_permanently_blocked,
+            log_skipped_blocked_mint,
+        )
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
         from stock_token_filter import is_stock_related_token, log_skipped_stock_token
 
+        if is_permanently_blocked(candidate.mint, candidate.symbol):
+            log_skipped_blocked_mint(candidate.mint, candidate.symbol)
+            return SignalType.NONE
         if is_stock_related_token(
             mint=candidate.mint,
             symbol=candidate.symbol,
@@ -530,9 +542,13 @@ class MomentumStrategy:
         skip_loss_cooldown_check: bool = False,
     ) -> Optional[str]:
         """Human-readable reason when evaluate_entry would not buy."""
+        from blocked_mints import permanent_block_skip_reason
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
         from stock_token_filter import is_stock_related_token
 
+        blocked = permanent_block_skip_reason(candidate.mint, candidate.symbol)
+        if blocked:
+            return blocked
         if is_stock_related_token(
             mint=candidate.mint,
             symbol=candidate.symbol,
@@ -661,11 +677,15 @@ class MomentumStrategy:
         setup_learner=None,
     ) -> Optional[str]:
         """Human-readable reason when evaluate_dip_reentry would not buy."""
+        from blocked_mints import permanent_block_skip_reason
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
         from stock_token_filter import is_stock_related_token
 
         if not dip_triggered:
             return None
+        blocked = permanent_block_skip_reason(candidate.mint, candidate.symbol)
+        if blocked:
+            return blocked
         if is_stock_related_token(
             mint=candidate.mint,
             symbol=candidate.symbol,
@@ -715,10 +735,17 @@ class MomentumStrategy:
         sol_trend_snapshot: Optional[dict] = None,
         setup_learner=None,
     ) -> SignalType:
+        from blocked_mints import (
+            is_permanently_blocked,
+            log_skipped_blocked_mint,
+        )
         from sol_trend_filter import memecoin_entry_allowed_by_sol_trend
         from stock_token_filter import is_stock_related_token, log_skipped_stock_token
 
         if not dip_triggered:
+            return SignalType.NONE
+        if is_permanently_blocked(candidate.mint, candidate.symbol):
+            log_skipped_blocked_mint(candidate.mint, candidate.symbol)
             return SignalType.NONE
         if is_stock_related_token(
             mint=candidate.mint,
@@ -1004,7 +1031,7 @@ class MomentumStrategy:
         *,
         executable_pnl_pct: Optional[float] = None,
     ) -> Optional[ExitSignal]:
-        """Full exit at +5% (fast spike) or +3.25% — mark, peak, or quote PnL."""
+        """Full exit at L2 spike or L1 instant — mark/peak/quote, with fill+net guards."""
         if not Config.INSTANT_PROFIT_EXIT_ENABLED:
             return None
         trigger_pnl = effective_pnl
@@ -1016,25 +1043,44 @@ class MomentumStrategy:
         signal: Optional[ExitSignal] = None
         if trigger_pnl >= Config.INSTANT_PROFIT_EXIT_PCT:
             logger.info(
-                "INSTANT EXIT TRIGGERED (+5%%): %s mark=%.4f peak=%.4f quote=%s >= %.2f%%",
+                "INSTANT EXIT TRIGGERED (+%.2f%%): %s mark=%.4f peak=%.4f quote=%s",
+                Config.INSTANT_PROFIT_EXIT_PCT * 100,
                 position.symbol,
                 pnl,
                 position.peak_pnl_pct,
                 quote_label,
-                Config.INSTANT_PROFIT_EXIT_PCT * 100,
             )
             signal = ExitSignal(SignalType.SELL_INSTANT_PROFIT)
         elif trigger_pnl >= Config.INSTANT_EXIT_3PCT:
             logger.info(
-                "INSTANT EXIT TRIGGERED (+3.25%%): %s mark=%.4f peak=%.4f quote=%s >= %.2f%%",
+                "INSTANT EXIT TRIGGERED (+%.2f%%): %s mark=%.4f peak=%.4f quote=%s",
+                Config.INSTANT_EXIT_3PCT * 100,
                 position.symbol,
                 pnl,
                 position.peak_pnl_pct,
                 quote_label,
-                Config.INSTANT_EXIT_3PCT * 100,
             )
             signal = ExitSignal(SignalType.SELL_INSTANT_PROFIT)
         if signal is None:
+            return None
+        # Mark spike alone is not enough when we already have a sell quote that
+        # is still below the executable floor (fee/impact drag).
+        min_exec = float(getattr(Config, "INSTANT_MIN_EXECUTABLE_PNL_PCT", 0.0) or 0.0)
+        if (
+            executable_pnl_pct is not None
+            and min_exec > 0
+            and executable_pnl_pct < min_exec
+            and not wbtc_hold_until_profit_mode(position.mint)
+        ):
+            logger.info(
+                "Instant hold: %s quote fill %.2f%% < min executable %.2f%% "
+                "(mark=%.2f%% peak=%.2f%%) — waiting for real fill",
+                position.symbol,
+                executable_pnl_pct * 100,
+                min_exec * 100,
+                pnl * 100,
+                position.peak_pnl_pct * 100,
+            )
             return None
         if wbtc_hold_until_profit_mode(position.mint):
             check_pnl = max(pnl, position.peak_pnl_pct, trigger_pnl)
@@ -1271,7 +1317,14 @@ class MomentumStrategy:
         executable_pnl_pct: Optional[float] = None,
         trough_pnl: Optional[float] = None,
     ) -> Optional[ExitSignal]:
-        """Stop on worst of mark, quote, and trough PnL (catches stale feeds)."""
+        """Stop on worst of mark, quote, and trough PnL (catches stale feeds).
+
+        Fee-drag / impact guard: round-trip fees on small size often exceed the
+        1.5% stop. When mark is green, quote-only underwater readings are fee or
+        impact artifacts — not a dump — and must not fire SL (same class as
+        rotation $1 fee-drag). When mark is in instant-profit territory
+        (>= +3.25%), never SL; instant profit handles the exit.
+        """
         from scheduled_rotation import is_scheduled_rotation_position
 
         # Rotation legs: no SL / emergency / catastrophic (fee drag must not dump).
@@ -1279,12 +1332,17 @@ class MomentumStrategy:
             return None
         if not stop_loss_applies_for_mint(position.mint):
             return None
+        # Mark deeply green → never SL on quote/trough artifacts; take profit.
+        if mark_pnl >= Config.INSTANT_EXIT_3PCT:
+            return None
         stop = effective_stop_loss_pct(position.mint)
         emergency = Config.EMERGENCY_STOP_LOSS_PCT
         catastrophic = Config.CATASTROPHIC_STOP_LOSS_PCT
 
         sources: List[float] = [mark_pnl]
-        if executable_pnl_pct is not None:
+        # Quote only counts toward SL when mark is red/flat — green mark + red
+        # quote is fee/impact drag, not a stop.
+        if executable_pnl_pct is not None and mark_pnl <= 0:
             sources.append(executable_pnl_pct)
         if trough_pnl is not None:
             sources.append(trough_pnl)
@@ -1373,20 +1431,20 @@ class MomentumStrategy:
         pnl = position.update_peak_pnl(current_price)
         effective_pnl = max(pnl, position.peak_pnl_pct)
         if executable_pnl_pct is not None:
+            # Peak may lead on quote; never bump trough from quote — fee/impact
+            # drag would poison trough and false-trigger SL while mark is green.
             position.bump_peak_pnl(executable_pnl_pct)
-            position.bump_trough_pnl(executable_pnl_pct)
             effective_pnl = max(effective_pnl, executable_pnl_pct)
         hold_sec = time.time() - position.entry_time
         ladder_missed = self._ladder_never_hit(position)
 
         trough_pnl = position.trough_pnl_pct
 
-        # Stop loss ALWAYS wins. Evaluate it FIRST — before L1 protection,
-        # instant-profit, max-hold, and every other profit/time/peak exit —
-        # on the worst of mark/quote/trough PnL. A position that previously
-        # peaked green but has since reversed to/through the stop must exit as
-        # SELL_SL and can never be diverted into an instant-profit (peak-based)
-        # or other voluntary exit. Never miss a stop.
+        # Stop loss ALWAYS wins when mark/price confirm a dump. Evaluate FIRST —
+        # before L1 protection, instant-profit, max-hold, and other exits.
+        # Fee-drag quote while mark is green must NOT preempt instant profit
+        # (see _evaluate_stop_loss). A mark that reversed through the stop still
+        # exits as SELL_SL and cannot divert into peak-based instant profit.
         stop_signal = self._evaluate_stop_loss(
             position,
             pnl,

@@ -340,6 +340,12 @@ class RiskManager:
             self.state.consecutive_losses = 0
             self.state.consecutive_loss_pause_until = 0.0
 
+    def reset_consecutive_loss_pause(self) -> None:
+        """Clear the consecutive-loss block immediately (admin/manual override)."""
+        self.state.consecutive_losses = 0
+        self.state.consecutive_loss_pause_until = 0.0
+        logger.info("Consecutive loss pause cleared by admin override")
+
     def should_auto_stop_daily_loss(self) -> bool:
         self._reset_daily_if_needed()
         return (

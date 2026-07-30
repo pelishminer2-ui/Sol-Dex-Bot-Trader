@@ -511,6 +511,18 @@ def bot_force_reset():
     return jsonify({"ok": True, **result})
 
 
+@app.route("/api/bot/reset-loss-pause", methods=["POST"])
+def bot_reset_loss_pause():
+    """Clear the consecutive-loss entry block immediately without stopping the bot."""
+    with bot_manager._lock:
+        bot = bot_manager._bot
+    if bot is None or not hasattr(bot, "risk"):
+        return jsonify({"ok": False, "error": "Bot not running"}), 400
+    bot.risk.reset_consecutive_loss_pause()
+    status = bot.risk.consecutive_loss_pause_status(dry_run=bot.dry_run)
+    return jsonify({"ok": True, "consecutive_loss_pause": status})
+
+
 @app.route("/api/bot/transfer-guard/allow-programs", methods=["POST"])
 def bot_transfer_guard_allow_programs():
     """Hot-add swap program ids to the transfer-guard allowlist (localhost only)."""
@@ -548,6 +560,42 @@ def mint_unblock():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@app.route("/api/blocked-mints/reload", methods=["POST"])
+def blocked_mints_reload():
+    """Hot-reload permanent mint/ticker blocklist from disk (localhost)."""
+    from blocked_mints import (
+        is_symbol_permanently_blocked,
+        permanently_blocked_mints,
+        permanently_blocked_symbols,
+        reload_blocked_mints,
+        status_snapshot,
+        unblock_symbol_permanently,
+    )
+
+    data = request.get_json(silent=True) or {}
+    clear_symbol = (data.get("clear_symbol") or data.get("unblock_symbol") or "").strip()
+    cleared = None
+    if clear_symbol:
+        cleared = unblock_symbol_permanently(clear_symbol)
+    count = reload_blocked_mints()
+    snap = status_snapshot()
+    return jsonify(
+        {
+            "ok": True,
+            "reloaded": count,
+            "cleared_symbol": cleared,
+            "symbol_blocked": {
+                clear_symbol: is_symbol_permanently_blocked(clear_symbol)
+            }
+            if clear_symbol
+            else {},
+            "blocked_mints": sorted(permanently_blocked_mints()),
+            "blocked_symbols": sorted(permanently_blocked_symbols()),
+            "snapshot": snap,
+        }
+    )
+
+
 @app.route("/api/actions/pending")
 def actions_pending():
     return jsonify(
@@ -555,8 +603,24 @@ def actions_pending():
             "ok": True,
             "pending": bot_manager.get_pending_actions(),
             "status": bot_manager.reentry_retry_status(),
+            "pending_user_alerts": bot_manager.get_pending_user_alerts(),
         }
     )
+
+
+@app.route("/api/alerts/ack", methods=["POST"])
+def alerts_ack():
+    """Dismiss a one-shot user alert (e.g. rug incinerator popup)."""
+    data = request.get_json(silent=True) or {}
+    alert_id = (data.get("id") or data.get("alert_id") or "").strip()
+    if not alert_id:
+        return jsonify({"ok": False, "error": "alert_id is required"}), 400
+    try:
+        result = bot_manager.ack_user_alert(alert_id)
+        status = 200 if result.get("ok") else 400
+        return jsonify(result), status
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.route("/api/actions/decide", methods=["POST"])
@@ -731,16 +795,31 @@ def movers():
 @app.route("/api/positions")
 def positions():
     pos_list = bot_manager.get_positions()
-    from scheduled_rotation import trading_open_mints
+    from scheduled_rotation import (
+        rotation_open_positions,
+        trading_open_count,
+        trading_open_mints,
+    )
 
     # Prefer profile-tagged filter so rotation legs don't skew companion/max.
     open_mints = trading_open_mints(pos_list)
+    trading_count = trading_open_count(pos_list)
+    rotation_count = len(rotation_open_positions(pos_list))
     effective_max = max_allowed_open_positions(open_mints)
+    # Display capacity includes one rotation slot when enabled (does not raise entry cap).
+    display_max = effective_max + (
+        int(Config.SCHEDULED_ROTATION_MAX_OPEN)
+        if Config.SCHEDULED_ROTATION_ENABLED
+        else 0
+    )
     return jsonify(
         {
             "positions": pos_list,
             "count": len(pos_list),
-            "max": effective_max,
+            "trading_count": trading_count,
+            "rotation_count": rotation_count,
+            "max": display_max,
+            "trading_max": effective_max,
             "max_open_positions": Config.MAX_OPEN_POSITIONS,
             "max_open_positions_wbtc": Config.MAX_OPEN_POSITIONS_WBTC,
             "companion_trade_enabled": Config.COMPANION_TRADE_ENABLED,
@@ -754,7 +833,7 @@ def positions():
 
 @app.route("/api/positions/sell", methods=["POST"])
 def positions_sell():
-    """Manual full exit for one open position (paper or live). Overrides WBTC hold-until-profit."""
+    """Manual Instant Sell — execute immediately; no confirm/defer on server."""
     data = request.get_json(silent=True) or {}
     mint = (data.get("mint") or data.get("token_mint") or "").strip()
     symbol = (data.get("symbol") or "").strip()
@@ -764,10 +843,37 @@ def positions_sell():
     try:
         result = bot_manager.force_sell(mint=mint or None, symbol=symbol or None, reason=reason)
         if not result.get("ok"):
-            return jsonify(result), 400
+            err = str(result.get("error") or "sell_failed")
+            # Already gone → 404 so UI does not show bare "BAD REQUEST"
+            status = 404 if err == "no_open_position_found" else 400
+            return jsonify({"ok": False, "error": err, **{k: v for k, v in result.items() if k != "ok"}}), status
         return jsonify(result)
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": False, "error": str(exc) or "sell_failed"}), 400
+
+
+@app.route("/api/positions/writeoff", methods=["POST"])
+def positions_writeoff():
+    """Bookkeeping-only 100% loss clear — no Jupiter swap / burn."""
+    data = request.get_json(silent=True) or {}
+    mint = (data.get("mint") or data.get("token_mint") or "").strip()
+    symbol = (data.get("symbol") or "").strip()
+    if not mint and not symbol:
+        return jsonify({"ok": False, "error": "mint or symbol is required"}), 400
+    reason = (data.get("reason") or "sell_rug_writeoff").strip() or "sell_rug_writeoff"
+    try:
+        result = bot_manager.writeoff_position(
+            mint=mint or None, symbol=symbol or None, reason=reason
+        )
+        if not result.get("ok"):
+            err = str(result.get("error") or "writeoff_failed")
+            status = 404 if err == "no_open_position_found" else 400
+            return jsonify(
+                {"ok": False, "error": err, **{k: v for k, v in result.items() if k != "ok"}}
+            ), status
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or "writeoff_failed"}), 400
 
 
 @app.route("/api/positions/dca", methods=["POST"])
@@ -1031,6 +1137,9 @@ def tax_preview():
             "path": str(get_tax_csv_path()),
             "total_profit_sol": totals["total_profit_sol"],
             "total_losses_sol": totals["total_losses_sol"],
+            "win_count": totals.get("win_count", 0),
+            "loss_count": totals.get("loss_count", 0),
+            "fee_assist_count": totals.get("fee_assist_count", 0),
             "current_month": summary["current_month"],
             "current_year": summary["current_year"],
             "monthly": summary["monthly"],

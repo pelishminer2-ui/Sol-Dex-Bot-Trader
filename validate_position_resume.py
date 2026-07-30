@@ -319,16 +319,65 @@ def test_live_restore_keeps_unknown_drops_zero_reconciles_known():
             assert bot.strategy.get_open_positions() == []
             assert load_open_positions(dry_run=False) == []
 
-            # Known > 0 reconciles qty.
+            # Wallet > book: keep book qty (pre-existing bags untouched).
             save_open_positions([stored], dry_run=False)
             bot.strategy.positions = []
             bot.solana.get_token_balance_raw = AsyncMock(return_value=12000)
             asyncio.run(bot._restore_persisted_positions())
             opens = bot.strategy.get_open_positions()
             assert len(opens) == 1
-            assert opens[0].remaining_token_amount_raw == 12000
-            assert opens[0].token_amount_raw == 12000
-    print("PASS: live_restore keeps unknown, drops zero, reconciles known")
+            assert opens[0].remaining_token_amount_raw == 11782
+            assert opens[0].token_amount_raw == 11782
+
+            # Wallet < book: shrink to wallet.
+            save_open_positions([stored], dry_run=False)
+            bot.strategy.positions = []
+            bot.solana.get_token_balance_raw = AsyncMock(return_value=10000)
+            asyncio.run(bot._restore_persisted_positions())
+            opens = bot.strategy.get_open_positions()
+            assert len(opens) == 1
+            assert opens[0].remaining_token_amount_raw == 10000
+            assert opens[0].token_amount_raw == 10000
+    print("PASS: live_restore keeps unknown, drops zero, never inflates above book")
+
+
+def test_bought_token_amount_never_inflates_to_full_ata():
+    from bot import TradingBot
+
+    # Pre-existing bags + buy: attribute delta only.
+    assert TradingBot._bought_token_amount_raw(5000, 10000, 15000) == 5000
+    # No pre-balance: never take more than quote out.
+    assert TradingBot._bought_token_amount_raw(5000, None, 15000) == 5000
+    # Partial fill vs quote: take wallet when smaller.
+    assert TradingBot._bought_token_amount_raw(5000, None, 4800) == 4800
+    # Unknown post: quote.
+    assert TradingBot._bought_token_amount_raw(5000, 1000, None) == 5000
+    print("PASS: bought_token_amount never inflates to full ATA")
+
+
+def test_cap_sell_to_position_leaves_preexisting_bags():
+    from bot import TradingBot
+    from strategy import Position
+
+    bot = TradingBot.__new__(TradingBot)
+    pos = Position(
+        mint="Mint111",
+        symbol="TEST",
+        entry_price=1.0,
+        entry_time=0.0,
+        size_sol=0.1,
+        token_amount_raw=5000,
+        initial_token_amount_raw=5000,
+        remaining_token_amount_raw=5000,
+        buy_count=1,
+    )
+    # Wallet has pre-existing bags — sell only book size.
+    assert bot._cap_sell_to_position(pos, 5000, 20000) == 5000
+    # Requested > book — still book.
+    assert bot._cap_sell_to_position(pos, 20000, 20000) == 5000
+    # Wallet short of book — wallet.
+    assert bot._cap_sell_to_position(pos, 5000, 3000) == 3000
+    print("PASS: cap_sell_to_position leaves pre-existing bags")
 
 
 if __name__ == "__main__":
@@ -342,4 +391,6 @@ if __name__ == "__main__":
     test_bot_restore_preserves_wbtc_exit_rules()
     test_get_token_balance_raw_returns_none_on_rpc_failure()
     test_live_restore_keeps_unknown_drops_zero_reconciles_known()
+    test_bought_token_amount_never_inflates_to_full_ata()
+    test_cap_sell_to_position_leaves_preexisting_bags()
     print("\nAll position resume validation tests passed.")

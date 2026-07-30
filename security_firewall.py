@@ -44,6 +44,7 @@ ALLOWED_ROUTES: Set[Tuple[str, str]] = {
     ("GET", "/api/movers"),
     ("GET", "/api/positions"),
     ("POST", "/api/positions/sell"),
+    ("POST", "/api/positions/writeoff"),
     ("POST", "/api/positions/dca"),
     ("POST", "/api/bot/dca"),
     ("GET", "/api/trades"),
@@ -55,9 +56,10 @@ ALLOWED_ROUTES: Set[Tuple[str, str]] = {
     ("POST", "/api/bot/start"),
     ("POST", "/api/bot/stop"),
     ("POST", "/api/bot/force-reset"),
+    ("POST", "/api/bot/reset-loss-pause"),
     ("POST", "/api/bot/transfer-guard/allow-programs"),
     ("POST", "/api/mint/unblock"),
-
+    ("POST", "/api/blocked-mints/reload"),
     ("GET", "/api/actions/pending"),
     ("POST", "/api/actions/decide"),
     ("POST", "/api/actions/dev/preview"),
@@ -246,6 +248,7 @@ def _body_has_forbidden_fields() -> Optional[str]:
             "/api/mint/unblock",
             "/api/actions/decide",
             "/api/positions/sell",
+            "/api/positions/writeoff",
             "/api/positions/dca",
             "/api/bot/dca",
         ):

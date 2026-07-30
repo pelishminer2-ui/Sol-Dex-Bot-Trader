@@ -1,4 +1,4 @@
-"""Scheduled $1 USD mint rotation: buy every 6h, hold 2h, rotate A→B→C.
+"""Scheduled $1 USD mint rotation: buy every 12h, hold 2h, rotate A→B→C.
 
 Positions are tagged `profile["scheduled_rotation"]=True` so they do not consume
 normal companion / max-position slots. Live-only by default.
@@ -23,12 +23,22 @@ PositionLike = Any  # Position dataclass or persisted dict
 
 
 def is_scheduled_rotation_position(position: PositionLike) -> bool:
-    """True when position is tagged as a scheduled rotation leg."""
+    """True when position is tagged as a scheduled rotation leg.
+
+    Accepts live ``Position`` objects (profile dict) and API/persisted dicts
+    that flatten ``scheduled_rotation`` / ``scanner_source`` to the top level.
+    """
     if position is None:
         return False
     profile = getattr(position, "profile", None)
     if profile is None and isinstance(position, dict):
         profile = position.get("profile") or {}
+        # Flattened API / UI payloads (see bot_manager._position_to_dict).
+        if position.get("scheduled_rotation"):
+            return True
+        src = str(position.get("scanner_source") or "").strip().lower()
+        if src == "scheduled_rotation":
+            return True
     if not isinstance(profile, dict):
         return False
     if profile.get("scheduled_rotation"):

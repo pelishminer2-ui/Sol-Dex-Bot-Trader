@@ -9,7 +9,8 @@ import logging
 import signal
 import threading
 import time
-from typing import List, Optional
+import uuid
+from typing import Any, Dict, List, Optional
 
 from config import (
     Config,
@@ -49,6 +50,7 @@ from fee_estimator import (
 from trade_utils import (
     build_buy_journal,
     build_sell_journal,
+    build_writeoff_journal,
     entry_sol_basis,
     estimate_token_ui,
     quote_sol_flow,
@@ -122,6 +124,7 @@ INSTANT_EXIT_CRITICAL_CYCLES = 2
 FORCED_EXIT_CRITICAL_CYCLES = 2
 FORCED_EXIT_RETRY_INTERVAL_SEC = 0.5
 STOP_APPROACHING_PCT = 0.01
+RUG_INCINERATOR_BURN_TEXT = "Use Sol-Incinerator pro to burn."
 
 
 class TradingBot:
@@ -162,6 +165,11 @@ class TradingBot:
         self._instant_exit_pending_cycles: dict[str, int] = {}
         self._pending_forced_exit: dict[str, int] = {}
         self._stop_alert_state: dict[str, str] = {}
+        self._last_force_sell_error: Optional[str] = None
+        self._last_execute_sell_error: Optional[str] = None
+        self._last_dca_error: Optional[str] = None
+        self._pending_user_alerts: List[Dict[str, Any]] = []
+        self._pending_user_alerts_lock = threading.Lock()
         self.price_feed = PriceFeed()
         self.strategy = MomentumStrategy()
         self.strategy._persist_dry_run = self.dry_run
@@ -446,15 +454,26 @@ class TradingBot:
                     pos.mint[:8],
                 )
                 continue
-            if wallet_raw != pos.remaining_token_amount_raw:
+            book_raw = int(pos.remaining_token_amount_raw or 0)
+            if wallet_raw < book_raw:
+                # Wallet short of book (dust / external sell) — shrink only.
                 logger.info(
-                    "Resume: reconciling %s token qty %d -> %d (wallet)",
+                    "Resume: reconciling %s token qty %d -> %d (wallet short)",
                     pos.symbol,
-                    pos.remaining_token_amount_raw,
+                    book_raw,
                     wallet_raw,
                 )
                 pos.remaining_token_amount_raw = wallet_raw
                 pos.token_amount_raw = wallet_raw
+            elif wallet_raw > book_raw:
+                # Extra ATA tokens are pre-existing bags — never inflate the book.
+                logger.info(
+                    "Resume: wallet has %d > book %d for %s — keeping book qty "
+                    "(pre-existing bags untouched)",
+                    wallet_raw,
+                    book_raw,
+                    pos.symbol,
+                )
             restored.append(pos)
 
         count = self.strategy.restore_positions(restored)
@@ -490,10 +509,16 @@ class TradingBot:
             ("gmgn", gmgn_count, "zero_streak_gmgn"),
         )
         birdeye_fallback = get_last_birdeye_scan_status() == "fallback"
+        try:
+            from birdeye_scanner import get_last_birdeye_auth_status
+
+            birdeye_cu = get_last_birdeye_auth_status() == "cu_limit"
+        except Exception:
+            birdeye_cu = False
         pumpfun_fallback = get_last_pumpfun_scan_status() in ("fallback", "add_key")
         gmgn_failed = get_last_gmgn_scan_status() == "failed"
         for source, count, attr in streaks:
-            if source == "birdeye" and birdeye_fallback:
+            if source == "birdeye" and (birdeye_fallback or birdeye_cu):
                 setattr(self, attr, 0)
                 continue
             if source == "pumpfun" and pumpfun_fallback:
@@ -894,10 +919,46 @@ class TradingBot:
                 best_liq = liq
         return best_liq if best_liq >= 0 else None
 
+    @staticmethod
+    def _bought_token_amount_raw(
+        quote_out: int,
+        pre_wallet_raw: Optional[int],
+        post_wallet_raw: Optional[int],
+    ) -> int:
+        """Tokens attributed to this buy — never inflate to full ATA bags.
+
+        Prefer wallet delta when pre+post are known. Otherwise never take more
+        than the Jupiter quote out_amount (leaves pre-existing holdings alone).
+        """
+        quote_out = max(0, int(quote_out or 0))
+        if post_wallet_raw is None:
+            return quote_out
+        post = max(0, int(post_wallet_raw))
+        if pre_wallet_raw is not None:
+            added = max(0, post - max(0, int(pre_wallet_raw)))
+            if added > 0:
+                return added
+            return quote_out if quote_out > 0 else post
+        if quote_out > 0:
+            return min(post, quote_out) if post > 0 else quote_out
+        return post
+
     def _sell_amount_for_exit(self, position: Position, exit_signal: ExitSignal) -> int:
         if exit_signal.is_partial and exit_signal.tp_level_index is not None:
             return self.strategy.partial_sell_amount_raw(position, exit_signal.tp_level_index)
         return position.remaining_token_amount_raw
+
+    def _cap_sell_to_position(
+        self, position: Position, token_raw: int, wallet_raw: Optional[int] = None
+    ) -> int:
+        """Sell only the bot's tracked position size — never sweep pre-existing bags."""
+        capped = max(0, int(token_raw or 0))
+        book = max(0, int(position.remaining_token_amount_raw or 0))
+        if book > 0:
+            capped = min(capped, book)
+        if wallet_raw is not None:
+            capped = min(capped, max(0, int(wallet_raw)))
+        return capped
 
     async def _fetch_sell_quote(
         self,
@@ -967,24 +1028,30 @@ class TradingBot:
         exit_signal: Optional[ExitSignal] = None,
     ) -> Optional[str]:
         assert self.solana and self.jupiter
+        self._last_execute_sell_error = None
 
         if not self.dry_run:
             wallet_raw = await self.solana.get_token_balance_raw(position.mint)
             if wallet_raw is None:
+                self._last_execute_sell_error = "token_balance_rpc_unknown"
                 logger.error(
                     "Cannot verify token balance for %s — aborting sell (keeping book)",
                     position.symbol,
                 )
                 return None
             if wallet_raw <= 0:
+                self._last_execute_sell_error = "no_token_balance"
                 logger.error("No token balance to sell for %s", position.symbol)
                 self.strategy.positions = [
                     p for p in self.strategy.positions if p.mint != position.mint
                 ]
                 return None
-            token_raw = min(token_raw, wallet_raw)
+            token_raw = self._cap_sell_to_position(position, token_raw, wallet_raw)
+        else:
+            token_raw = self._cap_sell_to_position(position, token_raw, None)
 
         if token_raw <= 0:
+            self._last_execute_sell_error = "sell_amount_zero"
             logger.warning("Sell amount is zero for %s", position.symbol)
             return None
 
@@ -998,6 +1065,7 @@ class TradingBot:
                     position, token_raw, exit_signal, use_cache=False
                 )
         if not quote:
+            self._last_execute_sell_error = "no_sell_quote"
             return None
 
         if not forced_exit:
@@ -1007,6 +1075,7 @@ class TradingBot:
                 dry_run=self.dry_run,
             )
             if not ok:
+                self._last_execute_sell_error = f"pre_trade_blocked:{reason}"
                 logger.warning(
                     "Sell blocked (non-forced): %s — %s",
                     position.symbol,
@@ -1014,9 +1083,15 @@ class TradingBot:
                 )
                 return None
 
-        return await self.jupiter.execute_quote(
+        signature = await self.jupiter.execute_quote(
             quote, self.solana, forced_exit=forced_exit
         )
+        if not signature:
+            jerr = getattr(self.jupiter, "last_error", None) or "swap_execute_failed"
+            self._last_execute_sell_error = str(jerr)
+            return None
+        self._last_execute_sell_error = None
+        return signature
 
     def _preview_l1_sell_quote(
         self, mint: str, buy_quote: SwapQuote
@@ -1098,11 +1173,13 @@ class TradingBot:
         """Min net SOL required at quote time; 0 = no gate."""
         if self._is_forced_exit(exit_signal):
             return 0.0
-        if (
-            exit_signal.signal_type == SignalType.SELL_INSTANT_PROFIT
-            and instant_profit_exempt_from_min_net_win(position.mint)
-        ):
-            return 0.0
+        if exit_signal.signal_type == SignalType.SELL_INSTANT_PROFIT:
+            if instant_profit_exempt_from_min_net_win(position.mint):
+                return 0.0
+            if wbtc_profit_gate_applies(position.mint, exit_signal.signal_type.value):
+                return wbtc_min_net_win_threshold()
+            # Memecoin instant takes: dedicated soft floor (default 0.001 SOL).
+            return float(getattr(Config, "INSTANT_MIN_NET_WIN_SOL", 0.001) or 0.0)
         if wbtc_profit_gate_applies(position.mint, exit_signal.signal_type.value):
             return wbtc_min_net_win_threshold()
         if Config.MIN_NET_WIN_SOL <= 0:
@@ -1181,6 +1258,217 @@ class TradingBot:
                 Config.MAX_LOSS_PER_TRADE_SOL,
             )
 
+    def _rug_threshold(self) -> float:
+        try:
+            return float(getattr(Config, "RUG_WRITEOFF_PNL_PCT", -0.995))
+        except (TypeError, ValueError):
+            return -0.995
+
+    def _is_rug_loss(
+        self,
+        position: Position,
+        current_price: Optional[float] = None,
+        executable_pnl_pct: Optional[float] = None,
+        *,
+        quote: Optional[SwapQuote] = None,
+        allow_trough_alone: bool = True,
+    ) -> bool:
+        """True when mark/trough/quote show ~100% loss (rug pull).
+
+        ``allow_trough_alone=False`` requires a current mark/price (or executable
+        quote) at the threshold so a single stale trough tick cannot write off
+        a recovered book.
+        """
+        if not getattr(Config, "RUG_WRITEOFF_ENABLED", True):
+            return False
+        threshold = self._rug_threshold()
+        mark_hit = False
+        if current_price is not None:
+            try:
+                cp = float(current_price)
+                if cp <= 0:
+                    return True
+                if float(position.entry_price or 0) > 0:
+                    mark = position.pnl_pct(cp)
+                    if mark <= threshold:
+                        mark_hit = True
+                    # Price essentially zero vs entry (~<= 0.5% remaining).
+                    if cp / float(position.entry_price) <= (1.0 + threshold):
+                        mark_hit = True
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        if mark_hit:
+            return True
+        if executable_pnl_pct is not None:
+            try:
+                if float(executable_pnl_pct) <= threshold:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        if quote is not None:
+            try:
+                if int(getattr(quote, "out_amount", 0) or 0) <= 0:
+                    # Zero-out quote only counts with deep mark or trough.
+                    trough = float(position.trough_pnl_pct or 0)
+                    if mark_hit or trough <= threshold:
+                        return True
+            except (TypeError, ValueError):
+                pass
+        if allow_trough_alone:
+            try:
+                if float(position.trough_pnl_pct or 0) <= threshold:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return False
+
+    def enqueue_user_alert(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+        """Queue a one-shot dashboard popup (e.g. rug incinerator notice)."""
+        payload = dict(alert or {})
+        payload.setdefault("id", str(uuid.uuid4()))
+        payload.setdefault("created_at", time.time())
+        with self._pending_user_alerts_lock:
+            self._pending_user_alerts.append(payload)
+        return payload
+
+    def get_pending_user_alerts(self) -> List[Dict[str, Any]]:
+        with self._pending_user_alerts_lock:
+            return [dict(a) for a in self._pending_user_alerts]
+
+    def ack_user_alert(self, alert_id: str) -> bool:
+        aid = (alert_id or "").strip()
+        if not aid:
+            return False
+        with self._pending_user_alerts_lock:
+            before = len(self._pending_user_alerts)
+            self._pending_user_alerts = [
+                a for a in self._pending_user_alerts if str(a.get("id") or "") != aid
+            ]
+            return len(self._pending_user_alerts) < before
+
+    @staticmethod
+    def _rug_alert_item(position: Position, journal: dict) -> Dict[str, Any]:
+        mint = str(position.mint or "")
+        symbol = str(position.symbol or "").strip() or (mint[:8] if mint else "?")
+        return {
+            "symbol": symbol,
+            "mint": mint,
+            "mint_short": mint[:8] if mint else "",
+            "net_pnl_sol": journal.get("net_pnl_sol"),
+            "pnl_pct": journal.get("pnl_pct", -1.0),
+        }
+
+    @staticmethod
+    def _format_rug_alert_detail(rugs: List[Dict[str, Any]]) -> str:
+        rows = rugs or []
+        count = len(rows)
+        header = (
+            f"{count} rug pull{'s' if count != 1 else ''} written off as 100% loss:"
+        )
+        lines = []
+        for row in rows:
+            sym = str(row.get("symbol") or "?")
+            short = str(row.get("mint_short") or "") or str(row.get("mint") or "")[:8]
+            lines.append(f"• {sym} ({short})" if short else f"• {sym}")
+        return header + "\n" + "\n".join(lines)
+
+    def _enqueue_rug_writeoff_alert(
+        self,
+        position: Position,
+        journal: dict,
+    ) -> Dict[str, Any]:
+        """Queue ONE coalesced rug notification (append rugs; never stack popups)."""
+        incinerator = str(
+            getattr(Config, "SOL_INCINERATOR_URL", "https://sol-incinerator.com/")
+            or "https://sol-incinerator.com/"
+        )
+        item = self._rug_alert_item(position, journal)
+        reason = journal.get("reason") or "sell_rug_writeoff"
+        with self._pending_user_alerts_lock:
+            for existing in self._pending_user_alerts:
+                if existing.get("type") != "rug_writeoff":
+                    continue
+                rugs = list(existing.get("rugs") or [])
+                mint = item.get("mint") or ""
+                if mint and any(str(r.get("mint") or "") == mint for r in rugs):
+                    # Same mint already listed — keep single entry.
+                    pass
+                else:
+                    rugs.append(item)
+                existing["rugs"] = rugs
+                existing["count"] = len(rugs)
+                existing["title"] = (
+                    "100% loss — rug pull"
+                    if len(rugs) == 1
+                    else f"100% loss — {len(rugs)} rug pulls"
+                )
+                existing["message"] = RUG_INCINERATOR_BURN_TEXT
+                existing["detail"] = self._format_rug_alert_detail(rugs)
+                existing["url"] = incinerator
+                existing["reason"] = reason
+                # Keep first symbol/mint for back-compat fields.
+                if rugs:
+                    existing["symbol"] = rugs[0].get("symbol")
+                    existing["mint"] = rugs[0].get("mint")
+                    existing["net_pnl_sol"] = rugs[0].get("net_pnl_sol")
+                    existing["pnl_pct"] = rugs[0].get("pnl_pct", -1.0)
+                existing["updated_at"] = time.time()
+                return dict(existing)
+
+            payload = {
+                "id": str(uuid.uuid4()),
+                "created_at": time.time(),
+                "type": "rug_writeoff",
+                "title": "100% loss — rug pull",
+                "message": RUG_INCINERATOR_BURN_TEXT,
+                "detail": self._format_rug_alert_detail([item]),
+                "url": incinerator,
+                "mint": item.get("mint"),
+                "symbol": item.get("symbol"),
+                "net_pnl_sol": item.get("net_pnl_sol"),
+                "pnl_pct": item.get("pnl_pct", -1.0),
+                "reason": reason,
+                "rugs": [item],
+                "count": 1,
+            }
+            self._pending_user_alerts.append(payload)
+            return dict(payload)
+
+    def _block_mint_after_rug(self, position: Position, *, note: str = "") -> None:
+        """Permanent mint-block after rug writeoff. Preserves any existing ticker block."""
+        try:
+            from blocked_mints import (
+                block_mint_permanently,
+                is_symbol_permanently_blocked,
+            )
+
+            block_mint_permanently(
+                position.mint,
+                symbol=position.symbol or "",
+                reason="rug_pull",
+                note=note
+                or "auto rug writeoff — 100% loss; burn leftovers via Sol-Incinerator",
+            )
+            # Do not create new ticker blocks here (mint-primary). Keep CXMT/etc.
+            # symbol blocks if another path already installed them.
+            if position.symbol and is_symbol_permanently_blocked(position.symbol):
+                logger.info(
+                    "Ticker block already present for %s — left in place after rug",
+                    position.symbol,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to permanently block mint after rug writeoff: %s",
+                position.mint,
+            )
+
+    def _clear_exit_retry_state(self, mint: str) -> None:
+        self._pending_forced_exit.pop(mint, None)
+        self._instant_exit_pending_cycles.pop(mint, None)
+        self._stop_alert_state.pop(mint, None)
+        self._exit_impact_defer_counts.pop(mint, None)
+        self._forced_high_impact_exits.discard(mint)
+
     def _rank_movers(self, movers: List[MoverCandidate]) -> List[MoverCandidate]:
         """Rank scanner candidates: setup learner when active, else similarity."""
         if Config.SETUP_LEARNING_ENABLED and self.setup_learner.learning_active:
@@ -1225,6 +1513,8 @@ class TradingBot:
         pnl_pct = profile.pnl_pct if profile is not None else position.pnl_pct(
             position.entry_price
         )
+        # Always call record path (never skip); fee-assist mints are tagged inside
+        # setup_learner and excluded from WIN/LOSS centroids.
         self.setup_learner.record_completed_trade(
             features,
             net_pnl_sol,
@@ -1237,6 +1527,9 @@ class TradingBot:
     def _record_completed_trade_outcome(
         self, mint: str, symbol: str, net_pnl_sol: float, *, loss_features: Optional[dict] = None
     ) -> None:
+        from fee_assist_mints import is_fee_assist_mint
+
+        fee_assist = is_fee_assist_mint(mint)
         if net_pnl_sol < 0:
             if reentry_retry_manager.is_active():
                 handled = reentry_retry_manager.record_retry_outcome(
@@ -1255,13 +1548,18 @@ class TradingBot:
                         self._record_action(
                             f"Action required: allow/deny re-chase for {symbol}"
                         )
-            self.strategy.record_loss_reentry_cooldown(mint)
+            if not fee_assist:
+                self.strategy.record_loss_reentry_cooldown(mint)
         elif net_pnl_sol > 0 and reentry_retry_manager.is_active():
             if reentry_retry_manager.record_retry_outcome(
                 mint, symbol=symbol, won=True
             ):
                 self.strategy.clear_mint_blocks(mint)
                 self._record_action(f"Re-chase retry win on {symbol} — blocks cleared")
+        # Fee-assist / chart-volume legs: volume only — skip consecutive-loss pause
+        # and session W/L % (still recorded in journal/tax as fee_volume_assist).
+        if fee_assist:
+            return
         self.risk.record_trade_outcome(net_pnl_sol, dry_run=self.dry_run)
         record_session_exit(net_pnl_sol)
 
@@ -1303,7 +1601,12 @@ class TradingBot:
     def _executable_pnl_pct(
         self, position: Position, token_raw: int, quote: SwapQuote
     ) -> Optional[float]:
-        """Net SOL PnL % from a Jupiter sell quote (executable, not chart mark)."""
+        """Gross SOL PnL % from a Jupiter sell quote (price move, not fee drag).
+
+        Fees are excluded so round-trip fee drag cannot look like a -1.5% dump
+        and false-trigger stop loss while mark is green. Min-net gates use
+        fee-aware math separately via _quote_meets_min_net.
+        """
         if token_raw <= 0 or position.initial_token_amount_raw <= 0:
             return None
         sol_basis = entry_sol_basis(
@@ -1311,9 +1614,8 @@ class TradingBot:
         )
         if sol_basis <= 0:
             return None
-        fees = self._preview_sell_fees(position, None)
         _, sol_out = self._quote_sol_flow(quote)
-        return (sol_out - sol_basis - fees) / sol_basis
+        return (sol_out - sol_basis) / sol_basis
 
     def _near_instant_profit_threshold(
         self, position: Position, current_price: float
@@ -1331,10 +1633,16 @@ class TradingBot:
         current_price: float,
         executable_pnl_pct: Optional[float] = None,
     ) -> float:
-        """Worst (most negative) of mark, quote, and trough PnL."""
+        """Worst (most negative) of mark, quote, and trough PnL for stop checks.
+
+        When mark is green, quote is excluded (fee/impact drag ≠ dump). When mark
+        is in instant-profit territory, return mark so SL helpers stay inactive.
+        """
         mark = position.pnl_pct(current_price)
+        if mark >= Config.INSTANT_EXIT_3PCT:
+            return mark
         sources = [mark, position.trough_pnl_pct]
-        if executable_pnl_pct is not None:
+        if executable_pnl_pct is not None and mark <= 0:
             sources.append(executable_pnl_pct)
         return min(sources)
 
@@ -1450,8 +1758,8 @@ class TradingBot:
             else None
         )
         if executable_pnl_pct is not None:
+            # Peak may lead on quote; never poison trough with fee/impact drag.
             position.bump_peak_pnl(executable_pnl_pct)
-            position.bump_trough_pnl(executable_pnl_pct)
         return preview_quote, executable_pnl_pct
 
     def _position_monitor_interval(self, positions: List[Position]) -> float:
@@ -1523,6 +1831,17 @@ class TradingBot:
             prices = self._fetch_position_prices([position.mint])
             current_price = prices.get(position.mint)
         if not current_price:
+            # Missing mark with trough already at ~100% loss → rug writeoff.
+            if self._is_rug_loss(position, 0.0, allow_trough_alone=True):
+                logger.error(
+                    "RUG / 100%% loss (no mark, trough=%.2f%%) — auto writeoff %s",
+                    float(position.trough_pnl_pct or 0) * 100,
+                    position.symbol,
+                )
+                self.writeoff_position_books(
+                    position, reason="sell_rug_writeoff", current_price=0.0
+                )
+                return
             logger.warning(
                 "No price for open position %s (%s) — exit check skipped after retries",
                 position.symbol,
@@ -1541,6 +1860,19 @@ class TradingBot:
         if trough_price and trough_price > 0:
             position.update_peak_pnl(trough_price)
         position.update_peak_pnl(current_price)
+
+        # Prefer early rug writeoff on current mark (~100%) — not trough alone.
+        if self._is_rug_loss(position, current_price, allow_trough_alone=False):
+            logger.error(
+                "RUG / 100%% loss detected for %s mark=%.2f%% trough=%.2f%% — auto writeoff",
+                position.symbol,
+                position.pnl_pct(current_price) * 100,
+                float(position.trough_pnl_pct or 0) * 100,
+            )
+            self.writeoff_position_books(
+                position, reason="sell_rug_writeoff", current_price=0.0
+            )
+            return
 
         preview_quote: Optional[SwapQuote] = None
         executable_pnl_pct: Optional[float] = None
@@ -1569,6 +1901,18 @@ class TradingBot:
             preview_quote, executable_pnl_pct = self._refresh_executable_pnl(
                 position, token_raw, use_cache=not force_fresh_quote
             )
+            if self._is_rug_loss(
+                position, current_price, executable_pnl_pct, quote=preview_quote,
+                allow_trough_alone=False,
+            ):
+                logger.error(
+                    "RUG / 100%% loss (mark/quote) for %s — auto writeoff",
+                    position.symbol,
+                )
+                self.writeoff_position_books(
+                    position, reason="sell_rug_writeoff", current_price=0.0
+                )
+                return
             in_loss_zone = self._in_loss_zone(
                 position, current_price, executable_pnl_pct
             )
@@ -1699,6 +2043,20 @@ class TradingBot:
                 if is_instant:
                     self._track_instant_exit_pending(position, executed=False)
                 if forced:
+                    # After quote retries fail at ~100% loss → writeoff (no endless loop).
+                    if self._is_rug_loss(
+                        position, current_price, executable_pnl_pct, quote=None
+                    ):
+                        logger.error(
+                            "RUG writeoff: no Jupiter quote for %s at ~100%% loss",
+                            position.symbol,
+                        )
+                        self.writeoff_position_books(
+                            position,
+                            reason="sell_rug_writeoff",
+                            current_price=0.0,
+                        )
+                        return
                     self._track_forced_exit_pending(
                         position, executed=False, current_price=current_price
                     )
@@ -1714,6 +2072,13 @@ class TradingBot:
                     if refreshed:
                         current_price = refreshed
                         position.update_peak_pnl(current_price)
+                    if self._is_rug_loss(position, current_price):
+                        self.writeoff_position_books(
+                            position,
+                            reason="sell_rug_writeoff",
+                            current_price=0.0,
+                        )
+                        return
                     continue
                 logger.error(
                     "Sell stalled: no Jupiter quote for %s %s after %d cycle attempt(s)",
@@ -1733,11 +2098,14 @@ class TradingBot:
                     )
                     return
                 if exit_signal.signal_type == SignalType.SELL_INSTANT_PROFIT:
-                    logger.warning(
-                        "Instant exit min-net gate bypass failed for %s — forcing sell",
+                    # Do NOT force-sell: mark can be green while fill/fees are red.
+                    self._track_instant_exit_pending(position, executed=False)
+                    logger.info(
+                        "Instant hold (min-net): %s — waiting for fee-positive quote",
                         position.symbol,
                     )
-                elif forced:
+                    return
+                if forced:
                     logger.warning(
                         "Forced exit min-net gate bypass for %s %s",
                         position.symbol,
@@ -1810,6 +2178,19 @@ class TradingBot:
                 if is_instant:
                     self._track_instant_exit_pending(position, executed=False)
                 if forced:
+                    if self._is_rug_loss(
+                        position, current_price, executable_pnl_pct, quote=quote
+                    ):
+                        logger.error(
+                            "RUG writeoff: sell execute failed for %s at ~100%% loss",
+                            position.symbol,
+                        )
+                        self.writeoff_position_books(
+                            position,
+                            reason="sell_rug_writeoff",
+                            current_price=0.0,
+                        )
+                        return
                     self._track_forced_exit_pending(
                         position, executed=False, current_price=current_price
                     )
@@ -1825,6 +2206,13 @@ class TradingBot:
                     if refreshed:
                         current_price = refreshed
                         position.update_peak_pnl(current_price)
+                    if self._is_rug_loss(position, current_price):
+                        self.writeoff_position_books(
+                            position,
+                            reason="sell_rug_writeoff",
+                            current_price=0.0,
+                        )
+                        return
                     continue
                 logger.error(
                     "Sell stalled: execution failed for %s %s after %d attempt(s)",
@@ -1990,6 +2378,87 @@ class TradingBot:
             )
             return
 
+    def writeoff_position(
+        self,
+        position: Position,
+        reason: str = "sell_rug_writeoff",
+        *,
+        current_price: Optional[float] = None,
+    ) -> dict:
+        """Book a 100% accounting loss and clear the open book — no on-chain sell."""
+        return self.writeoff_position_books(
+            position,
+            reason=reason or "sell_rug_writeoff",
+            current_price=current_price,
+        )
+
+    def _persist_open_positions_safe(self, context: str) -> None:
+        try:
+            from position_store import save_open_positions
+
+            save_open_positions(
+                self.strategy.get_open_positions(),
+                dry_run=self.dry_run,
+            )
+        except Exception:
+            logger.exception("Failed to persist open positions (%s)", context)
+
+    def _reconcile_zero_balance_force_sell(
+        self,
+        position: Position,
+        *,
+        current_price: Optional[float] = None,
+        cause: str = "already_sold_or_zero_balance",
+    ) -> dict:
+        """Wallet ATA flat while books still open — writeoff rugs, else clear cleanly.
+
+        Instant Sell used to strip memory and return ``None`` (UI = Sell failed)
+        without persisting or booking. That left stuck Sell buttons / ghost books.
+        """
+        rug_price = current_price
+        if rug_price is None and float(position.trough_pnl_pct or 0) <= self._rug_threshold():
+            rug_price = 0.0
+        if rug_price is not None and self._is_rug_loss(
+            position, rug_price, quote=None
+        ):
+            logger.error(
+                "RUG writeoff after Instant/force sell flat wallet: %s (%s)",
+                position.symbol,
+                cause,
+            )
+            return self.writeoff_position_books(
+                position,
+                reason="sell_rug_writeoff",
+                current_price=0.0,
+            )
+
+        mint = position.mint
+        symbol = position.symbol
+        if any(p.mint == mint for p in self.strategy.positions):
+            self.strategy.positions = [
+                p for p in self.strategy.positions if p.mint != mint
+            ]
+            self._persist_open_positions_safe(f"zero_balance_clear:{symbol}")
+        self._last_force_sell_error = None
+        self._record_action(f"Cleared flat wallet position {symbol}: {cause}")
+        logger.warning(
+            "Force sell: wallet/book flat for %s — cleared open book (%s)",
+            symbol,
+            cause,
+        )
+        return {
+            "reason": cause,
+            "symbol": symbol,
+            "mint": mint,
+            "cleared": True,
+            "already_flat": True,
+            "writeoff": False,
+            "rug_pull": False,
+            "sol_out": 0.0,
+            "bookkeeping_only": True,
+            "signature": None,
+        }
+
     async def force_sell_position(
         self,
         position: Position,
@@ -1997,8 +2466,27 @@ class TradingBot:
         *,
         current_price: Optional[float] = None,
     ) -> Optional[dict]:
-        """Emergency 100% exit — bypasses exit evaluation and min-net profit gates."""
+        """Emergency 100% exit — bypasses exit evaluation and min-net profit gates.
+
+        Retries quote + execute like the forced monitor path so Instant Sell is
+        not a single-shot fail. Surfaces the last concrete error on
+        ``_last_force_sell_error`` for the API/UI.
+
+        Accounting-only reasons (``sell_rug_writeoff`` / ``sell_writeoff``) skip
+        Jupiter and book a 100% loss with zero SOL out.
+
+        Flat wallet (0 ATA) while books still open: rug writeoff when ~100% loss,
+        otherwise clear + persist (already sold / concurrent exit) so Instant Sell
+        never returns a silent fail with a stuck Sell button.
+        """
+        reason_l = (reason or "").strip().lower()
+        if reason_l in ("sell_rug_writeoff", "sell_writeoff", "sell_accounting_writeoff"):
+            return self.writeoff_position(
+                position, reason=reason or "sell_rug_writeoff", current_price=current_price
+            )
+
         assert self.solana and self.jupiter
+        self._last_force_sell_error = None
 
         if current_price is None:
             prices = self._fetch_position_prices([position.mint])
@@ -2014,18 +2502,134 @@ class TradingBot:
         token_raw = position.remaining_token_amount_raw
         if token_raw <= 0:
             logger.warning("Force sell: no tokens remaining for %s", position.symbol)
-            return None
+            return self._reconcile_zero_balance_force_sell(
+                position,
+                current_price=current_price,
+                cause="no_tokens_remaining",
+            )
 
         forced_signal = ExitSignal(SignalType.SELL_TIME)
-        quote = await self._fetch_sell_quote(position, token_raw, forced_signal)
-        if not quote:
-            logger.warning("Force sell: no quote for %s", position.symbol)
-            return None
+        quote: Optional[SwapQuote] = None
+        signature: Optional[str] = None
+        last_err = "sell_failed"
 
-        signature = await self._execute_sell(
-            position, token_raw, quote, forced_exit=True
-        )
-        if not signature:
+        for attempt in range(1, FORCED_SELL_QUOTE_RETRIES + 1):
+            # Refresh wallet amount each attempt (concurrent auto-sell may shrink it).
+            # Never inflate to full ATA — pre-existing bags stay untouched.
+            live_raw = position.remaining_token_amount_raw
+            if not self.dry_run:
+                wallet_raw = await self.solana.get_token_balance_raw(position.mint)
+                if wallet_raw is None:
+                    last_err = "token_balance_rpc_unknown"
+                    await asyncio.sleep(FORCED_SELL_QUOTE_BACKOFF_SEC)
+                    continue
+                if wallet_raw <= 0:
+                    return self._reconcile_zero_balance_force_sell(
+                        position,
+                        current_price=current_price,
+                        cause="already_sold_or_zero_balance",
+                    )
+                live_raw = self._cap_sell_to_position(position, live_raw, wallet_raw)
+            else:
+                live_raw = self._cap_sell_to_position(position, live_raw, None)
+            token_raw = live_raw
+            if token_raw <= 0:
+                return self._reconcile_zero_balance_force_sell(
+                    position,
+                    current_price=current_price,
+                    cause="sell_amount_zero",
+                )
+
+            quote = await self._fetch_sell_quote(
+                position, token_raw, forced_signal, use_cache=False
+            )
+            if not quote:
+                last_err = "no_sell_quote"
+                logger.warning(
+                    "Force sell: no quote for %s (attempt %d/%d)",
+                    position.symbol,
+                    attempt,
+                    FORCED_SELL_QUOTE_RETRIES,
+                )
+                await asyncio.sleep(FORCED_SELL_QUOTE_BACKOFF_SEC)
+                prices = self._fetch_position_prices([position.mint])
+                refreshed = prices.get(position.mint)
+                if refreshed:
+                    current_price = refreshed
+                    position.update_peak_pnl(current_price)
+                continue
+
+            signature = await self._execute_sell(
+                position, token_raw, quote, forced_exit=True
+            )
+            if signature:
+                break
+
+            last_err = self._last_execute_sell_error or "execute_sell_failed"
+            if last_err in ("no_token_balance", "already_sold_or_zero_balance"):
+                return self._reconcile_zero_balance_force_sell(
+                    position,
+                    current_price=current_price,
+                    cause=last_err,
+                )
+            logger.warning(
+                "Force sell: execute failed for %s (%s) attempt %d/%d — retrying",
+                position.symbol,
+                last_err,
+                attempt,
+                FORCED_SELL_QUOTE_RETRIES,
+            )
+            await asyncio.sleep(FORCED_SELL_QUOTE_BACKOFF_SEC)
+            prices = self._fetch_position_prices([position.mint])
+            refreshed = prices.get(position.mint)
+            if refreshed:
+                current_price = refreshed
+                position.update_peak_pnl(current_price)
+
+        if not signature or not quote:
+            self._last_force_sell_error = last_err
+            logger.error(
+                "Force sell stalled: %s after %d attempt(s) — %s",
+                position.symbol,
+                FORCED_SELL_QUOTE_RETRIES,
+                last_err,
+            )
+            try:
+                prices = self._fetch_position_prices([position.mint])
+                refreshed = prices.get(position.mint)
+                if refreshed is not None:
+                    current_price = refreshed
+                    position.update_peak_pnl(current_price)
+            except Exception:
+                pass
+            rug_price = current_price
+            if rug_price is None and float(position.trough_pnl_pct or 0) <= self._rug_threshold():
+                rug_price = 0.0
+            if rug_price is not None and self._is_rug_loss(
+                position, rug_price, quote=quote
+            ):
+                logger.error(
+                    "RUG writeoff after Instant/force sell fail: %s (%s)",
+                    position.symbol,
+                    last_err,
+                )
+                return self.writeoff_position_books(
+                    position,
+                    reason="sell_rug_writeoff",
+                    current_price=0.0,
+                )
+            if last_err == "no_sell_quote" and float(
+                position.trough_pnl_pct or 0
+            ) <= self._rug_threshold():
+                logger.error(
+                    "RUG writeoff (unsellable + ~100%% trough): %s",
+                    position.symbol,
+                )
+                return self.writeoff_position_books(
+                    position,
+                    reason="sell_rug_writeoff",
+                    current_price=0.0,
+                )
             return None
 
         pnl = position.pnl_pct(current_price)
@@ -2080,8 +2684,149 @@ class TradingBot:
                 else None
             ),
         )
+        self._persist_open_positions_safe(f"force_sell:{position.symbol}")
+        self._last_force_sell_error = None
         self._record_action(
             f"Force sold {position.symbol}: {reason} net {sell_journal.get('net_pnl_sol', 0):+.4f} SOL"
+        )
+        return sell_journal
+
+    def writeoff_position_books(
+        self,
+        position: Position,
+        *,
+        reason: str = "sell_rug_writeoff",
+        current_price: Optional[float] = None,
+    ) -> dict:
+        """Bookkeeping-only 100% loss close — no Jupiter swap / burn / on-chain tx.
+
+        Automatically journals tax/session/setup_learning as a full loss
+        (``sell_rug_writeoff``, net ≈ -size_sol, pnl_pct=-100%), clears the open
+        book, permanently mint-blocks the contract, and queues a one-shot UI
+        alert telling the user to burn leftovers via Sol-Incinerator.
+        Does not charge live-start fee and does not send any burn tx.
+        """
+        from config import SOL_MINT
+        from jupiter import SwapQuote
+        from trade_utils import build_sell_journal, format_trade_cli
+
+        self._last_force_sell_error = None
+        reason = (reason or "sell_rug_writeoff").strip() or "sell_rug_writeoff"
+        size_sol = float(position.size_sol or 0.0)
+        if size_sol <= 0:
+            size_sol = float(getattr(position, "sol_invested", 0.0) or 0.0)
+        token_raw = int(position.remaining_token_amount_raw or 0)
+        if token_raw <= 0:
+            token_raw = int(position.initial_token_amount_raw or 0)
+
+        # Zero SOL recovered → 100% loss on invested size.
+        exit_price = 0.0
+        if current_price is not None:
+            try:
+                exit_price = max(0.0, float(current_price))
+            except (TypeError, ValueError):
+                exit_price = 0.0
+        pnl_pct = -1.0
+        sol_price = self._sol_price_usd()
+        token_decimals = position.token_decimals
+        mint = position.mint
+        symbol = position.symbol
+
+        zero_quote = SwapQuote(
+            input_mint=position.mint,
+            output_mint=SOL_MINT,
+            in_amount=max(token_raw, 0),
+            out_amount=0,
+            price_impact_pct=100.0,
+            raw={"writeoff": True, "reason": reason, "rug_pull": True},
+            output_decimals=9,
+        )
+        profile = self.strategy.close_position(
+            position, exit_price, SignalType.SELL_TIME
+        )
+        # Force profile to report exact -100% for learning centroids.
+        try:
+            profile.pnl_pct = -1.0
+            profile.profitable = False
+        except Exception:
+            pass
+        # Do not seed dip re-entry for a written-off rug mint.
+        sell_journal = build_sell_journal(
+            position=position,
+            quote=zero_quote,
+            token_raw=token_raw,
+            current_price=exit_price,
+            pnl_pct=pnl_pct,
+            reason=reason,
+            signature="rug_writeoff_bookkeeping",
+            dry_run=self.dry_run,
+            remaining_token_raw=0,
+            sol_price_usd=sol_price,
+            token_decimals=token_decimals,
+            estimated_fees_sol=0.0,
+            actual_fees_sol=0.0,
+        )
+        # Force exact 100% loss bookkeeping regardless of fee rounding.
+        sell_journal["sol_out"] = 0.0
+        sell_journal["sol_in_basis"] = size_sol
+        sell_journal["gross_pnl_sol"] = -size_sol
+        sell_journal["net_pnl_sol"] = -size_sol
+        sell_journal["pnl_sol"] = -size_sol
+        sell_journal["pnl_pct"] = -1.0
+        sell_journal["mark_pnl_pct"] = -1.0
+        sell_journal["fill_pnl_pct"] = -1.0
+        sell_journal["pnl_usd"] = (
+            (-size_sol * sol_price) if sol_price else sell_journal.get("pnl_usd")
+        )
+        sell_journal["route_labels"] = ["bookkeeping_writeoff"]
+        sell_journal["cli_line"] = format_trade_cli(sell_journal)
+        sell_journal["bookkeeping_only"] = True
+        sell_journal["writeoff"] = True
+        sell_journal["rug_pull"] = True
+
+        self._annotate_max_loss_alert(sell_journal)
+        self.risk.journal_write(sell_journal)
+        pnl_tracker.record_from_journal(sell_journal)
+        if self.dry_run:
+            paper_session_manager.record_sell(0.0)
+        wallet = str(self.solana.public_key) if self.solana else ""
+        # Tax/journal always — live and paper; no fee charge on writeoff.
+        append_tax_row(sell_journal, wallet)
+        position.realized_net_pnl_sol += float(sell_journal.get("net_pnl_sol", 0.0))
+        self._record_setup_learning(
+            position,
+            profile,
+            net_pnl_sol=position.realized_net_pnl_sol,
+            exit_reason=sell_journal.get("reason"),
+        )
+        self._record_completed_trade_outcome(
+            position.mint,
+            position.symbol,
+            position.realized_net_pnl_sol,
+            loss_features=self._trade_loss_signature(position),
+        )
+        self._block_mint_after_rug(position)
+        self._clear_exit_retry_state(mint)
+        alert = self._enqueue_rug_writeoff_alert(position, sell_journal)
+        sell_journal["user_alert"] = alert
+        try:
+            from position_store import save_open_positions
+
+            save_open_positions(
+                self.strategy.get_open_positions(),
+                dry_run=self.dry_run,
+            )
+        except Exception:
+            logger.exception("Failed to persist open positions after rug writeoff")
+        self._record_action(
+            f"RUG writeoff {symbol}: {reason} net "
+            f"{sell_journal.get('net_pnl_sol', 0):+.4f} SOL (100% loss — burn via Sol-Incinerator)"
+        )
+        logger.error(
+            "Auto-booked 100%% loss writeoff for %s (%s) net=%.4f SOL",
+            symbol,
+            mint[:8],
+            float(sell_journal.get("net_pnl_sol") or 0.0),
         )
         return sell_journal
 
@@ -2494,6 +3239,13 @@ class TradingBot:
         if not self.should_run():
             return False
 
+        pre_wallet_raw: Optional[int] = None
+        if not self.dry_run:
+            try:
+                pre_wallet_raw = await self.solana.get_token_balance_raw(candidate.mint)
+            except Exception:
+                pre_wallet_raw = None
+
         signature = await self.jupiter.execute_quote(quote, self.solana)
         if not signature:
             self._record_action(f"Entry failed: swap execution for {candidate.symbol}")
@@ -2504,7 +3256,9 @@ class TradingBot:
             await asyncio.sleep(2)
             wallet_raw = await self.solana.get_token_balance_raw(candidate.mint)
             if wallet_raw is not None:
-                token_raw = wallet_raw
+                token_raw = self._bought_token_amount_raw(
+                    quote.out_amount, pre_wallet_raw, wallet_raw
+                )
             else:
                 logger.warning(
                     "Post-buy wallet balance unknown for %s — using quote out_amount",
@@ -2588,7 +3342,9 @@ class TradingBot:
         size_sol: Optional[float] = None,
     ) -> Optional[dict]:
         """Manual DCA into open WBTC only — averages cost basis on the same mint."""
+        self._last_dca_error = None
         if not is_wbtc_watchlist_mint(position.mint):
+            self._last_dca_error = "dca_only_supported_for_wbtc"
             logger.info("Manual DCA blocked: only WBTC supported (%s)", position.symbol)
             return None
         prices = self._fetch_position_prices([position.mint])
@@ -2599,11 +3355,15 @@ class TradingBot:
             reason="buy_dca_manual",
             size_sol=size_sol,
             skip_entry_eligibility=True,
+            ignore_max_buys=True,
         )
         if not ok:
+            if not self._last_dca_error:
+                self._last_dca_error = "dca_failed"
             return None
         prices = self._fetch_position_prices([position.mint])
         mark = prices.get(position.mint) or current_price or position.entry_price
+        self._last_dca_error = None
         return {
             "mint": position.mint,
             "symbol": position.symbol,
@@ -2625,14 +3385,25 @@ class TradingBot:
         reason: str = "buy_dca_3rd_ladder_timeout",
         size_sol: Optional[float] = None,
         skip_entry_eligibility: bool = False,
+        ignore_max_buys: bool = False,
     ) -> bool:
         """Scale into an open position (ladder-timeout or manual WBTC DCA)."""
         assert self.solana and self.jupiter
+        self._last_dca_error = None
 
         if not self.should_run():
+            self._last_dca_error = "bot_not_running"
             return False
-        if position.buy_count >= Config.MAX_BUYS_PER_MINT:
-            logger.info("DCA blocked: max buys (%d) for %s", Config.MAX_BUYS_PER_MINT, position.symbol)
+        # Manual WBTC DCA may average beyond the ladder auto-DCA buy cap.
+        if (not ignore_max_buys) and position.buy_count >= Config.MAX_BUYS_PER_MINT:
+            self._last_dca_error = (
+                f"max_buys_reached:{position.buy_count}/{Config.MAX_BUYS_PER_MINT}"
+            )
+            logger.info(
+                "DCA blocked: max buys (%d) for %s",
+                Config.MAX_BUYS_PER_MINT,
+                position.symbol,
+            )
             return False
 
         balance = await self.solana.get_balance()
@@ -2641,23 +3412,39 @@ class TradingBot:
         else:
             trade_size = self.risk.compute_trade_size(balance, dry_run=self.dry_run)
         if trade_size <= 0:
+            self._last_dca_error = "zero_trade_size"
             logger.info("DCA blocked: zero trade size for %s", position.symbol)
             return False
 
         if self.dry_run:
             if paper_session_manager.is_balance_insufficient_for_entry(trade_size):
+                self._last_dca_error = "insufficient_paper_balance"
                 logger.info("DCA blocked: insufficient paper balance for %s", position.symbol)
                 return False
+        elif balance < (Config.MIN_SOL_RESERVE + trade_size):
+            self._last_dca_error = (
+                f"insufficient_sol:need_{trade_size + Config.MIN_SOL_RESERVE:.4f}"
+                f"_have_{balance:.4f}"
+            )
+            logger.info(
+                "DCA blocked: insufficient SOL for %s (need %.4f incl reserve, have %.4f)",
+                position.symbol,
+                trade_size + Config.MIN_SOL_RESERVE,
+                balance,
+            )
+            return False
 
         ok, check_reason = self.risk.pre_trade_check(
             balance, price_impact_pct=0.0, dry_run=self.dry_run
         )
         if not ok:
+            self._last_dca_error = f"pre_trade_blocked:{check_reason}"
             logger.info("DCA blocked: %s", check_reason)
             return False
 
         quote = self._jupiter_buy(position.mint, trade_size)
         if not quote:
+            self._last_dca_error = "no_jupiter_buy_quote"
             logger.info("DCA blocked: no Jupiter route for %s", position.symbol)
             return False
 
@@ -2678,6 +3465,7 @@ class TradingBot:
                 ),
             )
             if not ok:
+                self._last_dca_error = f"entry_blocked:{check_reason}"
                 logger.info("DCA blocked: %s", check_reason)
                 return False
 
@@ -2688,26 +3476,53 @@ class TradingBot:
             max_impact_pct=Config.effective_max_entry_price_impact_pct(),
         )
         if not ok:
+            self._last_dca_error = f"pre_trade_blocked:{check_reason}"
             logger.info("DCA blocked: %s", check_reason)
             return False
 
-        signature = await self.jupiter.execute_quote(quote, self.solana)
+        try:
+            signature = await self.jupiter.execute_quote(quote, self.solana)
+        except Exception as exc:
+            self._last_dca_error = f"execute_quote_failed:{exc}"
+            logger.warning("DCA execute_quote failed for %s: %s", position.symbol, exc)
+            return False
         if not signature:
+            self._last_dca_error = (
+                getattr(self.jupiter, "last_error", None)
+                or "execute_quote_returned_none"
+            )
             return False
 
         token_raw = quote.out_amount
         if not self.dry_run:
-            await asyncio.sleep(2)
-            wallet_raw = await self.solana.get_token_balance_raw(position.mint)
-            if wallet_raw is not None:
-                added_raw = max(0, wallet_raw - position.remaining_token_amount_raw)
+            # Poll ASAP after confirm instead of a fixed 2s sleep — return as
+            # soon as wallet shows the new DCA tokens (cap ~2s).
+            book_before = int(position.remaining_token_amount_raw or 0)
+            wallet_raw = None
+            added_raw = 0
+            for delay in (0.0, 0.35, 0.5, 0.65, 0.5):
+                if delay:
+                    await asyncio.sleep(delay)
+                wallet_raw = await self.solana.get_token_balance_raw(position.mint)
+                if wallet_raw is None:
+                    continue
+                added_raw = max(0, int(wallet_raw) - book_before)
                 if added_raw > 0:
                     token_raw = added_raw
+                    break
             else:
-                logger.warning(
-                    "Post-DCA wallet balance unknown for %s — using quote out_amount",
-                    position.symbol,
-                )
+                if wallet_raw is not None:
+                    # Delta vs book = tokens from this DCA leg only (not full ATA).
+                    token_raw = self._bought_token_amount_raw(
+                        quote.out_amount,
+                        book_before,
+                        wallet_raw,
+                    )
+                else:
+                    logger.warning(
+                        "Post-DCA wallet balance unknown for %s — using quote out_amount",
+                        position.symbol,
+                    )
 
         sol_price = self._sol_price_usd()
         sol_in, _ = self._quote_sol_flow(quote)
@@ -2728,6 +3543,7 @@ class TradingBot:
             add_entry_price,
             mark_price=current_price,
         )
+        self._persist_open_positions_safe(f"dca:{position.symbol}")
 
         candidate = MoverCandidate(
             mint=position.mint,
@@ -2762,6 +3578,7 @@ class TradingBot:
         self._record_action(
             f"DCA buy #{position.buy_count} {position.symbol} — {sol_in:.4f} SOL @ ${add_entry_price:.8f}"
         )
+        self._last_dca_error = None
         return True
 
     def _scheduled_rotation_allowed(self) -> bool:
@@ -2899,6 +3716,13 @@ class TradingBot:
             self._record_action(f"Rotation skip: no Jupiter route for {symbol}")
             return False
 
+        pre_wallet_raw: Optional[int] = None
+        if not self.dry_run:
+            try:
+                pre_wallet_raw = await self.solana.get_token_balance_raw(mint)
+            except Exception:
+                pre_wallet_raw = None
+
         signature = await self.jupiter.execute_quote(quote, self.solana)
         if not signature:
             mark_skip(f"swap_failed:{mint[:8]}")
@@ -2910,7 +3734,9 @@ class TradingBot:
             await asyncio.sleep(2)
             wallet_raw = await self.solana.get_token_balance_raw(mint)
             if wallet_raw is not None:
-                token_raw = wallet_raw
+                token_raw = self._bought_token_amount_raw(
+                    quote.out_amount, pre_wallet_raw, wallet_raw
+                )
 
         sol_in, _ = self._quote_sol_flow(quote)
         if sol_in <= 0:

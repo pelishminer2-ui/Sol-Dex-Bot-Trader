@@ -187,6 +187,24 @@
   }
 
   /**
+   * If the extension is already connected to this origin, adopt pubkey sync
+   * (no popup). Used when Phantom UI shows Connected but the bot needs the key.
+   */
+  function adoptIfAlreadyConnected(name, provider) {
+    if (!provider) return null;
+    try {
+      const connected = provider.isConnected === true || !!provider.publicKey;
+      if (!connected) return null;
+      const pk = extractPubkey(null, provider);
+      if (!pk) return null;
+      saveStored(name, pk);
+      return { provider: name, pubkey: pk, adapter: provider };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
    * MUST be called directly from a click/tap handler (sync function preferred).
    * Invokes provider.connect() in this turn, then returns a Promise for pubkey.
    * Do NOT await waitForProviders / timers / fetch before this.
@@ -199,6 +217,8 @@
       err.installUrl = name === "phantom" ? PHANTOM_INSTALL : SOLFLARE_INSTALL;
       throw err;
     }
+    const adopted = adoptIfAlreadyConnected(name, provider);
+    if (adopted) return Promise.resolve(adopted);
     // First line that talks to the extension — must stay sync relative to click.
     const connectPromise = startConnect(provider);
     return Promise.resolve(connectPromise).then(function (resp) {
@@ -246,9 +266,12 @@
    * Returns null if not previously trusted / not injected yet.
    */
   async function tryEagerReconnect(name) {
-    await waitForProviders(800);
+    await waitForProviders(1200);
     const provider = resolveProvider(name === "solflare" ? "solflare" : "phantom");
-    if (!provider || typeof provider.connect !== "function") return null;
+    if (!provider) return null;
+    const adopted = adoptIfAlreadyConnected(name, provider);
+    if (adopted) return adopted;
+    if (typeof provider.connect !== "function") return null;
     try {
       const resp = await provider.connect({ onlyIfTrusted: true });
       const pk = extractPubkey(resp, provider);
@@ -256,7 +279,8 @@
       saveStored(name, pk);
       return { provider: name, pubkey: pk, adapter: provider };
     } catch (_) {
-      return null;
+      // Last chance: some builds expose publicKey after a rejected onlyIfTrusted.
+      return adoptIfAlreadyConnected(name, provider);
     }
   }
 
@@ -288,12 +312,14 @@
     STORAGE_KEY: STORAGE_KEY,
     PHANTOM_INSTALL: PHANTOM_INSTALL,
     SOLFLARE_INSTALL: SOLFLARE_INSTALL,
+    VERSION: "1.1.5",
     shortPubkey: shortPubkey,
     detectProviders: detectProviders,
     waitForProviders: waitForProviders,
     loadStored: loadStored,
     saveStored: saveStored,
     clearStored: clearStored,
+    adoptIfAlreadyConnected: adoptIfAlreadyConnected,
     beginUserConnect: beginUserConnect,
     connectProvider: connectProvider,
     tryEagerReconnect: tryEagerReconnect,

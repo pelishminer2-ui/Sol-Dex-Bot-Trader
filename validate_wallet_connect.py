@@ -62,9 +62,12 @@ def test_index_wires_connect_click():
     assert "solflareBtn.disabled = false" in html
     assert "phantomBtn.disabled = !providers.phantom" not in html
     # Cache bust must be bumped when wallet_connect.js changes
-    assert "wallet_connect.js?v=1.1.4" in html or re.search(
+    assert "wallet_connect.js?v=1.1.5" in html or re.search(
         r"wallet_connect\.js\?v=1\.\d+\.\d+", html
     ), "wallet_connect.js cache query missing"
+    assert "adoptIfAlreadyConnected" in (PROJECT_ROOT / "static" / "wallet_connect.js").read_text(
+        encoding="utf-8"
+    )
     print("PASS: index.html Connect handlers call beginUserConnect/connect()")
 
 

@@ -773,6 +773,17 @@ class BotManager:
             pumpfun_scan_status = bot.last_pumpfun_scan_status if bot else "idle"
             gmgn_scan_status = bot.last_gmgn_scan_status if bot else "idle"
             dexscreener_count = bot.last_dexscreener_count if bot else None
+            try:
+                from birdeye_scanner import (
+                    get_last_birdeye_auth_status,
+                    get_last_birdeye_error,
+                )
+
+                birdeye_auth_status = get_last_birdeye_auth_status() if bot else "idle"
+                birdeye_last_error = get_last_birdeye_error() if bot else None
+            except Exception:
+                birdeye_auth_status = "idle"
+                birdeye_last_error = None
             zero_streak_dex = bot.zero_streak_dexscreener if bot else 0
             zero_streak_pump = bot.zero_streak_pumpfun if bot else 0
             zero_streak_birdeye = bot.zero_streak_birdeye if bot else 0
@@ -975,6 +986,8 @@ class BotManager:
             "birdeye_scan_count": birdeye_count,
             "birdeye_count": birdeye_count,
             "birdeye_scan_status": birdeye_scan_status,
+            "birdeye_auth_status": birdeye_auth_status,
+            "birdeye_last_error": birdeye_last_error,
             "birdeye_trending_top5": (
                 getattr(bot, "birdeye_trending_top5_status", None) or {}
             ),
@@ -1094,6 +1107,13 @@ class BotManager:
         result["top_gainers"] = self.get_top_gainers(
             trade_size_sol=computed_trade_size,
         )
+        # One-shot user alerts (rug writeoff / incinerator notice).
+        try:
+            result["pending_user_alerts"] = (
+                bot.get_pending_user_alerts() if bot else []
+            )
+        except Exception:
+            result["pending_user_alerts"] = []
         bot_started_at = self._resolve_bot_started_at(running)
         result["bot_started_at"] = bot_started_at
         result["started_at"] = bot_started_at
@@ -1437,15 +1457,29 @@ class BotManager:
                 except Exception as exc:
                     return {"ok": False, "error": str(exc)}
                 if not journal:
-                    return {"ok": False, "error": "sell_failed"}
+                    err = (
+                        getattr(bot, "_last_force_sell_error", None)
+                        or getattr(bot, "_last_execute_sell_error", None)
+                        or "sell_failed"
+                    )
+                    return {"ok": False, "error": str(err)}
                 return {
                     "ok": True,
                     "mint": position.mint,
                     "symbol": position.symbol,
-                    "reason": reason,
+                    "reason": journal.get("reason") or reason,
                     "pnl_pct": journal.get("pnl_pct"),
+                    "mark_pnl_pct": journal.get("mark_pnl_pct"),
+                    "fill_pnl_pct": journal.get("fill_pnl_pct"),
                     "net_pnl_sol": journal.get("net_pnl_sol"),
                     "sol_out": journal.get("sol_out"),
+                    "signature": journal.get("signature"),
+                    "writeoff": bool(journal.get("writeoff")),
+                    "bookkeeping_only": bool(journal.get("bookkeeping_only")),
+                    "already_flat": bool(journal.get("already_flat")),
+                    "cleared": bool(journal.get("cleared")),
+                    "rug_pull": bool(journal.get("rug_pull")),
+                    "user_alert": journal.get("user_alert"),
                     "source": "running_bot",
                 }
 
@@ -1483,15 +1517,23 @@ class BotManager:
                 position.entry_time = float(buy.get("timestamp") or time.time())
                 journal = await bot.force_sell_position(position, reason=reason)
                 if not journal:
-                    return {"ok": False, "error": "sell_failed"}
+                    err = (
+                        getattr(bot, "_last_force_sell_error", None)
+                        or getattr(bot, "_last_execute_sell_error", None)
+                        or "sell_failed"
+                    )
+                    return {"ok": False, "error": str(err)}
                 return {
                     "ok": True,
                     "mint": buy["mint"],
                     "symbol": buy.get("symbol"),
                     "reason": reason,
                     "pnl_pct": journal.get("pnl_pct"),
+                    "mark_pnl_pct": journal.get("mark_pnl_pct"),
+                    "fill_pnl_pct": journal.get("fill_pnl_pct"),
                     "net_pnl_sol": journal.get("net_pnl_sol"),
                     "sol_out": journal.get("sol_out"),
+                    "signature": journal.get("signature"),
                     "source": "journal_bootstrap",
                 }
             finally:
@@ -1503,6 +1545,59 @@ class BotManager:
             return loop.run_until_complete(_bootstrap_sell())
         finally:
             loop.close()
+
+    def writeoff_position(
+        self,
+        *,
+        mint: Optional[str] = None,
+        symbol: Optional[str] = None,
+        reason: str = "sell_rug_writeoff",
+    ) -> Dict[str, Any]:
+        """Bookkeeping-only 100% loss clear — no on-chain swap/burn."""
+        target_mint = (mint or "").strip() or None
+        target_symbol = (symbol or "").strip() or None
+        reason = (reason or "sell_rug_writeoff").strip() or "sell_rug_writeoff"
+
+        with self._lock:
+            bot = self._bot
+            running = bot is not None and self._bot_loop_active(bot)
+
+        if not running or not bot:
+            return {"ok": False, "error": "bot_not_running"}
+
+        positions = bot.strategy.get_open_positions()
+        position = None
+        for pos in positions:
+            if target_mint and pos.mint == target_mint:
+                position = pos
+                break
+            if target_symbol and pos.symbol.upper() == target_symbol.upper():
+                position = pos
+                break
+        if not position:
+            return {"ok": False, "error": "no_open_position_found"}
+
+        try:
+            journal = bot.writeoff_position_books(position, reason=reason)
+        except Exception as exc:
+            logger.exception("writeoff_position failed")
+            return {"ok": False, "error": str(exc) or "writeoff_failed"}
+
+        return {
+            "ok": True,
+            "mint": position.mint,
+            "symbol": position.symbol,
+            "reason": reason,
+            "pnl_pct": journal.get("pnl_pct"),
+            "net_pnl_sol": journal.get("net_pnl_sol"),
+            "sol_out": journal.get("sol_out"),
+            "signature": journal.get("signature"),
+            "bookkeeping_only": True,
+            "writeoff": True,
+            "rug_pull": True,
+            "user_alert": journal.get("user_alert"),
+            "source": "running_bot",
+        }
 
     def dca_position(
         self,
@@ -1547,9 +1642,10 @@ class BotManager:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
         if not result:
+            err = getattr(bot, "_last_dca_error", None) or "dca_failed"
             return {
                 "ok": False,
-                "error": "dca_failed",
+                "error": str(err),
                 "mint": position.mint,
                 "symbol": position.symbol,
             }
@@ -1732,6 +1828,13 @@ class BotManager:
         }
 
     def update_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if payload.get("reset_consecutive_loss_pause"):
+            payload = {k: v for k, v in payload.items() if k != "reset_consecutive_loss_pause"}
+            with self._lock:
+                bot = self._bot
+            if bot and hasattr(bot, "risk"):
+                bot.risk.reset_consecutive_loss_pause()
+            logger.info("Consecutive loss pause cleared via config update")
         if "stop_loss_pct" in payload and payload["stop_loss_pct"] is not None:
             payload = dict(payload)
             payload["stop_loss_pct"] = normalize_stop_loss_pct(float(payload["stop_loss_pct"]))
@@ -1777,6 +1880,7 @@ class BotManager:
             "spike_min_liquidity_usd": "SPIKE_MIN_LIQUIDITY_USD",
             "gmgn_min_liquidity_usd": "GMGN_MIN_LIQUIDITY_USD",
             "reentry_retry_max_attempts": "REENTRY_RETRY_MAX_ATTEMPTS",
+            "max_consecutive_losses": "MAX_CONSECUTIVE_LOSSES",
         }
         updates = {}
         for api_key, config_key in mapping.items():
@@ -1908,6 +2012,31 @@ class BotManager:
 
         return reentry_retry_manager.get_pending_actions()
 
+    def get_pending_user_alerts(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            bot = self._bot
+        if not bot:
+            return []
+        try:
+            return bot.get_pending_user_alerts()
+        except Exception:
+            return []
+
+    def ack_user_alert(self, alert_id: str) -> Dict[str, Any]:
+        aid = (alert_id or "").strip()
+        if not aid:
+            return {"ok": False, "error": "alert_id is required"}
+        with self._lock:
+            bot = self._bot
+        if not bot:
+            return {"ok": False, "error": "bot_not_running", "acked": False}
+        acked = bool(bot.ack_user_alert(aid))
+        return {
+            "ok": True,
+            "acked": acked,
+            "pending_user_alerts": bot.get_pending_user_alerts(),
+        }
+
     def decide_reentry_action(
         self,
         mint: str,
@@ -1976,9 +2105,14 @@ class BotManager:
     def _mint_block_snapshot(
         self, mint: str, *, symbol: str = "", name: str = ""
     ) -> Dict[str, Any]:
+        from blocked_mints import is_mint_permanently_blocked, is_symbol_permanently_blocked
         from stock_token_filter import is_stock_related_token
 
         blocks: List[str] = []
+        if is_mint_permanently_blocked(mint):
+            blocks.append("permanent_block")
+        if is_symbol_permanently_blocked(symbol):
+            blocks.append("permanent_ticker_block")
         if is_stock_related_token(mint=mint, symbol=symbol, name=name):
             blocks.append("stock_filter")
         with self._lock:

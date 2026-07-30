@@ -6,9 +6,27 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <!-- cache-sync: 2026-07-21T09:47:00-04:00 wallet-connect-sync-gesture-v114 -->
+  <!-- cache-sync: 2026-07-27T00:35:00-04:00 rug-writeoff-incinerator-alert-v116 -->
   <title>Solana Mover Trading Bot</title>
-  <script src="/static/wallet_connect.js?v=1.1.4"></script>
+  <script src="/static/wallet_connect.js?v=1.1.5" onerror="window.__solDexWcScriptErr=1"></script>
+  <script>
+  /* Fallback if primary tag 404'd / SW poisoned Response — keeps Connect working. */
+  (function () {
+    if (window.SolDexWalletConnect) return;
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", "/static/wallet_connect.js?v=1.1.5&_=" + Date.now(), false);
+      xhr.send(null);
+      if (xhr.status >= 200 && xhr.status < 300 && xhr.responseText) {
+        var s = document.createElement("script");
+        s.text = xhr.responseText;
+        document.documentElement.appendChild(s);
+      }
+    } catch (e) {
+      try { console.error("[SolDex] wallet_connect fallback failed", e); } catch (_) {}
+    }
+  })();
+  </script>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#14f195">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -664,6 +682,64 @@
       white-space: nowrap;
     }
     .pending-action-similar input { margin: 0; }
+    .user-alert-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(8, 12, 20, 0.72);
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+    }
+    .user-alert-overlay.visible { display: flex; }
+    .user-alert-dialog {
+      width: min(420px, 100%);
+      background: var(--panel, #121820);
+      border: 1px solid var(--border, #2a3544);
+      border-radius: 10px;
+      padding: 1.15rem 1.25rem 1rem;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+      color: var(--text, #e8eef6);
+    }
+    .user-alert-dialog h3 {
+      margin: 0 0 0.55rem;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #f87171;
+    }
+    .user-alert-dialog p {
+      margin: 0 0 0.65rem;
+      font-size: 0.9rem;
+      line-height: 1.45;
+      color: var(--text, #e8eef6);
+    }
+    .user-alert-dialog .user-alert-burn { font-weight: 600; }
+    .user-alert-dialog .user-alert-detail {
+      white-space: pre-line;
+    }
+    .user-alert-dialog .user-alert-rug-list {
+      margin: 0 0 0.65rem;
+      padding-left: 1.1rem;
+      font-size: 0.88rem;
+      line-height: 1.45;
+      color: var(--text, #e8eef6);
+      max-height: 10rem;
+      overflow-y: auto;
+    }
+    .user-alert-dialog .user-alert-rug-list li {
+      margin: 0.15rem 0;
+    }
+    .user-alert-dialog a {
+      color: var(--accent, #3b82f6);
+      word-break: break-all;
+    }
+    .user-alert-actions {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+      margin-top: 0.85rem;
+    }
     .btn-allow {
       background: rgba(46, 213, 115, 0.2);
       color: #2ed573;
@@ -783,6 +859,11 @@
     }
     .btn-dca-position:hover { opacity: 0.85; background: rgba(34, 197, 94, 0.12); }
     .btn-dca-position:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-dca-position.dca-busy {
+      opacity: 0.85;
+      cursor: wait;
+      min-width: 3.2rem;
+    }
     .unified-pnl-cell .pnl-stat-grid { margin-top: 0; }
     .unified-recent-label { margin-top: 0.65rem; margin-bottom: 0.25rem; }
     @media (max-width: 900px) {
@@ -1394,11 +1475,15 @@
 
           <div class="card">
             <h2>Tax Bookkeeping (Live Only)</h2>
-            <p class="compact-hint" style="margin-bottom:0.5rem">One row per live sell. Paper trades excluded.</p>
+            <p class="compact-hint" style="margin-bottom:0.5rem">One row per live sell. Paper trades excluded. Fee/volume assists tagged separately and excluded from W/L totals.</p>
             <div class="row" style="margin-bottom:0.75rem; flex-wrap:wrap; gap:1rem">
               <div>
                 <div class="stat-label">Tax Records</div>
                 <div class="stat" id="taxRecordCount">0</div>
+              </div>
+              <div>
+                <div class="stat-label">Wins / Losses</div>
+                <div class="stat" id="taxWinLossCount" style="font-size:0.95rem">—</div>
               </div>
               <div>
                 <div class="stat-label">All-Time Totals</div>
@@ -1655,6 +1740,8 @@
         : (t.action || "sell").toUpperCase();
       const pnlSol = t.net_pnl_sol != null ? t.net_pnl_sol : t.pnl_sol;
       const pnlPct = t.pnl_pct;
+      const markPct = t.mark_pnl_pct;
+      const fillPct = t.fill_pnl_pct;
       let line = action + " " + (t.symbol || "?");
       if (t.sol_out != null) line += " " + fmtSol(t.sol_out) + " SOL out";
       if (pnlSol != null) {
@@ -1664,6 +1751,15 @@
       if (pnlPct != null) {
         const sign = pnlPct >= 0 ? "+" : "";
         line += " (" + sign + (pnlPct * 100).toFixed(2) + "%)";
+        if (
+          markPct != null && fillPct != null &&
+          Math.abs(Number(markPct) - Number(fillPct)) >= 0.01
+        ) {
+          const ms = markPct >= 0 ? "+" : "";
+          const fs = fillPct >= 0 ? "+" : "";
+          line += " [fill " + fs + (fillPct * 100).toFixed(2) + "%, mark " +
+            ms + (markPct * 100).toFixed(2) + "%]";
+        }
       }
       if (t.reason) line += " — " + t.reason;
       return line + paper;
@@ -1787,8 +1883,8 @@
       entry_momentum_pct: 0.0075,
       take_profit_levels: [],
       take_profit_portions: [],
-      instant_exit_3pct: 0.0325,
-      instant_profit_exit_pct: 0.05,
+      instant_exit_3pct: 0.055,
+      instant_profit_exit_pct: 0.08,
       stop_loss_pct: 0.015,
       loss_reentry_cooldown_minutes: 90,
       loss_reentry_repeat_cooldown_minutes: 180,
@@ -2031,9 +2127,25 @@
      * Sync entry from click: beginUserConnect() calls provider.connect() in this turn.
      * Never async/await before that — browsers drop user gesture → no Phantom popup.
      */
+    function walletConnectModuleMissingAlert() {
+      const scriptErr = window.__solDexWcScriptErr ? " script onerror" : "";
+      alert(
+        "Wallet connect module failed to load" + scriptErr + ".\n\n" +
+        "Hard-refresh (Ctrl+Shift+R), then click Connect again.\n" +
+        "If it persists: open DevTools → Network and confirm /static/wallet_connect.js is 200."
+      );
+      try {
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function (regs) {
+            regs.forEach(function (r) { r.unregister(); });
+          });
+        }
+      } catch (_) {}
+    }
+
     function connectBrowserWallet(name) {
       if (!window.SolDexWalletConnect) {
-        alert("Wallet connect module failed to load. Hard-refresh (Ctrl+Shift+R).");
+        walletConnectModuleMissingAlert();
         return;
       }
       const menu = document.getElementById("walletConnectMenu");
@@ -2062,7 +2174,7 @@
         try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
       }
       if (!window.SolDexWalletConnect) {
-        alert("Wallet connect module failed to load. Hard-refresh (Ctrl+Shift+R).");
+        walletConnectModuleMissingAlert();
         return;
       }
       const menu = document.getElementById("walletConnectMenu");
@@ -2139,8 +2251,11 @@
         data = {};
       }
       if (!res.ok) {
-        const err = new Error(data.error || res.statusText || "Request failed");
-        err.code = data.error_code || null;
+        const detail = data.error || data.message || data.reason || "";
+        const err = new Error(
+          detail || ("HTTP " + res.status + (res.statusText ? " " + res.statusText : ""))
+        );
+        err.code = data.error_code || data.error || null;
         throw err;
       }
       return data;
@@ -2879,12 +2994,19 @@
       return String(base);
     }
 
-    function formatOpenTradesCount(count, max, companionSlot) {
-      const maxPos = max != null ? max : 1;
-      if (companionSlot || maxPos > 1) {
-        return count + "/" + maxPos;
+    function formatOpenTradesCount(count, max, companionSlot, tradingCount, tradingMax) {
+      const total = count != null ? count : 0;
+      const tCount = tradingCount != null ? tradingCount : total;
+      const tMax = tradingMax != null ? tradingMax : (max != null ? max : 1);
+      const rot = Math.max(0, total - tCount);
+      // Rotation never fills the memecoin companion slot — show trading capacity clearly.
+      if (rot > 0) {
+        return tCount + "/" + tMax + " + " + rot + " rot";
       }
-      return String(count);
+      if (companionSlot || tMax > 1) {
+        return tCount + "/" + tMax;
+      }
+      return String(tCount);
     }
 
     function updateSetupSummaryLine(cfg) {
@@ -3064,12 +3186,16 @@
       const labels = { dexscreener: "DexScreener", pumpfun: "pump.fun", birdeye: "Birdeye", gmgn: "GMGN" };
       for (const [key, label] of Object.entries(labels)) {
         if (enabled[key] === false) continue;
-        if (key === "birdeye" && s.birdeye_scan_status === "fallback") continue;
+        if (key === "birdeye" && (s.birdeye_scan_status === "fallback" || s.birdeye_auth_status === "cu_limit")) continue;
         if (key === "pumpfun" && (s.pumpfun_scan_status === "fallback" || s.pumpfun_scan_status === "add_key")) continue;
         if (key === "gmgn" && s.gmgn_scan_status === "failed") continue;
         const streak = streaks[key] || 0;
         if (streak >= ZERO_WARN_THRESHOLD) {
-          warnings.push(label + " returned 0 movers for " + streak + " consecutive scans");
+          if (key === "birdeye") {
+            warnings.push(label + " returned 0 movers for " + streak + " consecutive scans (often CU/rate limit — GMGN/Dex backup active)");
+          } else {
+            warnings.push(label + " returned 0 movers for " + streak + " consecutive scans");
+          }
         }
       }
       if (!warnings.length) {
@@ -3079,7 +3205,7 @@
       }
       el.style.display = "block";
       el.innerHTML = "<strong>Scanner warning:</strong> " + warnings.join("; ") +
-        ". Check API keys, filters, or network.";
+        ". Check API keys, filters, network, or Birdeye compute-unit quota.";
     }
 
     function updateStatusUI(s) {
@@ -3516,7 +3642,7 @@
 
     function formatInstantExits(cfg) {
       const pct3 = cfg && cfg.instant_exit_3pct != null
-        ? (cfg.instant_exit_3pct * 100).toFixed(2) : "3.25";
+        ? (cfg.instant_exit_3pct * 100).toFixed(2) : "5.50";
       const pct5 = cfg && cfg.instant_profit_exit_pct != null
         ? Math.round(cfg.instant_profit_exit_pct * 100) : 5;
       const enabled = !cfg || cfg.instant_profit_exit_enabled !== false;
@@ -4003,6 +4129,9 @@
       return '<span class="badge badge-dex">dex</span>';
     }
 
+    // Survives position-panel re-renders during a long Jupiter DCA round-trip.
+    const dcaInFlightMints = Object.create(null);
+
     function renderTopCandidates(candidates, status, candidateLimit) {
       const body = document.getElementById("topCandidatesBody");
       if (!body) return;
@@ -4081,11 +4210,12 @@
       const symAttr = String(pos.symbol || "?").replace(/"/g, "&quot;");
       const isWbtc = String(pos.mint || "") === "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh"
         || String(pos.symbol || "").toUpperCase() === "WBTC";
+      const dcaBusy = !!(pos.mint && dcaInFlightMints[pos.mint]);
       const dcaBtn = (isWbtc && pos.mint)
-        ? `<button type="button" class="btn-dca-position" data-mint="${mintAttr}" data-symbol="${symAttr}" title="Dollar-cost average more into WBTC">DCA</button>`
+        ? `<button type="button" class="btn-dca-position${dcaBusy ? " dca-busy" : ""}" data-mint="${mintAttr}" data-symbol="${symAttr}" data-dcaing="${dcaBusy ? "1" : "0"}" title="${dcaBusy ? "DCA in progress — swap continues until confirmed" : "Dollar-cost average more into WBTC"}"${dcaBusy ? " disabled" : ""}>${dcaBusy ? "DCA…" : "DCA"}</button>`
         : "";
       const sellBtn = pos.mint
-        ? `<button type="button" class="btn-sell-position" data-mint="${mintAttr}" data-symbol="${symAttr}" title="Manual sell ${symAttr}">Sell</button>`
+        ? `<button type="button" class="btn-sell-position" data-mint="${mintAttr}" data-symbol="${symAttr}" title="Instant sell ${symAttr} now">Sell</button>`
         : "";
       return `
         <div class="unified-position-row">
@@ -4116,27 +4246,88 @@
       });
     }
 
+    function formatSellError(err) {
+      const code = (err && (err.code || err.message)) ? String(err.code || err.message) : String(err || "sell_failed");
+      const map = {
+        already_sold_or_zero_balance: "Already sold or wallet balance is 0 (cleared if stuck on books).",
+        no_open_position_found: "No open position found — already closed.",
+        no_tokens_remaining: "No tokens left on the book for this position.",
+        sell_amount_zero: "Sell amount is 0 after wallet/book cap.",
+        no_sell_quote: "Jupiter returned no sell quote — retry or check liquidity.",
+        token_balance_rpc_unknown: "Could not read token balance from RPC — retry.",
+        execute_sell_failed: "Sell transaction failed to execute — check logs and retry.",
+        no_token_balance: "Wallet token balance is 0.",
+        sell_failed: "Sell failed.",
+      };
+      if (map[code]) return map[code];
+      const msg = (err && err.message) ? String(err.message) : code;
+      return map[msg] || msg;
+    }
+
     async function manualSellPosition(mint, symbol, btn) {
       const sym = symbol || (mint ? mint.slice(0, 8) : "?");
       if (!mint) {
         alert("Cannot sell: missing mint");
         return;
       }
-      if (!confirm("Sell " + sym + " now?")) return;
-      if (btn) btn.disabled = true;
+      // Instant sell: fire immediately on click — no confirm dialog / no deferrals.
+      if (btn) {
+        if (btn.dataset.selling === "1") return;
+        btn.dataset.selling = "1";
+        btn.disabled = true;
+      }
       try {
         const result = await api("/api/positions/sell", {
           method: "POST",
           body: JSON.stringify({ mint: mint, symbol: symbol || undefined, reason: "sell_manual" }),
         });
         if (!result.ok) {
-          throw new Error(result.error || "sell_failed");
+          const err = new Error(result.error || "sell_failed");
+          err.code = result.error || "sell_failed";
+          throw err;
         }
-        logActivity("Manual sell: " + sym + (result.pnl_pct != null ? " (" + pct(result.pnl_pct) + ")" : ""));
+        if (result.writeoff || result.rug_pull || (result.reason || "").indexOf("rug") >= 0) {
+          logActivity(
+            "Rug writeoff: " + sym +
+            (result.net_pnl_sol != null ? " (" + Number(result.net_pnl_sol).toFixed(4) + " SOL)" : "") +
+            " — Use Sol-Incinerator pro to burn."
+          );
+          if (result.user_alert) showUserAlert(result.user_alert);
+        } else if (result.already_flat || result.cleared) {
+          const msg =
+            "Already flat / cleared: " + sym +
+            " (wallet 0 or concurrent exit — removed from open trades).";
+          logActivity(msg);
+          alert(msg);
+        } else {
+          logActivity("Manual sell: " + sym + (result.pnl_pct != null ? " (" + pct(result.pnl_pct) + ")" : ""));
+        }
         await refresh();
       } catch (e) {
-        alert("Sell failed: " + (e.message || e));
-        if (btn) btn.disabled = false;
+        const detail = formatSellError(e);
+        alert("Sell failed: " + detail);
+      } finally {
+        if (btn) {
+          btn.dataset.selling = "0";
+          btn.disabled = false;
+        }
+      }
+    }
+
+    function setDcaButtonBusy(btn, busy) {
+      if (!btn) return;
+      if (busy) {
+        btn.dataset.dcaing = "1";
+        btn.disabled = true;
+        btn.textContent = "DCA…";
+        btn.title = "DCA in progress — swap continues until confirmed";
+        btn.classList.add("dca-busy");
+      } else {
+        btn.dataset.dcaing = "0";
+        btn.disabled = false;
+        btn.textContent = "DCA";
+        btn.title = "Dollar-cost average more into WBTC";
+        btn.classList.remove("dca-busy");
       }
     }
 
@@ -4146,13 +4337,18 @@
         alert("Cannot DCA: missing mint");
         return;
       }
+      if (dcaInFlightMints[mint] || (btn && btn.dataset.dcaing === "1")) return;
       const sizeEl = document.getElementById("tradeSize");
       const sizeSol = sizeEl ? parseFloat(sizeEl.value) : NaN;
       const sizeTxt = Number.isFinite(sizeSol) && sizeSol > 0
         ? sizeSol.toFixed(2) + " SOL"
         : "computed trade size";
       if (!confirm("DCA buy more " + sym + " with " + sizeTxt + " into the same position?")) return;
-      if (btn) btn.disabled = true;
+      // Mark in-flight before the slow Jupiter round-trip so status polls keep
+      // showing "DCA…" and the await continues until the swap finishes.
+      dcaInFlightMints[mint] = true;
+      setDcaButtonBusy(btn, true);
+      logActivity("DCA in progress: " + sym + " · " + sizeTxt + " — waiting for Jupiter confirm…");
       try {
         const body = { mint: mint, symbol: symbol || undefined };
         if (Number.isFinite(sizeSol) && sizeSol > 0) body.size_sol = sizeSol;
@@ -4167,21 +4363,40 @@
         const sz = result.size_sol != null ? " · size " + Number(result.size_sol).toFixed(4) + " SOL" : "";
         const pnlTxt = result.pnl_pct != null ? " · " + pct(result.pnl_pct) : "";
         logActivity("DCA " + sym + " buy #" + (result.buy_count != null ? result.buy_count : "?") + avg + sz + pnlTxt);
-        await refresh();
       } catch (e) {
         alert("DCA failed: " + (e.message || e));
-        if (btn) btn.disabled = false;
+      } finally {
+        delete dcaInFlightMints[mint];
+        if (btn && document.body.contains(btn)) setDcaButtonBusy(btn, false);
+      }
+      try {
+        await refresh();
+      } catch (_) {
+        /* refresh best-effort; DCA already finished or failed above */
       }
     }
 
-    function renderPositions(positions, maxPositions, watchlistMints, companionSlot) {
+    function renderPositions(positions, maxPositions, watchlistMints, companionSlot, tradingCount, tradingMax) {
       const el = document.getElementById("positionPanel");
       const countEl = document.getElementById("positionsCount");
       const openCountEl = document.getElementById("openTradesCount");
       const count = positions ? positions.length : 0;
       const max = maxPositions != null ? maxPositions : 1;
-      const headerCount = formatOpenTradesCount(count, max, companionSlot);
-      if (countEl) countEl.textContent = `${count}/${max}`;
+      const headerCount = formatOpenTradesCount(
+        count,
+        max,
+        companionSlot,
+        tradingCount,
+        tradingMax != null ? tradingMax : max
+      );
+      if (countEl) {
+        const tCount = tradingCount != null ? tradingCount : count;
+        const tMax = tradingMax != null ? tradingMax : max;
+        const rot = Math.max(0, count - tCount);
+        countEl.textContent = rot > 0
+          ? (tCount + "/" + tMax + " + " + rot + " rot")
+          : (tCount + "/" + tMax);
+      }
       if (openCountEl) openCountEl.textContent = headerCount;
       if (!count) {
         el.className = "unified-positions empty";
@@ -4262,6 +4477,20 @@
         document.getElementById(id).disabled = !hasRecords;
       });
 
+      const wlEl = document.getElementById("taxWinLossCount");
+      if (wlEl) {
+        if (hasRecords) {
+          const wins = data.win_count ?? 0;
+          const losses = data.loss_count ?? 0;
+          const feeN = data.fee_assist_count ?? 0;
+          wlEl.innerHTML =
+            `<span class="positive">W ${wins}</span> / <span class="negative">L ${losses}</span>` +
+            (feeN ? ` <span class="hint">(+${feeN} fee/vol)</span>` : "");
+        } else {
+          wlEl.textContent = "—";
+        }
+      }
+
       const totalsEl = document.getElementById("taxTotals");
       const profit = data.total_profit_sol ?? 0;
       const losses = data.total_losses_sol ?? 0;
@@ -4275,21 +4504,27 @@
       const yearEl = document.getElementById("taxCurrentYear");
       if (data.current_month) {
         const m = data.current_month;
+        const mWl = (m.win_count != null || m.loss_count != null)
+          ? ` <span class="hint">(W ${m.win_count ?? 0}/L ${m.loss_count ?? 0})</span>`
+          : "";
         monthEl.innerHTML = fmtPnlBlock(
           m.total_profit_sol ?? 0,
           m.total_losses_sol ?? 0,
           m.net_pnl_sol
-        );
+        ) + mWl;
       } else {
         monthEl.textContent = "—";
       }
       if (data.current_year) {
         const y = data.current_year;
+        const yWl = (y.win_count != null || y.loss_count != null)
+          ? ` <span class="hint">(W ${y.win_count ?? 0}/L ${y.loss_count ?? 0})</span>`
+          : "";
         yearEl.innerHTML = fmtPnlBlock(
           y.total_profit_sol ?? 0,
           y.total_losses_sol ?? 0,
           y.net_pnl_sol
-        );
+        ) + yWl;
       } else {
         yearEl.textContent = "—";
       }
@@ -4301,15 +4536,22 @@
       } else {
         body.innerHTML = rows.map(r => {
           const pnl = r.pnl_sol != null && r.pnl_sol !== "" ? parseFloat(r.pnl_sol) : null;
-          const pnlHtml = pnl != null
-            ? `<span class="${pnl >= 0 ? "positive" : "negative"}">${fmtSol(pnl)}</span>`
-            : "—";
+          const feeAssist = String(r.trade_kind || "").toLowerCase() === "fee_volume_assist";
+          let pnlHtml = "—";
+          if (pnl != null) {
+            if (feeAssist) {
+              pnlHtml = `<span class="hint">fee/vol ${fmtSol(pnl)}</span>`;
+            } else {
+              pnlHtml = `<span class="${pnl >= 0 ? "positive" : "negative"}">${fmtSol(pnl)}</span>`;
+            }
+          }
           const mint = r.contract_address || "";
           const mintShort = mint ? mint.slice(0, 8) + "…" : "—";
           const ts = fmtTime(r.timestamp);
+          const sym = (r.token_symbol || "—") + (feeAssist ? " (fee)" : "");
           return `<tr>
             <td>${ts}</td>
-            <td>${r.token_symbol || "—"}</td>
+            <td>${sym}</td>
             <td>${r.action || "—"}</td>
             <td>${pnlHtml}</td>
             <td class="mono">${mintShort}</td>
@@ -4324,13 +4566,16 @@
       } else {
         monthlyBody.innerHTML = monthly.map(r => {
           const net = parseFloat(r.net_pnl_sol || 0);
+          const wl = (r.win_count != null || r.loss_count != null)
+            ? ` W${r.win_count ?? 0}/L${r.loss_count ?? 0}`
+            : "";
           return `<tr>
             <td>${r.year}</td>
             <td>${r.month}</td>
             <td class="positive">${fmtSol(parseFloat(r.total_profit_sol || 0))}</td>
             <td class="negative">${fmtSol(parseFloat(r.total_losses_sol || 0))}</td>
             <td class="${net >= 0 ? "positive" : "negative"}">${fmtSol(net)}</td>
-            <td>${r.trade_count}</td>
+            <td>${r.trade_count}${wl}</td>
           </tr>`;
         }).join("");
       }
@@ -4342,12 +4587,15 @@
       } else {
         yearlyBody.innerHTML = yearly.map(r => {
           const net = parseFloat(r.net_pnl_sol || 0);
+          const wl = (r.win_count != null || r.loss_count != null)
+            ? ` W${r.win_count ?? 0}/L${r.loss_count ?? 0}`
+            : "";
           return `<tr>
             <td>${r.year}</td>
             <td class="positive">${fmtSol(parseFloat(r.total_profit_sol || 0))}</td>
             <td class="negative">${fmtSol(parseFloat(r.total_losses_sol || 0))}</td>
             <td class="${net >= 0 ? "positive" : "negative"}">${fmtSol(net)}</td>
-            <td>${r.trade_count}</td>
+            <td>${r.trade_count}${wl}</td>
           </tr>`;
         }).join("");
       }
@@ -4458,6 +4706,133 @@
       }
     }
 
+    const shownUserAlertIds = new Set();
+    let activeUserAlertId = null;
+    let activeUserAlertRugCount = 0;
+
+    function hideUserAlertOverlay() {
+      const overlay = document.getElementById("userAlertOverlay");
+      if (!overlay) return;
+      overlay.classList.remove("visible");
+      overlay.hidden = true;
+      activeUserAlertId = null;
+      activeUserAlertRugCount = 0;
+    }
+
+    async function dismissUserAlert(alertId) {
+      const id = alertId || activeUserAlertId;
+      hideUserAlertOverlay();
+      if (!id) return;
+      shownUserAlertIds.add(id);
+      try {
+        await api("/api/alerts/ack", {
+          method: "POST",
+          body: JSON.stringify({ id: id }),
+        });
+      } catch (e) {
+        console.warn("Alert ack failed:", e);
+      }
+    }
+
+    function fillRugList(listEl, alert) {
+      if (!listEl) return;
+      const rugs = Array.isArray(alert && alert.rugs) ? alert.rugs : [];
+      listEl.innerHTML = "";
+      if (!rugs.length) {
+        listEl.hidden = true;
+        return;
+      }
+      listEl.hidden = false;
+      rugs.forEach(function (row) {
+        const li = document.createElement("li");
+        const sym = (row && row.symbol) || "?";
+        const short =
+          (row && row.mint_short) ||
+          (row && row.mint ? String(row.mint).slice(0, 8) : "");
+        li.textContent = short ? sym + " (" + short + ")" : sym;
+        listEl.appendChild(li);
+      });
+    }
+
+    function showUserAlert(alert, opts) {
+      opts = opts || {};
+      if (!alert || !alert.id) return;
+      if (shownUserAlertIds.has(alert.id)) return;
+      // Only one dialog: same rug alert may refresh in place; never stack another.
+      if (activeUserAlertId && activeUserAlertId !== alert.id) return;
+      const overlay = document.getElementById("userAlertOverlay");
+      const titleEl = document.getElementById("userAlertTitle");
+      const detailEl = document.getElementById("userAlertDetail");
+      const listEl = document.getElementById("userAlertRugList");
+      const burnEl = document.getElementById("userAlertBurn");
+      const linkEl = document.getElementById("userAlertLink");
+      if (!overlay || !titleEl || !detailEl || !burnEl || !linkEl) return;
+      const rugs = Array.isArray(alert.rugs) ? alert.rugs : [];
+      const count = rugs.length || Number(alert.count) || 1;
+      titleEl.textContent =
+        alert.title ||
+        (count > 1
+          ? "100% loss — " + count + " rug pulls"
+          : "100% loss — rug pull");
+      if (rugs.length) {
+        detailEl.textContent =
+          count +
+          " rug pull" +
+          (count === 1 ? "" : "s") +
+          " written off as 100% loss:";
+        fillRugList(listEl, alert);
+      } else {
+        const sym =
+          alert.symbol || (alert.mint ? String(alert.mint).slice(0, 8) : "token");
+        detailEl.textContent =
+          alert.detail ||
+          (sym + " written off as a 100% loss (rug pull).");
+        if (listEl) {
+          listEl.innerHTML = "";
+          listEl.hidden = true;
+        }
+      }
+      burnEl.textContent = alert.message || "Use Sol-Incinerator pro to burn.";
+      const url = alert.url || "https://sol-incinerator.com/";
+      linkEl.href = url;
+      linkEl.textContent = url;
+      const prevCount = activeUserAlertRugCount;
+      const wasOpen = activeUserAlertId === alert.id;
+      activeUserAlertId = alert.id;
+      activeUserAlertRugCount = count;
+      overlay.hidden = false;
+      overlay.classList.add("visible");
+      if (!wasOpen || opts.forceLog) {
+        logActivity(
+          "Rug writeoff alert: " +
+            count +
+            " token(s) — Use Sol-Incinerator pro to burn."
+        );
+      } else if (count > prevCount) {
+        logActivity("Rug writeoff alert updated: " + count + " token(s).");
+      }
+    }
+
+    function maybeShowUserAlerts(status) {
+      const alerts = (status && status.pending_user_alerts) || [];
+      if (!alerts.length) return;
+      // Prefer the coalesced rug alert (single dialog for all rugs).
+      const rug = alerts.find(function (a) {
+        return a && a.type === "rug_writeoff" && a.id && !shownUserAlertIds.has(a.id);
+      });
+      if (rug) {
+        if (!activeUserAlertId || activeUserAlertId === rug.id) {
+          showUserAlert(rug);
+        }
+        return;
+      }
+      if (activeUserAlertId) return;
+      const next = alerts.find(function (a) {
+        return a && a.id && !shownUserAlertIds.has(a.id);
+      });
+      if (next) showUserAlert(next);
+    }
+
     async function refresh() {
       try {
         const status = await api("/api/bot/status");
@@ -4472,6 +4847,7 @@
         ]);
         try {
           updateStatusUI(status);
+          maybeShowUserAlerts(status);
           if (status.config) {
             if (!configInitialized) {
               fillConfig(status.config, false);
@@ -4505,6 +4881,9 @@
             def(posData.max, status.max_open_positions),
             wlMints,
             def(posData.wbtc_companion_slot_open, status.wbtc_companion_slot_open)
+              || def(posData.companion_slot_open, status.companion_slot_open),
+            posData.trading_count,
+            def(posData.trading_max, status.max_open_positions)
           );
         } catch (posErr) {
           console.error("Positions render failed:", posErr);
@@ -4536,6 +4915,15 @@
     }
 
     function bindUiHandlers() {
+    bindClick("userAlertOk", function () {
+      dismissUserAlert(activeUserAlertId);
+    });
+    const userAlertOverlay = document.getElementById("userAlertOverlay");
+    if (userAlertOverlay) {
+      userAlertOverlay.addEventListener("click", function (ev) {
+        if (ev.target === userAlertOverlay) dismissUserAlert(activeUserAlertId);
+      });
+    }
     bindClick("btnSetWallet", async () => {
       const key = document.getElementById("privateKey").value.trim();
       if (!key) return alert("Paste your private key first (or Connect then export base58 from Phantom/Solflare)");
@@ -4864,18 +5252,39 @@
     // Do not treat localStorage alone as connected — that hid Connect without calling connect().
     (async function restoreExtensionWallet() {
       if (!window.SolDexWalletConnect) {
+        // Stale SW can poison /static/wallet_connect.js — drop it so next refresh loads clean.
+        try {
+          if ("serviceWorker" in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            for (let i = 0; i < regs.length; i++) {
+              await regs[i].unregister();
+            }
+          }
+        } catch (_) {}
         syncHeaderWalletUI();
         return;
       }
+      // Prefer silent restore from storage; also adopt Phantom if already connected to this origin.
       const stored = window.SolDexWalletConnect.loadStored();
-      if (stored && stored.pubkey && stored.provider && window.SolDexWalletConnect.tryEagerReconnect) {
-        const eager = await window.SolDexWalletConnect.tryEagerReconnect(stored.provider);
+      const tryName = (stored && stored.provider) || "phantom";
+      if (window.SolDexWalletConnect.tryEagerReconnect) {
+        const eager = await window.SolDexWalletConnect.tryEagerReconnect(tryName);
         if (eager && eager.pubkey) {
           connectedExtension = { provider: eager.provider, pubkey: eager.pubkey };
-        } else {
+        } else if (stored && stored.pubkey) {
           // Stale stored pubkey — keep Connect visible so user can trigger the popup.
           window.SolDexWalletConnect.clearStored();
           connectedExtension = null;
+        }
+      }
+      // If no stored session, still try Phantom-already-connected on this site.
+      if (!connectedExtension && window.SolDexWalletConnect.detectProviders) {
+        const p = window.SolDexWalletConnect.detectProviders();
+        if (p.phantom && window.SolDexWalletConnect.adoptIfAlreadyConnected) {
+          const adopted = window.SolDexWalletConnect.adoptIfAlreadyConnected("phantom", p.phantom);
+          if (adopted && adopted.pubkey) {
+            connectedExtension = { provider: adopted.provider, pubkey: adopted.pubkey };
+          }
         }
       }
       syncHeaderWalletUI();
@@ -5030,8 +5439,8 @@
         gmgn_min_liquidity_usd: 15000,
         take_profit_levels: [],
         take_profit_portions: [],
-        instant_exit_3pct: 0.0325,
-        instant_profit_exit_pct: 0.05,
+        instant_exit_3pct: 0.055,
+        instant_profit_exit_pct: 0.08,
       };
       try {
         const r = await api("/api/config/apply-steady-trade-strategy", {
@@ -5095,8 +5504,8 @@
         gmgn_min_liquidity_usd: 15000,
         take_profit_levels: [],
         take_profit_portions: [],
-        instant_exit_3pct: 0.0325,
-        instant_profit_exit_pct: 0.05,
+        instant_exit_3pct: 0.055,
+        instant_profit_exit_pct: 0.08,
       };
       try {
         const r = await api("/api/config/apply-balanced-win-strategy", {
@@ -5158,8 +5567,8 @@
         max_potential_mode: false,
         take_profit_levels: [],
         take_profit_portions: [],
-        instant_exit_3pct: 0.0325,
-        instant_profit_exit_pct: 0.05,
+        instant_exit_3pct: 0.055,
+        instant_profit_exit_pct: 0.08,
       };
       try {
         const r = await api("/api/config/apply-best-win-strategy", {
@@ -5524,5 +5933,17 @@
       bootDashboard();
     }
   </script>
+  <div id="userAlertOverlay" class="user-alert-overlay" role="dialog" aria-modal="true" aria-labelledby="userAlertTitle" hidden>
+    <div class="user-alert-dialog">
+      <h3 id="userAlertTitle">100% loss — rug pull</h3>
+      <p id="userAlertDetail" class="user-alert-detail">Position written off as a 100% loss.</p>
+      <ul id="userAlertRugList" class="user-alert-rug-list" hidden></ul>
+      <p id="userAlertBurn" class="user-alert-burn">Use Sol-Incinerator pro to burn.</p>
+      <p><a id="userAlertLink" href="https://sol-incinerator.com/" target="_blank" rel="noopener noreferrer">https://sol-incinerator.com/</a></p>
+      <div class="user-alert-actions">
+        <button type="button" class="btn-secondary" id="userAlertOk">OK</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

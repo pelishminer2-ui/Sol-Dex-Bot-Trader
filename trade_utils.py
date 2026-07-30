@@ -42,6 +42,8 @@ def format_trade_cli(event: dict) -> str:
     if pnl_sol is None:
         pnl_sol = event.get("pnl_sol")
     pnl_pct = event.get("pnl_pct")
+    mark_pnl_pct = event.get("mark_pnl_pct")
+    fill_pnl_pct = event.get("fill_pnl_pct")
     sol_out = event.get("sol_out")
     reason = event.get("reason") or ""
 
@@ -54,6 +56,18 @@ def format_trade_cli(event: dict) -> str:
     if pnl_pct is not None:
         sign = "+" if float(pnl_pct) >= 0 else ""
         parts.append(f"({sign}{float(pnl_pct) * 100:.2f}%)")
+        # When mark and fill disagree (e.g. false-green mark next to SL), annotate.
+        if (
+            mark_pnl_pct is not None
+            and fill_pnl_pct is not None
+            and abs(float(mark_pnl_pct) - float(fill_pnl_pct)) >= 0.01
+        ):
+            msign = "+" if float(mark_pnl_pct) >= 0 else ""
+            fsign = "+" if float(fill_pnl_pct) >= 0 else ""
+            parts.append(
+                f"[fill {fsign}{float(fill_pnl_pct) * 100:.2f}%, "
+                f"mark {msign}{float(mark_pnl_pct) * 100:.2f}%]"
+            )
     if reason:
         parts.append(f"— {reason}")
     return " ".join(parts) + mode
@@ -177,6 +191,68 @@ def _route_labels_from_quote(quote: SwapQuote) -> list:
     return extract_route_labels(quote.raw)
 
 
+def build_writeoff_journal(
+    *,
+    position,
+    reason: str = "sell_rug_writeoff",
+    dry_run: bool = False,
+    sol_price_usd: Optional[float] = None,
+    current_price: Optional[float] = None,
+    signature: str = "writeoff",
+) -> dict:
+    """Book a full accounting loss with zero SOL recovered (no on-chain sell)."""
+    token_raw = int(position.remaining_token_amount_raw or position.token_amount_raw or 0)
+    initial_raw = int(position.initial_token_amount_raw or token_raw or 0)
+    sol_basis = entry_sol_basis(float(position.size_sol), token_raw, initial_raw)
+    if sol_basis <= 0:
+        sol_basis = float(position.size_sol or 0.0)
+    sol_out = 0.0
+    gross_pnl_sol = -sol_basis
+    net_pnl_sol = -sol_basis
+    exit_price = float(current_price if current_price is not None else 0.0)
+    mark_pnl_pct = -1.0
+    fill_pnl_pct = -1.0
+    token_ui = estimate_token_ui(
+        token_raw,
+        getattr(position, "token_decimals", None),
+        sol_basis,
+        float(position.entry_price or 0.0),
+        sol_price_usd,
+    )
+    pnl_usd = net_pnl_sol * sol_price_usd if sol_price_usd else None
+    event = {
+        "action": "sell",
+        "mint": position.mint,
+        "symbol": position.symbol,
+        "reason": reason or "sell_rug_writeoff",
+        "entry_price": position.entry_price,
+        "exit_price": exit_price,
+        "sol_in_basis": sol_basis,
+        "sol_out": sol_out,
+        "gross_pnl_sol": gross_pnl_sol,
+        "estimated_fees_sol": 0.0,
+        "actual_fees_sol": 0.0,
+        "net_pnl_sol": net_pnl_sol,
+        "pnl_sol": net_pnl_sol,
+        "pnl_pct": mark_pnl_pct,
+        "mark_pnl_pct": mark_pnl_pct,
+        "fill_pnl_pct": fill_pnl_pct,
+        "pnl_usd": pnl_usd,
+        "token_amount_raw": token_raw,
+        "token_amount": token_ui,
+        "tokens_sold": token_ui,
+        "remaining_token_raw": 0,
+        "price_impact_pct": 100.0,
+        "signature": signature,
+        "dry_run": dry_run,
+        "paper_trade": dry_run,
+        "writeoff": True,
+        "route_labels": [],
+    }
+    event["cli_line"] = format_trade_cli(event)
+    return event
+
+
 def build_sell_journal(
     *,
     position,
@@ -206,6 +282,21 @@ def build_sell_journal(
         token_raw, token_decimals, sol_basis, position.entry_price, sol_price_usd
     )
     pnl_usd = net_pnl_sol * sol_price_usd if sol_price_usd else None
+    mark_pnl_pct = float(pnl_pct)
+    fill_pnl_pct = (gross_pnl_sol / sol_basis) if sol_basis > 0 else mark_pnl_pct
+    # Display % should match the exit decision basis: for stop-loss / forced
+    # loss exits prefer fill when mark is misleadingly green.
+    display_pnl_pct = mark_pnl_pct
+    reason_l = (reason or "").lower()
+    if reason_l in ("sell_stop_loss", "sell_manual", "sell_time_stop") or reason_l.startswith(
+        "sell_stop"
+    ):
+        if mark_pnl_pct > 0 and fill_pnl_pct < 0:
+            display_pnl_pct = fill_pnl_pct
+        elif abs(fill_pnl_pct - mark_pnl_pct) >= 0.01 and fill_pnl_pct < mark_pnl_pct:
+            # Prefer the more conservative (fill) figure next to loss-ish reasons.
+            if reason_l == "sell_stop_loss":
+                display_pnl_pct = fill_pnl_pct
     event = {
         "action": action,
         "mint": position.mint,
@@ -220,7 +311,9 @@ def build_sell_journal(
         "actual_fees_sol": actual,
         "net_pnl_sol": net_pnl_sol,
         "pnl_sol": net_pnl_sol,
-        "pnl_pct": pnl_pct,
+        "pnl_pct": display_pnl_pct,
+        "mark_pnl_pct": mark_pnl_pct,
+        "fill_pnl_pct": fill_pnl_pct,
         "pnl_usd": pnl_usd,
         "token_amount_raw": token_raw,
         "token_amount": token_ui,
@@ -237,4 +330,10 @@ def build_sell_journal(
         event["tp_level_pct"] = tp_level_pct
     event["route_labels"] = _route_labels_from_quote(quote)
     event["cli_line"] = format_trade_cli(event)
+    try:
+        from fee_assist_mints import annotate_fee_assist_journal
+
+        annotate_fee_assist_journal(event)
+    except Exception:
+        pass
     return event

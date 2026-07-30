@@ -160,9 +160,13 @@ PREVIOUS_LADDER_EARLY_EXIT_LEVELS = [2, 3]
 DEFAULT_MOMENTUM_SLOWDOWN_PCT = 0.5
 DEFAULT_WEAKEN_EXIT_MIN_PROFIT_PCT = 0.01
 DEFAULT_WEAKEN_EXIT_ENABLED = True
-DEFAULT_INSTANT_EXIT_3PCT = 0.0325
-DEFAULT_INSTANT_PROFIT_EXIT_PCT = 0.05
+DEFAULT_INSTANT_EXIT_3PCT = 0.055
+DEFAULT_INSTANT_PROFIT_EXIT_PCT = 0.08
 DEFAULT_INSTANT_PROFIT_EXIT_ENABLED = True
+# Instant profit takes only: require Jupiter sell quote net SOL >= this (fee drag).
+DEFAULT_INSTANT_MIN_NET_WIN_SOL = 0.001
+# When a sell quote is available, require at least this fill/quote PnL to fire instant.
+DEFAULT_INSTANT_MIN_EXECUTABLE_PNL_PCT = 0.02
 DEFAULT_STOP_LOSS_PCT = 0.015
 DEFAULT_WBTC_STOP_LOSS_PCT = 0.02
 DEFAULT_STOP_LOSS_QUOTE_CHECK = True
@@ -170,6 +174,10 @@ DEFAULT_EMERGENCY_STOP_LOSS_PCT = 0.03
 DEFAULT_CATASTROPHIC_STOP_LOSS_PCT = 0.05
 DEFAULT_LOSS_FRESH_QUOTE_PCT = 0.01
 DEFAULT_STOP_LOSS_NEVER_MISS = True
+# Rug / 100% loss: mark (or trough/quote) at or below this → auto book writeoff.
+DEFAULT_RUG_WRITEOFF_ENABLED = True
+DEFAULT_RUG_WRITEOFF_PNL_PCT = -0.995  # -99.5%
+DEFAULT_SOL_INCINERATOR_URL = "https://sol-incinerator.com/"
 DEFAULT_MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = 4.0
 DEFAULT_WBTC_PROFIT_ONLY_EXITS = True
 DEFAULT_WBTC_MIN_DAILY_GAIN_USD = 301.0
@@ -233,10 +241,10 @@ DEFAULT_COMPANION_TRADE_MAX = 1
 # Scheduled $1 USD mint rotation (live): buy every 6h, hold 2h, rotate A→B→C.
 DEFAULT_SCHEDULED_ROTATION_ENABLED = True
 DEFAULT_SCHEDULED_ROTATION_LIVE_ONLY = True
-DEFAULT_SCHEDULED_ROTATION_INTERVAL_SEC = 6 * 3600
+DEFAULT_SCHEDULED_ROTATION_INTERVAL_SEC = 12 * 3600  # one of three mints every 12h
 DEFAULT_SCHEDULED_ROTATION_HOLD_SEC = 2 * 3600
 DEFAULT_SCHEDULED_ROTATION_SIZE_USD = 1.0
-DEFAULT_SCHEDULED_ROTATION_MAX_OPEN = 1
+DEFAULT_SCHEDULED_ROTATION_MAX_OPEN = 1  # only one rotation mint open at a time
 DEFAULT_SCHEDULED_ROTATION_RETRY_SEC = 30 * 60
 DEFAULT_SCHEDULED_ROTATION_STATE_PATH = "data/scheduled_rotation_state.json"
 DEFAULT_SCHEDULED_ROTATION_MINTS = (
@@ -248,11 +256,13 @@ DEFAULT_REENTRY_DIP_PCT = 0.10
 DEFAULT_SOL_TREND_FILTER_ENABLED = True
 # DexScreener percent points (e.g. -1.5 = allow down to -1.5% on 1h). Loosened so
 # memecoins can still trade in mild SOL pullbacks; -2%+ 1h dumps still block. The
-# 4h floor stays tighter so sustained downtrends keep blocking.
+# 4h floor stays tighter so sustained downtrends keep blocking. 30m is a soft
+# near-term gate (same default as 1h); quality override may bypass 30m/1h, never 4h.
+DEFAULT_SOL_MIN_CHANGE_30M_PCT = -1.5
 DEFAULT_SOL_MIN_CHANGE_1H_PCT = -1.5
 DEFAULT_SOL_MIN_CHANGE_4H_PCT = -1.5
 DEFAULT_SOL_TREND_CACHE_TTL_SEC = 60
-# Pop-quality override: when the SOL 1h macro gate would block a memecoin, allow a
+# Pop-quality override: when the SOL 30m/1h macro gate would block a memecoin, allow a
 # proven-shape "quality pop" through anyway (acceptable route + liquid + fresh +
 # exit-able / no instant-dump signature). The 4h sustained-downtrend block still
 # cannot be bypassed. Tightens nothing; only lets good pops trade in cold-ish tape.
@@ -537,7 +547,7 @@ def stop_loss_applies_for_mint(mint: str) -> bool:
     """False for WBTC when WBTC_STOP_LOSS_ENABLED=false; always True for memecoins.
 
     Scheduled-rotation mints are exempt (no 1.5% SL / emergency / catastrophic):
-    $1 legs must not dump on round-trip fee drag. Exits are instant +3.25%/+5%
+    $1 legs must not dump on round-trip fee drag. Exits are instant +5%/+7.5%
     or the mandatory 2h time exit only.
     """
     if not mint:
@@ -553,7 +563,7 @@ def stop_loss_applies_for_mint(mint: str) -> bool:
 
 
 def wbtc_min_expected_gain_pct() -> float:
-    """WBTC entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.0325)."""
+    """WBTC entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.055)."""
     override = getattr(Config, "WBTC_MIN_EXPECTED_GAIN_PCT", None)
     if override is not None:
         return float(override)
@@ -561,7 +571,7 @@ def wbtc_min_expected_gain_pct() -> float:
 
 
 def jitosol_min_expected_gain_pct() -> float:
-    """JitoSOL entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.0325)."""
+    """JitoSOL entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.055)."""
     override = getattr(Config, "JITOSOL_MIN_EXPECTED_GAIN_PCT", None)
     if override is not None:
         return float(override)
@@ -569,7 +579,7 @@ def jitosol_min_expected_gain_pct() -> float:
 
 
 def weth_min_expected_gain_pct() -> float:
-    """WETH entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.0325)."""
+    """WETH entry instant-target floor; defaults to INSTANT_EXIT_3PCT (0.055)."""
     override = getattr(Config, "WETH_MIN_EXPECTED_GAIN_PCT", None)
     if override is not None:
         return float(override)
@@ -1476,6 +1486,18 @@ class Config:
     INSTANT_PROFIT_EXIT_ENABLED = (
         os.getenv("INSTANT_PROFIT_EXIT_ENABLED", "true").lower() == "true"
     )
+    INSTANT_MIN_NET_WIN_SOL = float(
+        os.getenv(
+            "INSTANT_MIN_NET_WIN_SOL",
+            str(DEFAULT_INSTANT_MIN_NET_WIN_SOL),
+        )
+    )
+    INSTANT_MIN_EXECUTABLE_PNL_PCT = float(
+        os.getenv(
+            "INSTANT_MIN_EXECUTABLE_PNL_PCT",
+            str(DEFAULT_INSTANT_MIN_EXECUTABLE_PNL_PCT),
+        )
+    )
     MAX_CONSECUTIVE_LOSSES = int(
         os.getenv("MAX_CONSECUTIVE_LOSSES", str(DEFAULT_MAX_CONSECUTIVE_LOSSES))
     )
@@ -1674,6 +1696,19 @@ class Config:
         ).lower()
         == "true"
     )
+    RUG_WRITEOFF_ENABLED = (
+        os.getenv(
+            "RUG_WRITEOFF_ENABLED",
+            "true" if DEFAULT_RUG_WRITEOFF_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    RUG_WRITEOFF_PNL_PCT = float(
+        os.getenv("RUG_WRITEOFF_PNL_PCT", str(DEFAULT_RUG_WRITEOFF_PNL_PCT))
+    )
+    SOL_INCINERATOR_URL = str(
+        os.getenv("SOL_INCINERATOR_URL", DEFAULT_SOL_INCINERATOR_URL)
+    ).strip() or DEFAULT_SOL_INCINERATOR_URL
     MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT = float(
         os.getenv(
             "MAX_FULL_EXIT_SELL_PREVIEW_IMPACT_PCT",
@@ -1790,6 +1825,12 @@ class Config:
             "true" if DEFAULT_SOL_TREND_FILTER_ENABLED else "false",
         ).lower()
         == "true"
+    )
+    SOL_MIN_CHANGE_30M_PCT = float(
+        os.getenv(
+            "SOL_MIN_CHANGE_30M_PCT",
+            str(DEFAULT_SOL_MIN_CHANGE_30M_PCT),
+        )
     )
     SOL_MIN_CHANGE_1H_PCT = float(
         os.getenv(
@@ -2346,6 +2387,17 @@ class Config:
             os.getenv("REENTRY_RETRY_STATE_PATH", "data/reentry_retry_state.json")
         )
     )
+    BLOCKED_MINTS_PATH = str(
+        resolve_data_path(
+            os.getenv("BLOCKED_MINTS_PATH", "data/blocked_mints.json")
+        )
+    )
+    # Chart-assist / fee-volume mints (Bonga/VETT/COC): volume only, not real W/L.
+    FEE_ASSIST_MINTS_PATH = str(
+        resolve_data_path(
+            os.getenv("FEE_ASSIST_MINTS_PATH", "data/fee_assist_mints.json")
+        )
+    )
     TAX_CSV_PATH = str(resolve_data_path(os.getenv("TAX_CSV_PATH", "tax_trades.csv")))
     TAX_MONTHLY_CSV_PATH = str(resolve_data_path(os.getenv("TAX_MONTHLY_CSV_PATH", "tax_summary_monthly.csv")))
     TAX_YEARLY_CSV_PATH = str(resolve_data_path(os.getenv("TAX_YEARLY_CSV_PATH", "tax_summary_yearly.csv")))
@@ -2695,6 +2747,10 @@ class Config:
         "MIN_MOMENTUM_PCT": float,
         "MIN_EXPECTED_NET_PROFIT_SOL": float,
         "MIN_NET_WIN_SOL": float,
+        "INSTANT_EXIT_3PCT": float,
+        "INSTANT_PROFIT_EXIT_PCT": float,
+        "INSTANT_MIN_NET_WIN_SOL": float,
+        "INSTANT_MIN_EXECUTABLE_PNL_PCT": float,
         "LOSS_REENTRY_COOLDOWN_MINUTES": int,
         "LOSS_REENTRY_REPEAT_COOLDOWN_MINUTES": int,
         "REENTRY_RETRY_MAX_ATTEMPTS": int,
@@ -2706,6 +2762,7 @@ class Config:
         "MAX_POTENTIAL_MODE": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "BLOCK_STOCK_RELATED_TOKENS": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "HOT_MARKET_MODE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "SOL_MIN_CHANGE_30M_PCT": float,
         "SOL_MIN_CHANGE_1H_PCT": float,
         "SOL_MIN_CHANGE_4H_PCT": float,
         "SOL_TREND_QUALITY_OVERRIDE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
@@ -2719,6 +2776,7 @@ class Config:
         "SETUP_LEARNING_ENTRY_GATE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "SETUP_LEARNING_MIN_WIN_LEAN": float,
         "GMGN_MIN_LIQUIDITY_USD": float,
+        "MAX_CONSECUTIVE_LOSSES": int,
     }
 
     @classmethod
@@ -2796,6 +2854,8 @@ class Config:
             "instant_exit_3pct": DEFAULT_INSTANT_EXIT_3PCT,
             "instant_profit_exit_pct": DEFAULT_INSTANT_PROFIT_EXIT_PCT,
             "instant_profit_exit_enabled": DEFAULT_INSTANT_PROFIT_EXIT_ENABLED,
+            "instant_min_net_win_sol": DEFAULT_INSTANT_MIN_NET_WIN_SOL,
+            "instant_min_executable_pnl_pct": DEFAULT_INSTANT_MIN_EXECUTABLE_PNL_PCT,
             "enable_l1_protection": DEFAULT_ENABLE_L1_PROTECTION,
             "stop_loss_pct": DEFAULT_STOP_LOSS_PCT,
             "min_expected_net_profit_sol": DEFAULT_MIN_EXPECTED_NET_PROFIT_SOL,
@@ -3084,6 +3144,8 @@ class Config:
             "instant_profit_exit_enabled": cls.INSTANT_PROFIT_EXIT_ENABLED,
             "instant_profit_exit_pct": cls.INSTANT_PROFIT_EXIT_PCT,
             "instant_exit_3pct": cls.INSTANT_EXIT_3PCT,
+            "instant_min_net_win_sol": cls.INSTANT_MIN_NET_WIN_SOL,
+            "instant_min_executable_pnl_pct": cls.INSTANT_MIN_EXECUTABLE_PNL_PCT,
             "max_consecutive_losses": cls.MAX_CONSECUTIVE_LOSSES,
             "consecutive_loss_pause_minutes": cls.CONSECUTIVE_LOSS_PAUSE_MINUTES,
             "consecutive_loss_pause_paper_only": cls.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY,
@@ -3097,6 +3159,7 @@ class Config:
             "watchlist_enabled": cls.WATCHLIST_ENABLED,
             "block_stock_related_tokens": cls.BLOCK_STOCK_RELATED_TOKENS,
             "sol_trend_filter_enabled": cls.SOL_TREND_FILTER_ENABLED,
+            "sol_min_change_30m_pct": cls.SOL_MIN_CHANGE_30M_PCT,
             "sol_min_change_1h_pct": cls.SOL_MIN_CHANGE_1H_PCT,
             "sol_min_change_4h_pct": cls.SOL_MIN_CHANGE_4H_PCT,
             "sol_trend_cache_ttl_sec": cls.SOL_TREND_CACHE_TTL_SEC,

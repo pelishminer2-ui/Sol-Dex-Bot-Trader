@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "updated_at": 1785357982.0914578,
+  "mints": {
+    "6J9bnLdf9iKYDkmcuH625WroWbBEy1PvS4rQMDcwrxrc": {
+      "mint": "6J9bnLdf9iKYDkmcuH625WroWbBEy1PvS4rQMDcwrxrc",
+      "symbol": "CXMT",
+      "reason": "rug_pull",
+      "blocked_at": 1785146991.1094038,
+      "note": "auto rug writeoff \u2014 100% loss; burn leftovers via Sol-Incinerator"
+    },
+    "6xdewCYC2UFtacydfQMow6B7QGp9Xk3VAzeTcSgMGNV1": {
+      "mint": "6xdewCYC2UFtacydfQMow6B7QGp9Xk3VAzeTcSgMGNV1",
+      "symbol": "CXMT",
+      "reason": "rug_pull",
+      "blocked_at": 1785125000.0,
+      "note": "User permanent block \u2014 pump.fun CXMT rug mint"
+    },
+    "CrrkHDEFsKrQb8ucyAYKu2iqPDuLD9n8xZpXumpnzUH4": {
+      "mint": "CrrkHDEFsKrQb8ucyAYKu2iqPDuLD9n8xZpXumpnzUH4",
+      "symbol": "CXMT",
+      "reason": "rug_pull",
+      "blocked_at": 1785127000.0,
+      "note": "CXMT ticker-reuse mint after rug; mint-only permanent block"
+    },
+    "D5VLkC7fgRgsK9rpU6FuUC9KjQL6mpn1GXofWcA7Letb": {
+      "mint": "D5VLkC7fgRgsK9rpU6FuUC9KjQL6mpn1GXofWcA7Letb",
+      "symbol": "CXMT",
+      "reason": "rug_pull",
+      "blocked_at": 1785145682.0648375,
+      "note": "auto rug writeoff \u2014 100% loss; burn leftovers via Sol-Incinerator"
+    },
+    "G9hBjHa9Gmom6R2QYuFYrzqpA4bCd1m8doNmhwCtrHGq": {
+      "mint": "G9hBjHa9Gmom6R2QYuFYrzqpA4bCd1m8doNmhwCtrHGq",
+      "symbol": "CXMT",
+      "reason": "rug_pull",
+      "blocked_at": 1785126300.4946823,
+      "note": "post-restart CXMT ticker re-entry"
+    }
+  },
+  "symbols": {}
+}

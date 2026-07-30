@@ -120,16 +120,59 @@ def test_stop_before_instant_on_red():
     print("PASS: stop loss before instant profit on red position")
 
 
+def test_fee_drag_quote_no_sl_when_mark_green():
+    """Quote fee/impact underwater must not SL while mark is green (callcat class)."""
+    strategy = MomentumStrategy()
+    pos = _make_position()
+    signal = strategy._evaluate_stop_loss(
+        pos,
+        mark_pnl=0.01,
+        executable_pnl_pct=-0.03,
+        trough_pnl=0.0,
+    )
+    assert signal is None
+    print("PASS: fee-drag quote ignored for SL when mark green")
+
+
+def test_mark_instant_zone_never_sl_on_quote_or_trough():
+    """At +18% mark, never sell_stop_loss even if quote/trough look red."""
+    strategy = MomentumStrategy()
+    pos = _make_position()
+    pos.trough_pnl_pct = -0.05
+    signal = strategy._evaluate_stop_loss(
+        pos,
+        mark_pnl=0.1844,
+        executable_pnl_pct=-0.03,
+        trough_pnl=-0.05,
+    )
+    assert signal is None
+    # Full evaluate_exit must take instant profit, not SL.
+    with patch.object(Config, "MIN_NET_WIN_SOL", 0.0):
+        exit_sig = strategy.evaluate_exit(
+            pos,
+            current_price=1.1844,
+            executable_pnl_pct=-0.03,
+        )
+    assert exit_sig is not None
+    assert exit_sig.signal_type == SignalType.SELL_INSTANT_PROFIT
+    print("PASS: +18% mark takes instant profit, not false SL")
+
+
 def test_wbtc_stop_at_two_percent():
     strategy = MomentumStrategy()
     pos = _make_position(mint=DEFAULT_WATCHLIST_MINT)
     stop = effective_stop_loss_pct(DEFAULT_WATCHLIST_MINT)
     assert stop == Config.WBTC_STOP_LOSS_PCT
-    signal = strategy._evaluate_stop_loss(pos, mark_pnl=-stop)
-    assert signal is not None
-    assert signal.signal_type == SignalType.SELL_SL
-    signal2 = strategy._evaluate_stop_loss(pos, mark_pnl=-(stop - 0.001))
-    assert signal2 is None
+    original = Config.WBTC_STOP_LOSS_ENABLED
+    try:
+        Config.WBTC_STOP_LOSS_ENABLED = True
+        signal = strategy._evaluate_stop_loss(pos, mark_pnl=-stop)
+        assert signal is not None
+        assert signal.signal_type == SignalType.SELL_SL
+        signal2 = strategy._evaluate_stop_loss(pos, mark_pnl=-(stop - 0.001))
+        assert signal2 is None
+    finally:
+        Config.WBTC_STOP_LOSS_ENABLED = original
     print("PASS: WBTC stop at 2%")
 
 
@@ -140,6 +183,8 @@ def main():
     test_trough_triggers_stop_when_mark_and_quote_stale()
     test_stop_before_max_hold_on_red_trough()
     test_stop_before_instant_on_red()
+    test_fee_drag_quote_no_sl_when_mark_green()
+    test_mark_instant_zone_never_sl_on_quote_or_trough()
     test_wbtc_stop_at_two_percent()
     print("\nAll stop-loss never-miss tests passed.")
 

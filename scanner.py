@@ -125,6 +125,7 @@ def parse_pair(
 
 def merge_candidates(*lists: List[MoverCandidate]) -> List[MoverCandidate]:
     """Merge candidate lists, deduplicating by mint and keeping higher momentum."""
+    from blocked_mints import filter_permanently_blocked_candidates
     from stock_token_filter import filter_stock_candidates
 
     gmgn_min_liq = Config.effective_gmgn_min_liquidity()
@@ -137,7 +138,7 @@ def merge_candidates(*lists: List[MoverCandidate]) -> List[MoverCandidate]:
             if not existing or candidate.momentum_pct > existing.momentum_pct:
                 merged[candidate.mint] = candidate
     ranked = sorted(merged.values(), key=lambda c: c.momentum_pct, reverse=True)
-    return filter_stock_candidates(ranked)
+    return filter_permanently_blocked_candidates(filter_stock_candidates(ranked))
 
 
 class MoverScanner:

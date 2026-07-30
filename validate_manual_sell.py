@@ -67,9 +67,56 @@ def test_ui_has_sell_button():
     html = Path("static/index.html").read_text(encoding="utf-8")
     assert "/api/positions/sell" in html
     assert "btn-sell-position" in html
-    assert 'Sell "' in html or "Sell " in html
-    assert "Sell " in html and "now?" in html
-    print("PASS: Open Trades UI has Sell button + confirm")
+    assert "manualSellPosition" in html
+    # Instant sell: no confirm dialog — fires immediately on click.
+    assert "confirm(" not in html.split("async function manualSellPosition", 1)[1].split(
+        "async function manualDcaPosition", 1
+    )[0]
+    assert "Instant sell" in html or "no confirm" in html.lower()
+    assert "formatSellError" in html
+    assert "already_flat" in html
+    assert "dataset.selling" in html
+    print("PASS: Open Trades UI has Instant Sell (no confirm)")
+
+
+def test_zero_balance_reconcile_clears_without_error():
+    """Flat wallet + open book must clear/persist ok — not return silent fail."""
+    import time
+    from unittest.mock import MagicMock, patch
+
+    from bot import TradingBot
+    from strategy import Position
+
+    bot = TradingBot(dry_run=True)
+    bot.risk = MagicMock()
+    pos = Position(
+        mint="FlatWalletMint1111111111111111111111111111",
+        symbol="FLAT",
+        entry_price=1.0,
+        entry_time=time.time(),
+        size_sol=0.1,
+        token_amount_raw=1_000_000,
+        initial_token_amount_raw=1_000_000,
+        remaining_token_amount_raw=1_000_000,
+        tp_levels=[],
+        tp_portions=[],
+        target_net_profit_sol=0.002,
+        fee_budget_sol=0.0,
+        trough_pnl_pct=-0.02,
+        profile={},
+    )
+    bot.strategy.positions = [pos]
+    with patch.object(bot, "_persist_open_positions_safe") as persist:
+        journal = bot._reconcile_zero_balance_force_sell(
+            pos, current_price=0.98, cause="already_sold_or_zero_balance"
+        )
+        persist.assert_called()
+    assert journal.get("already_flat") is True
+    assert journal.get("cleared") is True
+    assert journal.get("writeoff") is False
+    assert bot.strategy.get_open_positions() == []
+    assert bot._last_force_sell_error is None
+    print("PASS: zero-balance Instant Sell clears books ok")
 
 
 if __name__ == "__main__":
@@ -78,4 +125,5 @@ if __name__ == "__main__":
     test_mint_still_blocked_on_bot_start()
     test_endpoint_reachable_localhost()
     test_ui_has_sell_button()
+    test_zero_balance_reconcile_clears_without_error()
     print("\nAll manual-sell checks passed.")

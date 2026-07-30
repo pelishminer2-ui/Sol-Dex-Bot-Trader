@@ -8,13 +8,14 @@ alwaysApply: true
 ### Exits (non-negotiable)
 - Stop loss ALWAYS at configured % (1.5% memecoins) using worst of mark, quote, trough
 - Never miss stop loss — forced sell with retries, 0.5s poll in loss zone, fresh Jupiter quotes
-- Instant profit at +3.25% and +5% using mark, peak, AND quote PnL
+- Instant profit at +5.5% and +8% using mark, peak, AND quote PnL; require sell-quote fill ≥ ~2% when available and net SOL ≥ `INSTANT_MIN_NET_WIN_SOL` (default 0.001) — do not force-sell instant on fee-negative quotes
 - Emergency 3% / catastrophic 5% hard caps (memecoins; WBTC exempt when `WBTC_STOP_LOSS_ENABLED=false`)
 - Non-memecoin max hold 15 min: SL if at threshold, otherwise plain time exit (not SL)
 - Proxy assets (JitoSOL/WETH): after 15 min, sell when green on mark/quote (profit-taking); red positions not forced out (SL still applies)
-- **WBTC (user override):** `WBTC_STOP_LOSS_ENABLED=false` — no SL, no 15m max-hold, no 15m green time exit; hold until Jupiter quote shows fee-positive net (`WBTC_PROFIT_ONLY_EXITS=true`). Instant +3.25%/+5% OK only when net > 0 after fees.
+- **WBTC (user override):** `WBTC_STOP_LOSS_ENABLED=false` — no SL, no 15m max-hold, no 15m green time exit; hold until Jupiter quote shows fee-positive net (`WBTC_PROFIT_ONLY_EXITS=true`). Instant +5.5%/+8% OK only when net > 0 after fees.
 - JitoSOL/WETH use configured SL (default 1.5%)
 - Forced exits never defer for impact, never block on min-net
+- **Pre-existing bags (non-negotiable):** On sell/exit, only sell the bot's tracked position size (`remaining_token_amount_raw`). Never sweep full wallet ATA when the ATA holds more than the bot bought. Non-DCA (`buy_count`==1) and DCA alike: sell amount = min(book remaining, wallet balance); never inflate book/remaining up to full ATA. Entry records swap-received tokens only (wallet delta or capped to quote `out_amount`) — not full ATA. Instant sell / SL / TP / rug writeoff / resume reconcile must leave pre-existing holdings alone.
 
 ### Learning
 - `setup_learner` records every full exit (paper + live) to `data/setup_learning.json`
