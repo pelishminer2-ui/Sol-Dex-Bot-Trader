@@ -141,6 +141,8 @@ DEFAULT_PUMPFUN_API_LIMIT = 50
 MAX_POTENTIAL_PUMPFUN_API_LIMIT = 100
 DEFAULT_MAX_CONSECUTIVE_LOSSES = 3
 DEFAULT_CONSECUTIVE_LOSS_PAUSE_MINUTES = 25
+# true (default): indefinite Stop/Start pause for paper AND live.
+# false: timed auto-resume (CONSECUTIVE_LOSS_PAUSE_MINUTES) for both modes.
 DEFAULT_CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY = True
 DEFAULT_MAX_REALISTIC_TP_PCT = 1.0
 DEFAULT_TAKE_PROFIT_LEVELS: list[float] = []
@@ -3195,7 +3197,18 @@ class Config:
             "instant_min_executable_pnl_pct": cls.INSTANT_MIN_EXECUTABLE_PNL_PCT,
             "max_consecutive_losses": cls.MAX_CONSECUTIVE_LOSSES,
             "consecutive_loss_pause_minutes": cls.CONSECUTIVE_LOSS_PAUSE_MINUTES,
+            # true: indefinite Stop/Start for paper+live; false: timed minutes both modes
             "consecutive_loss_pause_paper_only": cls.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY,
+            "consecutive_loss_pause_notice": (
+                "Paper and live match: indefinite entry pause after consecutive losses "
+                "until Stop/Start (or reset-loss-pause). Set "
+                "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY=false for timed auto-resume in both modes."
+                if cls.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY
+                else (
+                    "Timed auto-resume enabled for paper and live "
+                    f"({cls.CONSECUTIVE_LOSS_PAUSE_MINUTES}m)."
+                )
+            ),
             "max_daily_loss_sol": cls.MAX_DAILY_LOSS_SOL,
             "auto_stop_on_max_daily_loss": cls.AUTO_STOP_ON_MAX_DAILY_LOSS,
             "profit_first_mode": True,

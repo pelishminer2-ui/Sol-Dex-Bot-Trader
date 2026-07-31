@@ -60,17 +60,27 @@ class RiskManager:
 
     @staticmethod
     def _uses_timed_consecutive_loss_pause(dry_run: bool) -> bool:
+        """Opt-in timed auto-resume for both paper and live.
+
+        Default CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY=true: no timer — paper and live
+        both pause indefinitely until Stop/Start (or /api/bot/reset-loss-pause).
+        Set CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY=false to enable
+        CONSECUTIVE_LOSS_PAUSE_MINUTES auto-resume in both modes.
+        """
+        del dry_run  # same policy for paper and live
         if Config.MAX_CONSECUTIVE_LOSSES <= 0 or Config.CONSECUTIVE_LOSS_PAUSE_MINUTES <= 0:
             return False
+        # PAPER_ONLY=true keeps the Stop/Start (indefinite) policy for both modes.
         if Config.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY:
-            return dry_run
+            return False
         return True
 
     @staticmethod
     def _uses_indefinite_consecutive_loss_pause(dry_run: bool) -> bool:
+        """Indefinite block until Stop/Start when timed pause is not enabled."""
         if Config.MAX_CONSECUTIVE_LOSSES <= 0:
             return False
-        return Config.CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY and not dry_run
+        return not RiskManager._uses_timed_consecutive_loss_pause(dry_run)
 
     def _expire_consecutive_loss_pause_if_needed(self, dry_run: bool = True) -> None:
         if not self._uses_timed_consecutive_loss_pause(dry_run):
@@ -329,12 +339,12 @@ class RiskManager:
                             + Config.CONSECUTIVE_LOSS_PAUSE_MINUTES * 60
                         )
                         logger.info(
-                            "Consecutive loss pause for %d minutes (paper)",
+                            "Consecutive loss pause for %d minutes (timed)",
                             Config.CONSECUTIVE_LOSS_PAUSE_MINUTES,
                         )
                     elif self._uses_indefinite_consecutive_loss_pause(dry_run):
                         logger.info(
-                            "Consecutive loss entry block — Stop/Start required (live)"
+                            "Consecutive loss entry block — Stop/Start required"
                         )
         else:
             self.state.consecutive_losses = 0

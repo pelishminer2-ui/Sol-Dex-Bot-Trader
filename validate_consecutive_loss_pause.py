@@ -1,4 +1,4 @@
-"""Validate consecutive-loss entry pause (paper timed, live indefinite)."""
+"""Validate consecutive-loss entry pause (paper + live indefinite by default)."""
 
 import time
 from unittest.mock import patch
@@ -21,7 +21,7 @@ def test_config_defaults():
     print("PASS: consecutive loss pause config defaults")
 
 
-def test_paper_pause_triggers_after_threshold():
+def test_paper_indefinite_pause_matches_live():
     risk = RiskManager()
     with patch.object(Config, "MAX_CONSECUTIVE_LOSSES", 3), patch.object(
         Config, "CONSECUTIVE_LOSS_PAUSE_MINUTES", 25
@@ -29,33 +29,17 @@ def test_paper_pause_triggers_after_threshold():
         for _ in range(3):
             risk.record_trade_outcome(-0.01, dry_run=True)
         assert risk.state.consecutive_losses == 3
-        assert risk.state.consecutive_loss_pause_until > time.time()
+        assert risk.state.consecutive_loss_pause_until == 0.0
         can, reason = risk.can_enter(0, 1.0, dry_run=True)
         assert not can
         assert "consecutive losses" in reason
-        assert "remaining" in reason
+        assert "Stop/Start" in reason
+        assert "remaining" not in reason
         status = risk.consecutive_loss_pause_status(dry_run=True)
         assert status["active"] is True
-        assert status["timed_pause"] is True
-        assert status["remaining_sec"] > 0
-        print(f"PASS: paper pause triggers after threshold — {reason}")
-
-
-def test_paper_pause_expires_and_resets_counter():
-    risk = RiskManager()
-    with patch.object(Config, "MAX_CONSECUTIVE_LOSSES", 3), patch.object(
-        Config, "CONSECUTIVE_LOSS_PAUSE_MINUTES", 25
-    ), patch.object(Config, "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY", True):
-        for _ in range(3):
-            risk.record_trade_outcome(-0.01, dry_run=True)
-        risk.state.consecutive_loss_pause_until = time.time() - 1
-        can, _ = risk.can_enter(0, 1.0, dry_run=True)
-        assert can
-        assert risk.state.consecutive_losses == 0
-        assert risk.state.consecutive_loss_pause_until == 0.0
-        status = risk.consecutive_loss_pause_status(dry_run=True)
-        assert status["active"] is False
-        print("PASS: paper pause expires and resets consecutive loss counter")
+        assert status["timed_pause"] is False
+        assert status["remaining_sec"] == 0
+        print(f"PASS: paper indefinite pause matches live — {reason}")
 
 
 def test_live_indefinite_pause_until_restart():
@@ -83,6 +67,19 @@ def test_live_indefinite_pause_until_restart():
         print(f"PASS: live indefinite pause until restart — {reason}")
 
 
+def test_paper_not_timed_even_after_long_wait():
+    risk = RiskManager()
+    with patch.object(Config, "MAX_CONSECUTIVE_LOSSES", 3), patch.object(
+        Config, "CONSECUTIVE_LOSS_PAUSE_MINUTES", 25
+    ), patch.object(Config, "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY", True):
+        for _ in range(3):
+            risk.record_trade_outcome(-0.01, dry_run=True)
+        can, _ = risk.can_enter(0, 1.0, dry_run=True)
+        assert not can
+        assert risk.state.consecutive_losses == 3
+        print("PASS: paper pause does not auto-expire")
+
+
 def test_live_not_timed_even_after_long_wait():
     risk = RiskManager()
     with patch.object(Config, "MAX_CONSECUTIVE_LOSSES", 3), patch.object(
@@ -90,11 +87,46 @@ def test_live_not_timed_even_after_long_wait():
     ), patch.object(Config, "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY", True):
         for _ in range(3):
             risk.record_trade_outcome(-0.01, dry_run=False)
-        # No timer set — still blocked after simulated elapsed time
         can, _ = risk.can_enter(0, 1.0, dry_run=False)
         assert not can
         assert risk.state.consecutive_losses == 3
         print("PASS: live pause does not auto-expire")
+
+
+def test_timed_pause_when_paper_only_false():
+    """Opt-in: PAPER_ONLY=false enables timed auto-resume for both modes."""
+    risk = RiskManager()
+    with patch.object(Config, "MAX_CONSECUTIVE_LOSSES", 3), patch.object(
+        Config, "CONSECUTIVE_LOSS_PAUSE_MINUTES", 25
+    ), patch.object(Config, "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY", False):
+        for _ in range(3):
+            risk.record_trade_outcome(-0.01, dry_run=True)
+        assert risk.state.consecutive_loss_pause_until > time.time()
+        can, reason = risk.can_enter(0, 1.0, dry_run=True)
+        assert not can
+        assert "remaining" in reason
+        status = risk.consecutive_loss_pause_status(dry_run=True)
+        assert status["timed_pause"] is True
+        risk.state.consecutive_loss_pause_until = time.time() - 1
+        can, _ = risk.can_enter(0, 1.0, dry_run=True)
+        assert can
+        assert risk.state.consecutive_losses == 0
+        print("PASS: timed pause when PAPER_ONLY=false (both modes)")
+
+
+def test_admin_reset_clears_indefinite_pause():
+    risk = RiskManager()
+    with patch.object(Config, "MAX_CONSECUTIVE_LOSSES", 3), patch.object(
+        Config, "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY", True
+    ):
+        for _ in range(3):
+            risk.record_trade_outcome(-0.01, dry_run=True)
+        assert risk._is_consecutive_loss_pause_active(dry_run=True)
+        risk.reset_consecutive_loss_pause()
+        assert risk.state.consecutive_losses == 0
+        can, _ = risk.can_enter(0, 1.0, dry_run=True)
+        assert can
+        print("PASS: admin reset clears indefinite pause")
 
 
 def test_winning_trade_clears_pause():
@@ -125,10 +157,12 @@ def test_pause_disabled_when_max_consecutive_losses_zero():
 
 def main():
     test_config_defaults()
-    test_paper_pause_triggers_after_threshold()
-    test_paper_pause_expires_and_resets_counter()
+    test_paper_indefinite_pause_matches_live()
     test_live_indefinite_pause_until_restart()
+    test_paper_not_timed_even_after_long_wait()
     test_live_not_timed_even_after_long_wait()
+    test_timed_pause_when_paper_only_false()
+    test_admin_reset_clears_indefinite_pause()
     test_winning_trade_clears_pause()
     test_pause_disabled_when_max_consecutive_losses_zero()
     print("\nAll consecutive loss pause validation tests passed.")

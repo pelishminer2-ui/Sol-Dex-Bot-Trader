@@ -167,19 +167,19 @@ def test_consecutive_loss_pause_when_enabled():
     risk = RiskManager()
     with patch.object(Config, "MAX_CONSECUTIVE_LOSSES", 3), patch.object(
         Config, "CONSECUTIVE_LOSS_PAUSE_MINUTES", 25
-    ):
+    ), patch.object(Config, "CONSECUTIVE_LOSS_PAUSE_PAPER_ONLY", True):
         for _ in range(3):
             risk.record_trade_outcome(-0.01)
         can, reason = risk.can_open_position(0, 1.0, dry_run=True)
         assert not can
         assert "consecutive losses" in reason
-        assert "remaining" in reason
+        assert "Stop/Start" in reason
         print(f"PASS: consecutive loss pause when enabled — {reason}")
 
-        risk.state.consecutive_loss_pause_until = time.time() - 1
+        risk.reset_consecutive_loss_pause()
         can, _ = risk.can_open_position(0, 1.0, dry_run=True)
         assert can
-        print("PASS: consecutive loss pause auto-expires")
+        print("PASS: consecutive loss pause clears via Stop/Start reset")
 
     risk.record_trade_outcome(0.02)
     can, _ = risk.can_open_position(0, 1.0, dry_run=True)
