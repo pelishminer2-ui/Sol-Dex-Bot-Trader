@@ -80,6 +80,70 @@ def server_healthy() -> bool:
         return False
 
 
+def _fetch_bot_status() -> dict | None:
+    try:
+        import json
+        import urllib.request
+
+        with urllib.request.urlopen(
+            f"http://{HOST}:{PORT}/api/bot/status", timeout=5
+        ) as resp:
+            if resp.status != 200:
+                return None
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def maybe_resume_trading() -> None:
+    """If Flask is up but trading is parked with open books / needs_resume, Start.
+
+    Keeps managing open positions after Stop/crash without requiring a dashboard click.
+    Uses runtime dry_run when present so live books resume live.
+    """
+    st = _fetch_bot_status()
+    if not st or st.get("running"):
+        return
+    needs = bool(st.get("needs_resume")) or int(st.get("open_positions_count") or 0) > 0
+    if not needs:
+        return
+    dry_run = True
+    try:
+        import json
+        from pathlib import Path as _P
+
+        runtime = json.loads(_P(PROJECT_ROOT / "bot_runtime_state.json").read_text(encoding="utf-8"))
+        if "dry_run" in runtime:
+            dry_run = bool(runtime.get("dry_run"))
+        mode = str(st.get("persisted_open_mode") or "").lower()
+        if mode == "live":
+            dry_run = False
+        elif mode == "paper":
+            dry_run = True
+    except Exception:
+        if str(st.get("persisted_open_mode") or "").lower() == "live":
+            dry_run = False
+    try:
+        import json
+        import urllib.request
+
+        body = json.dumps({"dry_run": dry_run}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://{HOST}:{PORT}/api/bot/start",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        print(
+            f"Watchdog: resumed trading dry_run={dry_run} ok={payload.get('ok')} "
+            f"status={payload.get('status')}"
+        )
+    except Exception as exc:
+        print(f"Watchdog: resume trading failed: {exc}", file=sys.stderr)
+
+
 def start_server() -> None:
     if not PYTHON.exists():
         print(f"Watchdog: Python not found at {PYTHON}", file=sys.stderr)
@@ -108,6 +172,8 @@ def main() -> None:
                 print("Watchdog: server not responding - starting app.py")
                 start_server()
                 time.sleep(STARTUP_GRACE_SEC)
+        else:
+            maybe_resume_trading()
         time.sleep(CHECK_INTERVAL)
 
 

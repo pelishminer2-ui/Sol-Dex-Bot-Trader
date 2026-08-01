@@ -12,6 +12,7 @@ from pattern_structure import (
     STRUCTURE_FEATURE_KEYS,
     enrich_features_with_structure,
     structure_preference_score,
+    structure_scores_from_candidate,
     structure_scores_from_features,
 )
 from scanner import MoverCandidate
@@ -19,9 +20,9 @@ from scanner import MoverCandidate
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE_PATH = resolve_data_path("data/setup_learning.json")
-# v4: short-horizon structure proxies (blue-sky / flag / cup / triangle /
-# volume expansion / double-top avoid) + Instant-win centroid weighting.
-STORE_VERSION = 4
+# v5: adds double_bottom_score (bullish W-recovery proxy) alongside v4 structure
+# features (blue-sky / flag / cup / triangle / volume / double-top avoid).
+STORE_VERSION = 5
 
 FEATURE_KEYS = [
     "momentum_pct",
@@ -37,13 +38,15 @@ FEATURE_KEYS = [
     "scanner_source",
     # Structure proxies (see pattern_structure.py). Gold Instant exemplars
     # friend/SASS lean high blue_sky + volume_expansion + structure_edge;
-    # double_top_score is an avoid feature for longs.
+    # double_top_score is an avoid feature for longs; double_bottom_score is
+    # a soft-prefer bullish W-recovery feature (never a hard skip).
     "blue_sky_score",
     "flag_continuation_score",
     "cup_handle_score",
     "ascending_triangle_score",
     "volume_expansion_score",
     "double_top_score",
+    "double_bottom_score",
     "structure_edge",
 ]
 
@@ -113,6 +116,7 @@ def normalize_setup_features(features: dict) -> Dict[str, float]:
         "ascending_triangle_score": _float(enriched.get("ascending_triangle_score")),
         "volume_expansion_score": _float(enriched.get("volume_expansion_score")),
         "double_top_score": _float(enriched.get("double_top_score")),
+        "double_bottom_score": _float(enriched.get("double_bottom_score")),
         "structure_edge": _float(enriched.get("structure_edge")),
     }
 
@@ -636,6 +640,16 @@ class SetupLearner:
             if getattr(Config, "STRUCTURE_ENTRY_BOOST_ENABLED", True):
                 weight = float(getattr(Config, "STRUCTURE_ENTRY_BOOST_WEIGHT", 0.15))
                 base += weight * structure_preference_score(candidate)
+            if getattr(Config, "STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED", True):
+                db_weight = float(
+                    getattr(Config, "STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT", 0.05)
+                )
+                db = float(
+                    structure_scores_from_candidate(candidate).get(
+                        "double_bottom_score", 0.0
+                    )
+                )
+                base += db_weight * db
             return base
         candidate_vec = _candidate_vector(candidate)
         base_momentum = max(candidate.momentum_pct, 0.0)
@@ -652,6 +666,12 @@ class SetupLearner:
         if getattr(Config, "STRUCTURE_ENTRY_BOOST_ENABLED", True):
             weight = float(getattr(Config, "STRUCTURE_ENTRY_BOOST_WEIGHT", 0.15))
             score += weight * structure_preference_score(candidate)
+        if getattr(Config, "STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED", True):
+            db_weight = float(getattr(Config, "STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT", 0.05))
+            db = float(
+                structure_scores_from_candidate(candidate).get("double_bottom_score", 0.0)
+            )
+            score += db_weight * db
         return score
 
     def win_lean_score(self, candidate: MoverCandidate) -> Optional[float]:
@@ -758,6 +778,9 @@ class SetupLearner:
             ),
             "structure_double_top_gate_enabled": bool(
                 getattr(Config, "STRUCTURE_DOUBLE_TOP_GATE_ENABLED", True)
+            ),
+            "structure_double_bottom_boost_enabled": bool(
+                getattr(Config, "STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED", True)
             ),
             "avg_win_setup_score": avg_win_score,
             "avg_loss_setup_score": avg_loss_score,

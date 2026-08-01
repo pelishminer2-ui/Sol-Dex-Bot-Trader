@@ -730,8 +730,8 @@ def _write_pdf(out: Path, styles) -> None:
             topMargin=0.65 * inch,
             bottomMargin=0.75 * inch,
             title="Sol Dex Bot Trader User Guide",
-            author="Pilisi, Vilmos Mihaly",
-            creator=f"Sol Dex Bot Trader v{_app_version()} — Copyright 2026 Bigbagsmedia.com",
+            author="William M Pelish · 2026 · 07/30/2026",
+            creator=f"Sol Dex Bot Trader v{_app_version()} — Copyright 2026 William M Pelish",
             subject=f"User guide built {_guide_built_stamp()}",
             # CreationDate / ModDate: reportlab stamps wall-clock now on build
         )

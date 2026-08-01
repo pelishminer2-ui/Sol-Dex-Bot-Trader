@@ -1,7 +1,7 @@
 """Sol Dex Bot Trader — Flask dashboard entry point.
 
-Copyright 2026 Bigbagsmedia.com
-Author: Pilisi, Vilmos Mihaly
+Copyright 2026 William M Pelish
+Author: William M Pelish · 2026 · 07/30/2026
 """
 
 import atexit
@@ -263,17 +263,10 @@ def _schedule_browser_open() -> None:
 
 
 def schedule_auto_resume(delay_sec: float = 2.0) -> None:
-    """No-op by default: trading never auto-starts; user must click Start Bot.
+    """Resume parked books / crash markers shortly after Flask boot.
 
-    Kept as a stub so packaged run_app / older callers do not crash. Opt-in only
-    when Config.AUTO_RESUME_ON_START is explicitly true (not recommended).
+    Idle boots with no open positions and no runtime resume marker stay idle.
     """
-    if not Config.AUTO_RESUME_ON_START:
-        logging.getLogger(__name__).info(
-            "Auto-resume disabled — bot stays idle until Start Bot "
-            "(watchdog may keep Flask alive only)."
-        )
-        return
 
     def _resume() -> None:
         try:

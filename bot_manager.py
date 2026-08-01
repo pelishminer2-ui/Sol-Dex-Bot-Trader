@@ -116,10 +116,11 @@ class BotManager:
     def try_auto_resume(self) -> Optional[Dict[str, Any]]:
         """Resume trading after process restart when books/runtime say so.
 
-        Live signing requires Set Wallet session key or SOLANA_PRIVATE_KEY in .env.
+        Parked open books / crash markers (running|starting|stopped_with_open)
+        always resume so Flask/watchdog restarts keep managing trades. Fresh idle
+        boots (no runtime marker, no open books) stay idle. Live signing requires
+        Set Wallet session key or SOLANA_PRIVATE_KEY in .env.
         """
-        if not Config.AUTO_RESUME_ON_START:
-            return None
         with self._lock:
             if self._status in ("running", "starting"):
                 return None

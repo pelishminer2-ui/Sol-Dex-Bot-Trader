@@ -28,10 +28,10 @@
 
 
 #define MyAppName "Sol Dex Bot Trader"
-#define MyAppPublisher "Bigbagsmedia.com"
-#define MyAppURL "https://bigbagsmedia.com"
+#define MyAppPublisher "William M Pelish"
+#define MyAppURL ""
 #define MyAppExeName "SolDexBotTrader.exe"
-#define MyAppCopyright "Copyright 2026 Bigbagsmedia.com"
+#define MyAppCopyright "Copyright 2026 William M Pelish · Author: William M Pelish · 2026 · 07/30/2026"
 #define MyAppTaskbarIcon "assets\icon-taskbar-cats.ico"
 #define MyAppDesktopIcon "assets\icon-desktop-pelish.ico"
 

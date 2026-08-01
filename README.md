@@ -1,6 +1,6 @@
 ﻿# Solana Mover Trading Bot
 
-**Copyright 2026 Bigbagsmedia.com** · Author: Pilisi, Vilmos Mihaly
+**Copyright 2026 William M Pelish** · Author: William M Pelish · 2026 · 07/30/2026
 
 ## Local-only (git)
 
@@ -66,7 +66,7 @@ The bot is tuned to **target real net profit after fees**, not break-even scalps
 
 ### Automated trading (GUI â€” recommended)
 
-**Fastest start:** double-click **`C:\Users\Owner\Desktop\Solana\Start Bot.bat`** â€” that's it. No Cursor or terminal needed. It bootstraps `.venv` on first run, starts the Flask server, opens your browser to **http://127.0.0.1:5000**, and **stops the server when you close the dashboard browser tab/window or close the launcher window**. Launch scripts live on disk and are **not** served by Flask; an old Desktop shortcut or duplicate folder can run stale code. See [Standalone App](#standalone-app) for desktop shortcuts, hidden launch, auto-start, PWA install, and optional login watchdog.
+**Fastest start:** double-click **`C:\Users\Owner\Desktop\Solana\Start Bot.bat`** â€” that's it. No IDE or terminal needed. It bootstraps `.venv` on first run, starts the Flask server, opens your browser to **http://127.0.0.1:5000**, and **stops the server when you close the dashboard browser tab/window or close the launcher window**. Launch scripts live on disk and are **not** served by Flask; an old Desktop shortcut or duplicate folder can run stale code. See [Standalone App](#standalone-app) for desktop shortcuts, hidden launch, auto-start, PWA install, and optional login watchdog.
 
 1. **Install and run the dashboard**
    ```bash
@@ -228,7 +228,7 @@ The CLI entry point (`python main.py`) is unchanged and works independently of t
 
 ### Standalone App
 
-**No Cursor, VS Code, or terminal required.** The bot is a normal Windows app: double-click **`Start Bot.bat`** in `C:\Users\Owner\Desktop\Solana`, and it creates the Python environment on first run (if needed), starts the Flask server, and opens your browser to the dashboard.
+**No IDE or terminal required.** The bot is a normal Windows app: double-click **`Start Bot.bat`** in `C:\Users\Owner\Desktop\Solana`, and it creates the Python environment on first run (if needed), starts the Flask server, and opens your browser to the dashboard.
 
 #### One-click launcher (recommended)
 

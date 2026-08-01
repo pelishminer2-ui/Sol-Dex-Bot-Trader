@@ -376,14 +376,19 @@ DEFAULT_SETUP_LEARNING_ENTRY_GATE_ENABLED = True
 DEFAULT_SETUP_LEARNING_MIN_WIN_LEAN = 0.08
 # Structure-aware learning / soft entry preference (pattern_structure.py).
 # Always recorded into setup feature vectors when learning is on. Boost + double-top
-# gate are ENTRY only — never weaken exits. Instant take-profit wins (friend/SASS
-# shape) get extra centroid weight so the WIN profile leans toward those pops.
+# gate + mild double-bottom prefer are ENTRY only — never weaken exits. Instant
+# take-profit wins (friend/SASS shape) get extra centroid weight so the WIN profile
+# leans toward those pops.
 DEFAULT_SETUP_LEARNING_INSTANT_WIN_WEIGHT = 1.75
 DEFAULT_STRUCTURE_ENTRY_BOOST_ENABLED = True
 DEFAULT_STRUCTURE_ENTRY_BOOST_WEIGHT = 0.15
 # Mild avoid: skip only clear short-horizon M-top / failed second-peak proxies.
 DEFAULT_STRUCTURE_DOUBLE_TOP_GATE_ENABLED = True
 DEFAULT_STRUCTURE_DOUBLE_TOP_MAX = 0.65
+# Mild prefer: extra ranking weight for washed W-recovery / higher-low bounce.
+# Soft boost only — never a hard entry requirement.
+DEFAULT_STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED = True
+DEFAULT_STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT = 0.05
 
 
 def is_wbtc_watchlist_mint(mint: str) -> bool:
@@ -2402,6 +2407,19 @@ class Config:
             str(DEFAULT_STRUCTURE_DOUBLE_TOP_MAX),
         )
     )
+    STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED = (
+        os.getenv(
+            "STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED",
+            "true" if DEFAULT_STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED else "false",
+        ).lower()
+        == "true"
+    )
+    STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT = float(
+        os.getenv(
+            "STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT",
+            str(DEFAULT_STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT),
+        )
+    )
 
     TRADE_JOURNAL_PATH = str(resolve_data_path(os.getenv("TRADE_JOURNAL_PATH", "trades.jsonl")))
     SESSION_PNL_PATH = str(resolve_data_path(os.getenv("SESSION_PNL_PATH", "session_pnl.json")))
@@ -2824,6 +2842,8 @@ class Config:
         "STRUCTURE_ENTRY_BOOST_WEIGHT": float,
         "STRUCTURE_DOUBLE_TOP_GATE_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
         "STRUCTURE_DOUBLE_TOP_MAX": float,
+        "STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED": lambda v: str(v).lower() == "true" if isinstance(v, str) else bool(v),
+        "STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT": float,
         "GMGN_MIN_LIQUIDITY_USD": float,
         "MAX_CONSECUTIVE_LOSSES": int,
     }
@@ -3277,6 +3297,8 @@ class Config:
             "structure_entry_boost_weight": cls.STRUCTURE_ENTRY_BOOST_WEIGHT,
             "structure_double_top_gate_enabled": cls.STRUCTURE_DOUBLE_TOP_GATE_ENABLED,
             "structure_double_top_max": cls.STRUCTURE_DOUBLE_TOP_MAX,
+            "structure_double_bottom_boost_enabled": cls.STRUCTURE_DOUBLE_BOTTOM_BOOST_ENABLED,
+            "structure_double_bottom_boost_weight": cls.STRUCTURE_DOUBLE_BOTTOM_BOOST_WEIGHT,
             "session_auto_tighten_enabled": cls.SESSION_AUTO_TIGHTEN_ENABLED,
             "session_auto_tighten_min_trades": cls.SESSION_AUTO_TIGHTEN_MIN_TRADES,
             "session_auto_tighten_win_lean_step": cls.SESSION_AUTO_TIGHTEN_WIN_LEAN_STEP,

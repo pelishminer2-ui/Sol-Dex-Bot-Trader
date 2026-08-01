@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Sol Dex Bot Trader Windows app.
 
-Copyright 2026 Bigbagsmedia.com
-Author: Pilisi, Vilmos Mihaly
+Copyright 2026 William M Pelish
+Author: William M Pelish · 2026 · 07/30/2026
 """
 
 import sys

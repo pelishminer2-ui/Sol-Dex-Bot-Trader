@@ -64,6 +64,9 @@ def test_friend_sass_blue_sky_shape():
     assert sass["blue_sky_score"] >= 0.55
     assert friend["double_top_score"] < 0.15
     assert sass["double_top_score"] < 0.15
+    # Blue-sky Instant pops are not washed W-recoveries.
+    assert friend["double_bottom_score"] < 0.25
+    assert sass["double_bottom_score"] < 0.25
     assert friend["structure_edge"] > 0.4
     assert sass["structure_edge"] > 0.4
     print("PASS: friend_sass_blue_sky_shape")
@@ -81,7 +84,58 @@ def test_double_top_scores_high_on_m_top():
     )
     assert scores["double_top_score"] >= 0.65
     assert scores["blue_sky_score"] < 0.35
+    assert scores["double_bottom_score"] < 0.15
     print("PASS: double_top_scores_high_on_m_top")
+
+
+def test_double_bottom_scores_high_on_w_recovery():
+    # Washed 6h/24h, then 5m/1h reclaim (higher-low / W right shoulder).
+    scores = compute_structure_scores(
+        price_change_5m=0.06,
+        price_change_1h=0.10,
+        price_change_6h=-0.18,
+        price_change_24h=-0.25,
+        liquidity_usd=45000.0,
+        volume_24h_usd=320000.0,
+    )
+    assert scores["double_bottom_score"] >= 0.45
+    assert scores["double_top_score"] < 0.15
+    # Not a flat-overhead blue-sky Instant pop.
+    assert scores["blue_sky_score"] < scores["double_bottom_score"]
+    assert scores["structure_edge"] > 0.25
+    print("PASS: double_bottom_scores_high_on_w_recovery")
+
+
+def test_double_bottom_distinct_from_blue_sky_and_m_top():
+    blue = compute_structure_scores(
+        price_change_5m=0.117,
+        price_change_1h=81.8,
+        price_change_6h=0.0,
+        price_change_24h=0.0,
+        liquidity_usd=30500.0,
+        volume_24h_usd=475000.0,
+    )
+    m_top = compute_structure_scores(
+        price_change_5m=-0.12,
+        price_change_1h=0.18,
+        price_change_6h=0.55,
+        price_change_24h=0.90,
+        liquidity_usd=40000.0,
+        volume_24h_usd=80000.0,
+    )
+    w_bot = compute_structure_scores(
+        price_change_5m=0.05,
+        price_change_1h=0.08,
+        price_change_6h=-0.12,
+        price_change_24h=-0.20,
+        liquidity_usd=50000.0,
+        volume_24h_usd=280000.0,
+    )
+    assert blue["double_bottom_score"] < 0.25
+    assert m_top["double_bottom_score"] < 0.15
+    assert w_bot["double_bottom_score"] >= 0.40
+    assert w_bot["double_top_score"] < 0.15
+    print("PASS: double_bottom_distinct_from_blue_sky_and_m_top")
 
 
 def test_flag_and_cup_proxies_fire():
@@ -128,6 +182,7 @@ def test_normalize_includes_structure_keys():
         "ascending_triangle_score",
         "volume_expansion_score",
         "double_top_score",
+        "double_bottom_score",
         "structure_edge",
     ):
         assert key in vec
@@ -242,17 +297,19 @@ def test_instant_win_weight_pulls_centroid():
     print("PASS: instant_win_weight_pulls_centroid")
 
 
-def test_store_version_is_v4():
-    assert STORE_VERSION >= 4
-    print("PASS: store_version_is_v4")
+def test_store_version_is_v5():
+    assert STORE_VERSION >= 5
+    print("PASS: store_version_is_v5")
 
 
 if __name__ == "__main__":
     test_friend_sass_blue_sky_shape()
     test_double_top_scores_high_on_m_top()
+    test_double_bottom_scores_high_on_w_recovery()
+    test_double_bottom_distinct_from_blue_sky_and_m_top()
     test_flag_and_cup_proxies_fire()
     test_normalize_includes_structure_keys()
     test_double_top_gate_skips_m_top_allows_blue_sky()
     test_instant_win_weight_pulls_centroid()
-    test_store_version_is_v4()
+    test_store_version_is_v5()
     print("All pattern structure validations passed.")

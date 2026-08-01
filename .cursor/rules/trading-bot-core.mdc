@@ -20,6 +20,7 @@ alwaysApply: true
 ### Learning
 - `setup_learner` records every full exit (paper + live) to `data/setup_learning.json`
 - Centroid win/loss patterns + rolling 50 raw trades
+- Structure proxies (`pattern_structure.py`): blue-sky / flag / cup / triangle / volume / double-bottom (soft prefer) / double-top (avoid gate). Entry selection only — never weaken exits. Fee-assist excluded from centroids.
 - Do not break `_record_setup_learning` on any exit path
 
 ### Entries / market

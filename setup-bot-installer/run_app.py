@@ -1,7 +1,7 @@
 """Frozen entrypoint: Flask dashboard without a visible console (windowed mode).
 
-Copyright 2026 Bigbagsmedia.com
-Author: Pilisi, Vilmos Mihaly
+Copyright 2026 William M Pelish
+Author: William M Pelish · 2026 · 07/30/2026
 
 Runs as a background GUI-subsystem process with:
   - File logging under the install dir (logs/soldexbot.log)

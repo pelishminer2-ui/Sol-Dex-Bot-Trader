@@ -1,14 +1,16 @@
 """
 Short-horizon structure proxies for Solana memecoin setup learning.
 
-Classical TA (cup/handle, flags, ascending triangle, blue-sky breakout, double top)
-is adapted to minutes-scale scanner windows (5m/1h/6h/24h + liquidity/volume) —
-not multi-year OHLC. These scores are ENTRY-selection only; they never touch
-stops, Instant profit, max-hold, or forced exits.
+Classical TA (cup/handle, flags, ascending triangle, blue-sky breakout,
+double top, double bottom) is adapted to minutes-scale scanner windows
+(5m/1h/6h/24h + liquidity/volume) — not multi-year OHLC. These scores are
+ENTRY-selection only; they never touch stops, Instant profit, max-hold, or
+forced exits.
 
 Gold long exemplars (friend / SASS Instant-pop shape): Pump.fun-era fresh 1h pop,
 6h/24h ~ flat (little overhead), expanding volume, short hold → Instant win.
 Double top is bearish for this long-biased bot: treat high scores as avoid/skip.
+Double bottom is bullish: prior wash + higher-low bounce — soft prefer, never skip.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ STRUCTURE_FEATURE_KEYS = (
     "ascending_triangle_score",
     "volume_expansion_score",
     "double_top_score",
+    "double_bottom_score",
     "structure_edge",
 )
 
@@ -196,6 +199,74 @@ def double_top_score(c5m: float, c1h: float, c6h: float, c24h: float) -> float:
     return _clamp01(0.35 * trend + 0.35 * reject + 0.20 * stall + 0.10 * breakdown)
 
 
+def double_bottom_score(c5m: float, c1h: float, c6h: float, c24h: float) -> float:
+    """
+    Double-bottom / W-recovery proxy (long prefer — soft boost, never a hard skip).
+
+    Classical W after a decline: washed longer tape, bounce, second low holds
+    (no fresh lower-low dump), short windows turn up. Memecoin proxy without OHLC:
+      * Prior pressure: 6h and/or 24h soft/negative (not still extended up)
+      * Stabilization / higher-low: 5m/1h turning up while longer is recovering
+      * Not a double-top rejection (5m rolling over under elevated overhead)
+      * Distinct from blue-sky (flat longer windows + fresh pop with no wash)
+    Volume expansion is applied in ``structure_edge``, not here.
+    """
+    long_min = min(c6h, c24h)
+    long_avg = 0.5 * (c6h + c24h)
+    overhead = max(c6h, c24h)
+    short = max(c5m, c1h)
+
+    # Still extended uptrend → not a washed double-bottom base.
+    if long_min > 0.05 and long_avg > 0.08:
+        return 0.0
+    # Double-top rejection territory: elevated overhead + 5m rolling over.
+    if overhead > 0.15 and c5m < -0.03:
+        return 0.0
+    # Need a short-horizon bounce attempt (higher-low / neckline reclaim feel).
+    if c5m <= 0.0 and c1h <= 0.0:
+        return 0.0
+    # Pure blue-sky Instant pop: strong short leg with empty/flat longer windows
+    # and no actual wash — leave that to blue_sky_score.
+    if long_min >= -0.02 and overhead <= 0.05 and short >= 0.15:
+        return 0.0
+
+    # Wash depth: prefer real downside in 6h/24h (W left side), not flat blue-sky.
+    if long_min < -0.02:
+        wash = _clamp01((-long_min) / 0.20)
+    elif long_min < 0.0:
+        wash = 0.25 * _clamp01((-long_min) / 0.02)
+    elif long_avg <= 0.02 and overhead <= 0.04 and short < 0.12:
+        # Soft recovering base only when the short leg is modest (not Instant pop).
+        wash = 0.20
+    else:
+        wash = 0.0
+    if wash < 0.12:
+        return 0.0
+
+    bounce = 0.0
+    if c5m > 0.0:
+        bounce += 0.50 * _clamp01(c5m / 0.08)
+    if c1h > 0.0:
+        bounce += 0.40 * _clamp01(c1h / 0.15)
+    elif c5m > 0.02:
+        bounce += 0.15  # fresh 5m kick while 1h still flat
+    # Second-low hold: short windows not collapsing vs washed mid window.
+    if c5m < -0.08 or (c1h < -0.10 and c5m < 0.0):
+        return 0.0
+
+    # Higher-low / reclaim: 1h lifting vs soft 6h (W right shoulder).
+    higher_low = 0.0
+    if c6h < 0.10 and c1h > c6h:
+        higher_low = _clamp01((c1h - c6h) / 0.20)
+    elif c24h < 0.0 and c1h > 0.0:
+        higher_low = _clamp01(c1h / 0.12) * 0.7
+
+    # Mild neckline-breakout feel: 5m leading the reclaim.
+    breakout = _clamp01(c5m / 0.06) if c5m > 0.01 else 0.0
+
+    return _clamp01(0.32 * wash + 0.33 * bounce + 0.22 * higher_low + 0.13 * breakout)
+
+
 def compute_structure_scores(
     *,
     price_change_5m: Any = 0.0,
@@ -218,7 +289,9 @@ def compute_structure_scores(
     triangle = ascending_triangle_score(c5m, c1h, c6h, c24h)
     vol = volume_expansion_score(liquidity_usd, volume_24h_usd)
     double_top = double_top_score(c5m, c1h, c6h, c24h)
-    continuation = max(blue, flag, cup, triangle)
+    double_bottom = double_bottom_score(c5m, c1h, c6h, c24h)
+    # Bullish structures compete for continuation; double-bottom is positive.
+    continuation = max(blue, flag, cup, triangle, double_bottom)
     # Volume participates in continuation edge; double-top subtracts (avoid).
     edge = continuation * (0.55 + 0.45 * vol) - double_top
     return {
@@ -228,6 +301,7 @@ def compute_structure_scores(
         "ascending_triangle_score": triangle,
         "volume_expansion_score": vol,
         "double_top_score": double_top,
+        "double_bottom_score": double_bottom,
         "structure_edge": max(-1.0, min(1.0, edge)),
     }
 
@@ -255,7 +329,7 @@ def structure_scores_from_candidate(candidate) -> Dict[str, float]:
 
 
 def structure_preference_score(candidate) -> float:
-    """Single ranking signal: continuation edge minus double-top risk."""
+    """Single ranking signal: bullish structure edge minus double-top risk."""
     return float(structure_scores_from_candidate(candidate).get("structure_edge", 0.0))
 
 
